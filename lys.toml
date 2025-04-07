@@ -1,0 +1,5 @@
+name = "lys"
+description = "a package toolkit"
+version = "1.0.0"
+authors = ["hackia"]
+dependencies = ["rustup@1.28.1"]
