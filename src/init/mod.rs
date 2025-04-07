@@ -126,6 +126,39 @@ fn init_gentoo(name: &str, enter: bool, tmp: bool) -> Result<(), Error> {
     }
     Ok(())
 }
+fn init_void(name: &str, enter: bool, tmp: bool) -> Result<(), Error> {
+    create_dir_all(name)?;
+    Command::new("wget")
+        .arg("https://repo-default.voidlinux.org/live/current/void-x86_64-musl-ROOTFS-20250202.tar.xz")
+        .spawn()?
+        .wait()?;
+    Command::new("sudo")
+        .arg("tar")
+        .arg("vxpf")
+        .arg("void-x86_64-musl-ROOTFS-20250202.tar.xz")
+        .arg("-C")
+        .arg(name)
+        .spawn()?
+        .wait()?;
+    remove_file("void-x86_64-musl-ROOTFS-20250202.tar.xz")?;
+
+    if enter {
+        Command::new("sudo")
+            .arg("chroot")
+            .arg(name)
+            .spawn()?
+            .wait()?;
+        if tmp {
+            Command::new("sudo")
+                .arg("rm")
+                .arg("-rf")
+                .arg(name)
+                .spawn()?
+                .wait()?;
+        }
+    }
+    Ok(())
+}
 
 fn init_alpine(name: &str, enter: bool, tmp: bool) -> Result<(), Error> {
     Command::new("sudo")
@@ -160,6 +193,7 @@ pub fn init(os: &str, name: &str, enter: bool, tmp: bool) -> Result<(), Error> {
         "debian" => init_debian(name, enter, tmp),
         "gentoo" => init_gentoo(name, enter, tmp),
         "alpine" => init_alpine(name, enter, tmp),
+        "void" => init_void(name, enter, tmp),
         _ => Err(anyhow!("os not supported")),
     }
 }
