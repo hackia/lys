@@ -5,7 +5,7 @@ edition = "2024"
 description = "a future package manager"
 repository = "https://github.com/hackia/lys"
 readme = "README.md"
-license = "AGPL-3"
+license = "AGPL-3.0"
 categories = ["command-line-utilities"]
 keywords = ["pkgs"]
 
