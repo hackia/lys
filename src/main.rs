@@ -19,16 +19,26 @@ struct Lys {
 
 #[derive(Subcommand)]
 enum Command {
-    Init { name: String, os: String, e: String },
-    Build,
+    Init {
+        name: String,
+        os: String,
+        e: String,
+        tmp: String,
+    },
+    Build {
+        name: String,
+        archive: String,
+    },
     Run,
 }
 
 fn main() -> Result<(), Error> {
     let lys = Lys::parse();
     match lys.command {
-        Command::Init { name, os, e } => init(name.as_str(), os.as_str(), e.as_str()),
-        Command::Build => build(),
+        Command::Init { name, os, e, tmp } => {
+            init(os.as_str(), name.as_str(), e.eq(&"yes"), tmp.eq(&"yes"))
+        }
+        Command::Build { name, archive } => build(name.as_str(), archive.as_str()),
         Command::Run => run(),
     }
 }
