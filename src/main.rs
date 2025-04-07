@@ -1,9 +1,8 @@
+use anyhow::Error;
 use crate::init::init;
 use crate::run::run;
 use clap::{Parser, Subcommand};
 use crate::build::build;
-use crate::seal::seal;
-use crate::share::share;
 
 pub mod init;
 pub mod run;
@@ -23,18 +22,14 @@ enum Command {
     Init { name: String },
     Build,
     Run,
-    Seal,
-    Share,
 }
 
-fn main() {
+fn main()-> Result<(),Error> {
     let lys = Lys::parse();
 
     match lys.command {
         Command::Init { name } => init(name.as_str()),
         Command::Build => build(),
         Command::Run => run(),
-        Command::Seal => seal(),
-        Command::Share => share(),
     }
 }
