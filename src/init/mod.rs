@@ -51,7 +51,16 @@ fn install(name: &str, os: &str, deps: &[&str]) -> Result<(), Error> {
             // À compléter si tu veux gérer emerge
         }
         "alpine" => {
-            // Tu peux ajouter une logique apk si besoin
+            for dep in deps {
+                Command::new("sudo")
+                    .arg("chroot")
+                    .arg(format!("/{name}").as_str())
+                    .arg("apk")
+                    .arg("add")
+                    .arg(dep)
+                    .spawn()?
+                    .wait()?;
+            }
         }
         _ => return Err(anyhow!("Unsupported OS for install")),
     }
