@@ -1,0 +1,12 @@
+[package]
+name = "lys"
+version = "0.1.0"
+edition = "2024"
+description = "a future package manager"
+repository = "https://github.com/hackia/lys"
+readme = "README.md"
+license = "AGPL-3"
+categories = ["command-line-utilities"]
+keywords = ["pkgs"]
+
+[dependencies]
