@@ -64,13 +64,13 @@ fn main() -> Result<(), Error> {
 }
 
 fn pull(os: &str, username: &str, hostname: &str) -> Result<(), Error> {
+    let local_path: String = format!("{IMAGES_DIR}/{os}.img");
+    let remote_path: String = format!("{username}@{hostname}:{os}.img");
     if run_command(
-        "rsync",
+        "scp",
         &[
-            "-a",
-            "-v",
-            "-z",
-            "--delete",
+            remote_path.as_str(),
+            local_path.as_str(),
             format!("{username}@{hostname}:{IMAGES_DIR}/{os}.img").as_str(),
             format!("{IMAGES_DIR}/{os}.img").as_str(),
         ],
@@ -80,19 +80,12 @@ fn pull(os: &str, username: &str, hostname: &str) -> Result<(), Error> {
     Err(anyhow!("failed to pull image"))
 }
 
-fn push(os: &str, username: &str, hostname: &str) -> Result<(), Error> {
-    if run_command(
-        "rsync",
-        &[
-            "-a",
-            "-v",
-            "-z",
-            "--delete",
-            format!("{IMAGES_DIR}/{os}.img").as_str(),
-            format!("{username}@{hostname}:{IMAGES_DIR}/{os}.img").as_str(),
-        ],
-    )? {
+pub fn push(os: &str, username: &str, hostname: &str) -> Result<(), Error> {
+    let local_path: String = format!("{IMAGES_DIR}/{os}.img");
+    let remote_path: String = format!("{username}@{hostname}:{os}.img");
+
+    if run_command("scp", &[local_path.as_str(), remote_path.as_str()])? {
         return Ok(());
     }
-    Err(anyhow!("failed to pull image"))
+    Err(anyhow!("rsync command failed"))
 }
