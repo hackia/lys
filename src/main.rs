@@ -71,8 +71,6 @@ fn pull(os: &str, username: &str, hostname: &str) -> Result<(), Error> {
         &[
             remote_path.as_str(),
             local_path.as_str(),
-            format!("{username}@{hostname}:{IMAGES_DIR}/{os}.img").as_str(),
-            format!("{IMAGES_DIR}/{os}.img").as_str(),
         ],
     )? {
         return Ok(());
@@ -87,5 +85,5 @@ pub fn push(os: &str, username: &str, hostname: &str) -> Result<(), Error> {
     if run_command("scp", &[local_path.as_str(), remote_path.as_str()])? {
         return Ok(());
     }
-    Err(anyhow!("rsync command failed"))
+    Err(anyhow!("scp command failed"))
 }
