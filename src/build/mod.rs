@@ -1,35 +1,36 @@
-use std::process::Command;
+use anyhow::{Error, anyhow};
+use std::{path::Path, process::Command};
+pub const IMAGES_DIR: &str = "/var/lib/lys/images";
 
-use anyhow::{Error, Ok};
-use serde::Deserialize;
-
-pub const LYS_CONF: &str = "lys.toml";
-
-pub mod dependencies;
-#[derive(Debug, Deserialize)]
-pub struct Config {
-    pub package: Package,
-}
-#[derive(Debug, Deserialize)]
-pub struct Package {
-    pub name: String,
-    pub description: String,
-    pub version: String,
-    pub authors: Vec<String>,
-    pub dependencies: Vec<String>,
+pub fn run_command(command: &str, args: &[&str]) -> Result<bool, Error> {
+    Ok(Command::new(command)
+        .args(args)
+        .current_dir(".")
+        .spawn()?
+        .wait()?
+        .success())
 }
 
-pub fn build(name: &str, archive: &str) -> Result<(), Error> {
-    if archive.starts_with("https") {
-        Command::new("sudo")
-            .arg("chroot")
-            .arg(name)
-            .arg("wget")
-            .arg(archive)
-            .current_dir(".")
-            .spawn()?
-            .wait()?;
+pub fn build_img(name: &str) -> Result<(), Error> {
+    if Path::new(IMAGES_DIR).is_dir().eq(&false) {
+        run_command("sudo", &["mkdir", "-p", IMAGES_DIR])?;
+    }
+
+    let img_path: String = format!("{IMAGES_DIR}/{name}.img");
+
+    if run_command("sudo", &["mkdir", "-p", format!("/mnt/{name}").as_str()])?
+        && run_command(
+            "sudo",
+            &["qemu-img", "create", "-f", "raw", &img_path, "50G"],
+        )?
+        && run_command("sudo", &["mkfs.ext4", &img_path])?
+        && run_command(
+            "sudo",
+            &["mount", &img_path, format!("/mnt/{name}").as_str()],
+        )?
+    {
         return Ok(());
     }
-    Ok(())
+
+    Err(anyhow!("failed to build image"))
 }

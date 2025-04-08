@@ -38,7 +38,7 @@ fn install(name: &str, os: &str, deps: &[&str]) -> Result<(), Error> {
             for dep in deps {
                 Command::new("sudo")
                     .arg("chroot")
-                    .arg(name)
+                    .arg(format!("/mnt/{name}").as_str())
                     .arg("apt")
                     .arg("install")
                     .arg(dep)
@@ -85,8 +85,7 @@ fn init_debian(name: &str, enter: bool, tmp: bool) -> Result<(), Error> {
             .wait()?;
         if tmp {
             Command::new("sudo")
-                .arg("rm")
-                .arg("-rf")
+                .arg("umount")
                 .arg(name)
                 .spawn()?
                 .wait()?;
@@ -117,8 +116,7 @@ fn init_gentoo(name: &str, enter: bool, tmp: bool) -> Result<(), Error> {
             .wait()?;
         if tmp {
             Command::new("sudo")
-                .arg("rm")
-                .arg("-rf")
+                .arg("umount")
                 .arg(name)
                 .spawn()?
                 .wait()?;

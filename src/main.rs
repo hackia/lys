@@ -1,8 +1,8 @@
-use crate::build::build;
-use crate::init::init;
-use crate::run::run;
 use anyhow::Error;
+use build::build_img;
 use clap::{Parser, Subcommand};
+use init::init;
+use run::run;
 
 pub mod build;
 pub mod init;
@@ -25,20 +25,31 @@ enum Command {
         e: String,
         tmp: String,
     },
-    Build {
+    Run {
         name: String,
-        archive: String,
     },
-    Run,
+    Pull {},
+    Push {},
+    Clone {},
+    Prune {},
+    Ps {},
+    List {},
 }
 
 fn main() -> Result<(), Error> {
     let lys = Lys::parse();
     match lys.command {
         Command::Init { name, os, e, tmp } => {
-            init(os.as_str(), name.as_str(), e.eq(&"yes"), tmp.eq(&"yes"))
+            let p: String = format!("/mnt/{name}");
+            build_img(name.as_str())?;
+            init(os.as_str(), p.as_str(), e.eq(&"yes"), tmp.eq(&"yes"))
         }
-        Command::Build { name, archive } => build(name.as_str(), archive.as_str()),
-        Command::Run => run(),
+        Command::Run { name } => run(name.as_str()),
+        Command::Pull {} => todo!(),
+        Command::Clone {} => todo!(),
+        Command::Prune {} => todo!(),
+        Command::Ps {} => todo!(),
+        Command::List {} => todo!(),
+        Command::Push {} => todo!(),
     }
 }

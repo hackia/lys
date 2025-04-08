@@ -13,4 +13,5 @@ keywords = ["pkgs"]
 anyhow = "1.0.97"
 clap = { version = "4.5.35", features = ["derive"] }
 serde = { version = "1.0.219", features = ["derive"] }
+tabled = "0.18.0"
 toml = "0.8.20"
