@@ -79,6 +79,23 @@ pub fn ok_audit_commit(hash: &str) {
     );
 }
 
+pub fn commit_created(hash: &str) {
+    let (x, _) = size().expect("failed to get term size");
+
+    let description = " Commited successfully ";
+    let padding = x - hash.len() as u16 - description.len() as u16 - 7;
+
+    let _ = execute!(
+        stdout(),
+        Print(" *".green().bold()),
+        Print(description),
+        Print(" ".repeat(padding as usize)),
+        Print(" [ ".white().bold()),
+        Print(hash.green().bold()),
+        Print(" ]\n".white().bold()),
+    );
+}
+
 pub fn ko_audit_commit(hash: &str) {
     let (x, _) = size().expect("failed to get term size");
 

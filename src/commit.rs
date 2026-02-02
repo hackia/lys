@@ -6,8 +6,7 @@ use nix::sys::utsname::uname;
 use nix::unistd::User;
 use std::env::consts::ARCH;
 use std::fmt::{Display, Formatter};
-use std::fs::{File, read_to_string, remove_file};
-use std::io::{Error, Write};
+use std::io::Error;
 
 pub const WHY_PROMPT: &str = "Explain the reason for this change";
 pub const WHY_FILENAME: &str = "why.txt";
@@ -26,7 +25,7 @@ pub const OUTCOME_FILENAME: &str = "outcome.txt";
 pub const IMPACT_PROMPT: &str = "Consequences of changes";
 pub const IMPACT_FILENAME: &str = "impact.txt";
 
-fn justify_paragraph(text: &str, width: usize) -> String {
+fn commit_justify(text: &str, width: usize) -> String {
     let words: Vec<&str> = text.split_whitespace().collect();
     let mut lines = Vec::new();
     let mut current_line = Vec::new();
@@ -64,17 +63,6 @@ fn format_line(words: &[&str], width: usize, current_len: usize) -> String {
     result
 }
 
-fn file_create(p: &str, content: &str) -> Result<(), Error> {
-    let mut f = File::create(p)?;
-    f.write(content.as_bytes())?;
-    f.sync_all()?;
-    Ok(())
-}
-
-fn read_file(p: &str) -> String {
-    let x = read_to_string(p).expect("failed to read");
-    justify_paragraph(x.as_str(), 82)
-}
 pub fn author() -> String {
     let u = std::env::var("USER").expect("USER must be defined");
     if let Ok(Some(user)) = User::from_name(std::env::var("USER").expect("a").as_str()) {
@@ -106,19 +94,15 @@ pub struct Commit {
 
 impl Display for Commit {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "\n{}", read_file(SUBJECT_FILENAME))?;
-        writeln!(f, "\n{}", read_file(WHY_FILENAME))?;
-        writeln!(f, "\n{}", read_file(HOW_FILENAME))?;
-        writeln!(f, "\n{}", read_file(OUTCOME_FILENAME))?;
+        writeln!(f, "\n{}", commit_justify(self.summary.as_str(), 82))?;
+        writeln!(f, "\n{}", commit_justify(self.why.as_str(), 82))?;
+        writeln!(f, "\n{}", commit_justify(self.how.as_str(), 82))?;
+        writeln!(f, "\n{}", commit_justify(self.outcome.as_str(), 82))?;
         writeln!(
             f,
             "\nAuthor: {} Date: {} Os: {} {} ({})\n ",
             self.who, self.when, self.os, self.os_release, self.arch
         )?;
-        remove_file(OUTCOME_FILENAME).expect("a");
-        remove_file(HOW_FILENAME).expect("a");
-        remove_file(WHY_FILENAME).expect("a");
-        remove_file(SUBJECT_FILENAME).expect("a");
         Ok(())
     }
 }
@@ -178,7 +162,6 @@ impl Commit {
         if self.summary.is_empty() {
             return Err(InquireError::from(Error::other("bad summary")));
         }
-        file_create(SUBJECT_FILENAME, self.summary.as_str())?;
         Ok(self)
     }
 
@@ -199,7 +182,6 @@ impl Commit {
         if self.why.is_empty() {
             return Err(InquireError::from(Error::other("bad why")));
         }
-        file_create(WHY_FILENAME, &self.why)?;
         Ok(self)
     }
 
@@ -220,7 +202,6 @@ impl Commit {
         if self.why.is_empty() {
             return Err(InquireError::from(Error::other("bad why")));
         }
-        file_create(HOW_FILENAME, self.how.as_str())?;
         Ok(self)
     }
 
@@ -233,7 +214,6 @@ impl Commit {
         self.arch.clear();
         self.who.clear();
         self.when.clear();
-
         self.arch.push_str(ARCH);
         self.when.push_str(
             Local::now()
@@ -273,7 +253,6 @@ impl Commit {
         if self.outcome.is_empty() {
             return Err(InquireError::from(Error::other("bad benefits")));
         }
-        file_create(OUTCOME_FILENAME, &self.outcome).expect("failed");
         Ok(self)
     }
 }

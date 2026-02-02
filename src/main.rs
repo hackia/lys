@@ -1,19 +1,20 @@
+use crate::chat::list_messages;
+use crate::chat::send_message;
+use crate::commit::author;
+use crate::db::{SILEX_INIT, connect_silex, get_current_branch};
+use crate::git::extract_repo_name;
+use crate::utils::ko;
+use crate::utils::ok;
 use breathes::hooks::run_hooks;
-use clap::{Arg, ArgAction, ArgMatches, Command};
+use clap::{Arg, ArgAction, Command};
 use inquire::Text;
 use std::fs::File;
 use std::io::Error;
 use std::path::MAIN_SEPARATOR_STR;
 use std::path::Path;
 
-use crate::chat::list_messages;
-use crate::chat::send_message;
-use crate::db::{SILEX_INIT, connect_silex, get_current_branch};
-use crate::git::extract_repo_name;
-use crate::utils::ko;
-use crate::utils::ok;
-
 pub mod chat;
+pub mod commit;
 pub mod crypto;
 pub mod db;
 pub mod git;
@@ -104,18 +105,7 @@ fn cli() -> Command {
                     ),
                 ),
         )
-        .subcommand(
-            Command::new("commit")
-                .about("Record changes to the repository")
-                .arg(
-                    Arg::new("message")
-                        .short('m')
-                        .long("message")
-                        .help("Description of the changes")
-                        .required(true)
-                        .action(ArgAction::Set),
-                ),
-        )
+        .subcommand(Command::new("commit").about("Record changes to the repository"))
         .subcommand(
             Command::new("restore")
                 .about("Discard changes in working directory")
@@ -213,7 +203,7 @@ fn cli() -> Command {
         )
 }
 
-fn perform_commit(args: &ArgMatches) -> Result<(), Error> {
+fn perform_commit() -> Result<(), Error> {
     let current_dir = std::env::current_dir()?;
     let current_dir_str = current_dir.to_str().unwrap();
 
@@ -224,12 +214,13 @@ fn perform_commit(args: &ArgMatches) -> Result<(), Error> {
         connect_silex(Path::new(current_dir_str)).map_err(|e| Error::other(e.to_string()))?;
 
     // On récupère le message depuis les arguments CLI
-    let message = args.get_one::<String>("message").unwrap();
+    let message = commit::Commit::new()
+        .commit()
+        .expect("commit fail")
+        .to_string();
 
-    // Pour l'instant on hardcode l'auteur, plus tard on le lira dans `config`
-    let author = "Saigo Ekitae";
-
-    vcs::commit(&connection, message, author).map_err(|e| Error::other(e.to_string()))?;
+    vcs::commit(&connection, message.as_str(), author().as_str())
+        .map_err(|e| Error::other(e.to_string()))?;
 
     Ok(())
 }
@@ -397,7 +388,7 @@ fn main() -> Result<(), Error> {
             }
             Ok(())
         }
-        Some(("commit", sub_matches)) => perform_commit(&sub_matches),
+        Some(("commit", _)) => perform_commit(),
         Some(("log", args)) => {
             let page = *args.get_one::<usize>("page").unwrap();
             let limit = *args.get_one::<usize>("limit").unwrap();

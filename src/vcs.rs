@@ -1,8 +1,10 @@
 use crate::db::get_current_branch;
+use crate::utils::commit_created;
 use crate::utils::ko;
 use crate::utils::ok;
 use crate::utils::ok_status;
 use crate::utils::ok_tag;
+
 use glob::GlobError;
 use glob::glob;
 use ignore::DirEntry;
@@ -21,6 +23,7 @@ use std::io::{Read, Result as IoResult};
 use std::path::{Path, PathBuf};
 use tabled::{Table, Tabled};
 use uuid::Uuid;
+
 #[derive(Tabled)]
 struct LogEntry {
     #[tabled(rename = "Hash")]
@@ -734,7 +737,7 @@ pub fn commit(conn: &Connection, message: &str, author: &str) -> Result<(), Erro
     let parent_state = get_parent_asset_map(conn, parent_id)?;
 
     let root_path = ".";
-    let walk = ignore::WalkBuilder::new(root_path)
+    let walk = ignore::WalkBuilder::new(".")
         .add_custom_ignore_filename("silexium")
         .threads(4)
         .standard_filters(true)
@@ -869,11 +872,7 @@ pub fn commit(conn: &Connection, message: &str, author: &str) -> Result<(), Erro
     drop(stmt_b);
 
     conn.execute("COMMIT;")?; // Validation finale
-
-    ok(&format!(
-        "Commit {} created successfully!",
-        &commit_hash[0..7]
-    ));
+    commit_created(commit_hash[0..7].to_string().as_str());
     Ok(())
 }
 // --- FONCTIONS HELPER (A mettre aussi dans vcs.rs) ---
