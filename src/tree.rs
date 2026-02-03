@@ -126,7 +126,7 @@ fn print_node(
             );
         } else {
             println!(
-                "{content_type:<8} {mode_with_type:<15} {c_date:<15} {m_date:<15} {size:>10} {prefix}{connector} {display_name}"
+                "{content_type:<8} {mode_with_type:<10} {c_date:<15} {m_date:<15} {size:>10} {prefix}{connector} {display_name}"
             );
         }
     }
@@ -172,10 +172,7 @@ fn print_node(
 }
 
 fn get_content_category(entry: &DirEntry, color: Option<bool>) -> String {
-    if entry.file_type().map(|t| t.is_dir()).unwrap_or(false)
-        && color.is_some()
-        && color.expect("a")
-    {
+    if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
         if color.is_some() && color.expect("a") {
             return format!("{} {} {}", "[".white(), "DIR".green(), "]".white());
         }
@@ -211,6 +208,8 @@ fn get_content_category(entry: &DirEntry, color: Option<bool>) -> String {
                     "LIC"
                 } else if file_name.to_lowercase().contains("lock") {
                     "LCK"
+                } else if file_name.to_lowercase().eq("syl") {
+                    "IGN"
                 } else {
                     "TXT"
                 }
