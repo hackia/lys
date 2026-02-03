@@ -82,7 +82,7 @@ pub struct Commit {
 
 impl Display for Commit {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "\n{}", commit_justify(self.summary.as_str(), 82))?;
+        writeln!(f, "{}", commit_justify(self.summary.as_str(), 82))?;
         writeln!(f, "\n{}", commit_justify(self.why.as_str(), 82))?;
         writeln!(f, "\n{}", commit_justify(self.how.as_str(), 82))?;
         writeln!(f, "\n{}", commit_justify(self.outcome.as_str(), 82))?;
