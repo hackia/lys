@@ -95,7 +95,7 @@ pub fn verify_signature(
 
 pub fn audit(conn: &Connection) -> Result<bool, sqlite::Error> {
     println!();
-    ok("Auditing commits...\n");
+    ok("Auditing commits");
 
     // On récupère Hash et Signature
     let query = "SELECT hash, signature FROM commits ORDER BY id ASC";
@@ -118,12 +118,8 @@ pub fn audit(conn: &Connection) -> Result<bool, sqlite::Error> {
                     ok_audit_commit(&hash[0..7]);
                     valid += 1;
                 }
-                Ok(false) => {
+                Ok(false) | Err(_) => {
                     ko_audit_commit(&hash[0..7]);
-                    errors += 1;
-                }
-                Err(e) => {
-                    ko(format!("[ {} ] audit impossible ( {e} )", &hash[0..7]).as_str());
                     errors += 1;
                 }
             }

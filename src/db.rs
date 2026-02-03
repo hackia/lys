@@ -201,10 +201,10 @@ pub fn connect_lys(root_path: &Path) -> Result<Connection, sqlite::Error> {
     let s = Season::current();
     // 1. Calculer l'année en cours pour l'historique
     let current_year = chrono::Local::now().year();
-    let history_path = db_dir.join(format!("{current_year}/{s}/{s}"));
+    let history_path = db_dir.join(format!("{current_year}/{s}"));
 
-    create_dir_all(&history_path).expect("failed to create the .silex/db directory");
-    let conn = Connection::open(format!("{}.db", history_path.to_string_lossy()).as_str())?;
+    create_dir_all(&history_path).expect("failed to create the .lys/db directory");
+    let conn = Connection::open(format!("{}/{s}.db", history_path.to_string_lossy()).as_str())?;
 
     // 3. Attacher le STOCKAGE (Blobs) sous l'alias 'store'
     // L'astuce est là : on exécute du SQL pour lier le 2ème fichier

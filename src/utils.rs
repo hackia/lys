@@ -11,7 +11,7 @@ use crate::vcs::FileStatus;
 pub fn ok(description: &str) {
     let (x, _) = size().expect("failed to get term size");
 
-    let padding = x - "[ ok ]".len() as u16 - description.len() as u16 - 7;
+    let padding = x - " ok ".len() as u16 - description.len() as u16 - 7;
 
     let _ = execute!(
         stdout(),
@@ -27,7 +27,7 @@ pub fn ok(description: &str) {
 pub fn ko(description: &str) {
     let (x, _) = size().expect("failed to get term size");
 
-    let padding = x - "[ ko ]".len() as u16 - description.len() as u16 - 7;
+    let padding = x - " ko ".len() as u16 - description.len() as u16 - 7;
 
     let _ = execute!(
         stdout(),
