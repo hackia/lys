@@ -52,9 +52,9 @@ pub struct ManifestEntry {
 }
 
 pub fn sync(destination_path: &str) -> Result<(), IoError> {
-    let files: Vec<Result<PathBuf, GlobError>> = glob("./.silex/db/*.db").expect("a").collect();
+    let files: Vec<Result<PathBuf, GlobError>> = glob("./.lys/db/*.db").expect("a").collect();
     let x = Path::new(destination_path);
-    create_dir_all(format!("{destination_path}/.silex/db"))?;
+    create_dir_all(format!("{destination_path}/.lys/db"))?;
     if x.exists() {
         for file in files.iter().flatten() {
             let z = file.file_name().expect("failed to get filename");
@@ -64,7 +64,7 @@ pub fn sync(destination_path: &str) -> Result<(), IoError> {
                     .expect("failed to get file path")
                     .to_string()
                     .as_str(),
-                x.join(format!(".silex/db/{}", z.display()).as_str()),
+                x.join(format!(".lys/db/{}", z.display()).as_str()),
             )?;
             ok(z.to_str()
                 .expect("failed to get filename")
@@ -173,7 +173,7 @@ pub fn commit_manual(
 
 pub fn tag_create(conn: &Connection, name: &str, message: Option<&str>) -> Result<(), IoError> {
     // 1. On récupère le commit actuel (HEAD)
-    let current_branch = get_current_branch(conn).expect("faield to get current branch");
+    let current_branch = get_current_branch(conn).expect("failed to get current branch");
 
     let (head_id, head_hash) =
         get_branch_head_info(conn, &current_branch).map_err(|e| IoError::other(e.to_string()))?;
@@ -709,7 +709,7 @@ pub fn files() -> Vec<String> {
     let walk = ignore::WalkBuilder::new(".")
         .standard_filters(true)
         .threads(4)
-        .add_custom_ignore_filename("silexium")
+        .add_custom_ignore_filename("syl")
         .hidden(true)
         .build();
     let files = walk.collect::<Vec<Result<DirEntry, ignore::Error>>>();
@@ -738,7 +738,7 @@ pub fn commit(conn: &Connection, message: &str, author: &str) -> Result<(), Erro
 
     let root_path = ".";
     let walk = ignore::WalkBuilder::new(".")
-        .add_custom_ignore_filename("silexium")
+        .add_custom_ignore_filename("syl")
         .threads(4)
         .standard_filters(true)
         .build();
@@ -756,7 +756,7 @@ pub fn commit(conn: &Connection, message: &str, author: &str) -> Result<(), Erro
         };
         let path = entry.path();
 
-        if path.components().any(|c| c.as_os_str() == ".silex") || path.is_dir() {
+        if path.components().any(|c| c.as_os_str() == ".lys") || path.is_dir() {
             continue;
         }
 
@@ -995,7 +995,7 @@ pub fn status(conn: &Connection, root_path: &str, branch: &str) -> Result<Vec<Fi
     let mut changes = Vec::new();
     let mut files_on_disk: HashSet<PathBuf> = HashSet::new();
     let walk = ignore::WalkBuilder::new(root_path)
-        .add_custom_ignore_filename("silexium")
+        .add_custom_ignore_filename("syl")
         .threads(4)
         .standard_filters(true)
         .build()
@@ -1003,7 +1003,7 @@ pub fn status(conn: &Connection, root_path: &str, branch: &str) -> Result<Vec<Fi
         .collect::<Vec<DirEntry>>();
 
     for path in &walk {
-        if path.path().components().any(|c| c.as_os_str() == ".silex") || path.path().is_dir() {
+        if path.path().components().any(|c| c.as_os_str() == ".lys") || path.path().is_dir() {
             continue;
         }
 

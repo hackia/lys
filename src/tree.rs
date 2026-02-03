@@ -42,7 +42,7 @@ pub fn scan_and_print_tree(root_path: &Path, max_level: Option<u32>, color: Opti
     println!();
     let walker = WalkBuilder::new(root_path)
         .hidden(false)
-        .add_custom_ignore_filename("silexium")
+        .add_custom_ignore_filename("syl")
         .standard_filters(true)
         .threads(4)
         .build();
@@ -106,7 +106,7 @@ fn print_node(
             } else {
                 file_name.to_string()
             }
-        } else if file_name == "silexium" || file_name == ".silex" {
+        } else if file_name == "syl" || file_name == ".silex" {
             if color.is_some() && color.expect("a") {
                 file_name.yellow().to_string()
             } else {

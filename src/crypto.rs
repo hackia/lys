@@ -7,15 +7,16 @@ use std::fs;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::Path;
+
 pub fn generate_keypair(root_path: &Path) -> Result<(), String> {
-    let identity_dir = root_path.join(".silex/identity");
+    let identity_dir = root_path.join(".lys/identity");
     fs::create_dir_all(&identity_dir).expect("failed to create identity");
 
     let secret_path = identity_dir.join("secret.key");
     let public_path = identity_dir.join("public.key");
 
     if secret_path.exists() {
-        return Err("Une identité existe déjà pour ce dépôt.".to_string());
+        return Err("An identity already exists for this repository.".to_string());
     }
 
     // Génération cryptographique
@@ -38,7 +39,7 @@ pub fn generate_keypair(root_path: &Path) -> Result<(), String> {
 
 // Signe un message (le hash du commit)
 pub fn sign_message(root_path: &Path, message: &str) -> Result<String, String> {
-    let secret_path = root_path.join(".silex/identity/secret.key");
+    let secret_path = root_path.join(".lys/identity/secret.key");
 
     if !secret_path.exists() {
         return Err("launch 'sx keygen' first".to_string());
@@ -63,11 +64,11 @@ pub fn verify_signature(
     message: &str,
     signature_hex: &str,
 ) -> Result<bool, String> {
-    let public_path = root_path.join(".silex/identity/public.key");
+    let public_path = root_path.join(".lys/identity/public.key");
 
     // Si on n'a pas la clé publique, on ne peut pas vérifier (logique)
     if !public_path.exists() {
-        return Err("Clé publique introuvable (.silex/identity/public.key)".to_string());
+        return Err("Key public key not found in (.lys/identity/public.key)".to_string());
     }
 
     // 1. Charger la clé publique
@@ -79,10 +80,10 @@ pub fn verify_signature(
 
     // 2. Décoder la signature (Hex -> Bytes)
     let signature_bytes =
-        hex::decode(signature_hex).map_err(|_| "Format hexadécimal invalide".to_string())?;
+        hex::decode(signature_hex).map_err(|_| "Format hex invalide".to_string())?;
 
-    let signature = Signature::from_slice(&signature_bytes)
-        .map_err(|_| "Format de signature invalide".to_string())?;
+    let signature =
+        Signature::from_slice(&signature_bytes).map_err(|_| "Format invalide".to_string())?;
 
     // 3. Vérification mathématique
     // Est-ce que cette signature prouve que CE hash a été signé par CETTE clé ?

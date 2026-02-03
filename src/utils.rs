@@ -8,17 +8,35 @@ use crossterm::{
 
 use crate::vcs::FileStatus;
 
-pub fn ok(message: &str) {
-    println!(
-        "{}",
-        format!("\x1b[1;32m *\x1b[1;37m {message}\x1b[0m").as_str()
+pub fn ok(description: &str) {
+    let (x, _) = size().expect("failed to get term size");
+
+    let padding = x - "[ ok ]".len() as u16 - description.len() as u16 - 7;
+
+    let _ = execute!(
+        stdout(),
+        Print(" * ".green().bold()),
+        Print(description),
+        Print(" ".repeat(padding as usize)),
+        Print(" [ ".white().bold()),
+        Print("ok".green().bold()),
+        Print(" ]\n".white().bold()),
     );
 }
 
-pub fn ko(message: &str) {
-    println!(
-        "{}",
-        format!("\x1b[1;31m !\x1b[1;37m {message}\x1b[0m").as_str()
+pub fn ko(description: &str) {
+    let (x, _) = size().expect("failed to get term size");
+
+    let padding = x - "[ ko ]".len() as u16 - description.len() as u16 - 7;
+
+    let _ = execute!(
+        stdout(),
+        Print(" ! ".red().bold()),
+        Print(description),
+        Print(" ".repeat(padding as usize)),
+        Print(" [ ".white().bold()),
+        Print("ko".red().bold()),
+        Print(" ]\n".white().bold()),
     );
 }
 pub fn ok_status(verb: &FileStatus) {

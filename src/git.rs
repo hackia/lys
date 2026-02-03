@@ -7,7 +7,7 @@ use std::path::Path;
 
 pub fn extract_repo_name(url: &str) -> String {
     // 1. On coupe par les "/" et on prend le dernier morceau
-    let last_part = url.rsplit('/').next().unwrap_or("silex_repo");
+    let last_part = url.rsplit('/').next().unwrap_or("lys_repo");
 
     // 2. On retire le ".git" si présent à la fin
     last_part
@@ -46,8 +46,8 @@ pub fn import_from_git(
     revwalk.set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::REVERSE)?;
     revwalk.push_head()?;
 
-    let conn = db::connect_silex(target_dir).expect("failed to connect to the database");
-    conn.execute(db::SILEX_INIT)?;
+    let conn = db::connect_lys(target_dir).expect("failed to connect to the database");
+    conn.execute(db::LYS_INIT)?;
     let mut path_to_asset: HashMap<String, i64> = HashMap::new();
     ok("importing history...");
 

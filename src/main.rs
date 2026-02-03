@@ -1,7 +1,8 @@
 use crate::chat::list_messages;
 use crate::chat::send_message;
 use crate::commit::author;
-use crate::db::{SILEX_INIT, connect_silex, get_current_branch};
+use crate::db::LYS_INIT;
+use crate::db::{connect_lys, get_current_branch};
 use crate::git::extract_repo_name;
 use crate::utils::ko;
 use crate::utils::ok;
@@ -25,8 +26,8 @@ pub mod vcs;
 pub mod web;
 
 fn cli() -> Command {
-    Command::new("silex")
-        .about("An new vcs")
+    Command::new(env!("CARGO_PKG_NAME"))
+        .about(env!("CARGO_PKG_DESCRIPTION"))
         .author("Saigo Ekitae <saigoekitae@gmail.com>")
         .version(env!("CARGO_PKG_VERSION"))
         .subcommand(Command::new("init").about("Initialize current directory"))
@@ -68,7 +69,7 @@ fn cli() -> Command {
         .subcommand(Command::new("diff").about("Show changes between working tree and last commit"))
         .subcommand(
             Command::new("clone")
-                .about("Clone a Git repository into a new Silex directory")
+                .about("Clone a Git repository into a new lys repository")
                 .arg(
                     Arg::new("url")
                         .required(true)
@@ -126,7 +127,7 @@ fn cli() -> Command {
         )
         .subcommand(
             Command::new("chat")
-                .about("chat")
+                .about("Chat with the team")
                 .subcommand(
                     Command::new("send").arg(
                         Arg::new("message")
@@ -215,11 +216,11 @@ fn perform_commit() -> Result<(), Error> {
     let current_dir = std::env::current_dir()?;
     let current_dir_str = current_dir.to_str().unwrap();
 
-    if !Path::new(".silex").exists() {
-        return Err(Error::other("Not a silex repository."));
+    if !Path::new(".lys").exists() {
+        return Err(Error::other("Not a lys repository."));
     }
     let connection =
-        connect_silex(Path::new(current_dir_str)).map_err(|e| Error::other(e.to_string()))?;
+        connect_lys(Path::new(current_dir_str)).map_err(|e| Error::other(e.to_string()))?;
 
     // On récupère le message depuis les arguments CLI
     let message = commit::Commit::new()
@@ -235,13 +236,12 @@ fn perform_commit() -> Result<(), Error> {
 pub fn check_status() -> Result<(), Error> {
     let current_dir = std::env::current_dir()?;
     let current_dir_str = current_dir.to_str().unwrap();
-    if !Path::new(&format!("{MAIN_SEPARATOR_STR}.silex")).exists() && !Path::new(".silex").exists()
-    {
-        return Err(Error::other("Not a silex repository."));
+    if !Path::new(&format!("{MAIN_SEPARATOR_STR}.lys")).exists() && !Path::new(".lys").exists() {
+        return Err(Error::other("Not a lys repository."));
     }
 
     let connection =
-        connect_silex(Path::new(current_dir_str)).map_err(|e| Error::other(e.to_string()))?;
+        connect_lys(Path::new(current_dir_str)).map_err(|e| Error::other(e.to_string()))?;
     vcs::status(
         &connection,
         current_dir_str,
@@ -265,18 +265,17 @@ fn new_project() -> Result<(), Error> {
             project.clear();
         }
     }
-    if connect_silex(Path::new(project.as_str()))
+    if connect_lys(Path::new(project.as_str()))
         .expect("failed to get the connexion")
-        .execute(SILEX_INIT)
+        .execute(LYS_INIT)
         .is_ok()
     {
-        File::create_new(format!("{project}{MAIN_SEPARATOR_STR}silexium").as_str())
+        File::create_new(format!("{project}{MAIN_SEPARATOR_STR}syl").as_str())
             .expect("failed to create file");
-        ok("silexium file created successfully");
+        ok("syl file created successfully");
         crypto::generate_keypair(Path::new(project.as_str())).expect("failed to generate keys");
         ok("project keys has been generated successsfully");
         ok("project created successsfully");
-
         Ok(())
     } else {
         Err(Error::other("failed to create the sqlite database"))
@@ -292,9 +291,9 @@ fn main() -> Result<(), Error> {
             let current_dir = std::env::current_dir()?;
             let path_str = current_dir.to_str().unwrap();
             // Logique d'initialisation directe ici (copiée de new_project sans le prompt)
-            if connect_silex(Path::new(path_str))
+            if connect_lys(Path::new(path_str))
                 .expect("fail")
-                .execute(SILEX_INIT)
+                .execute(LYS_INIT)
                 .is_ok()
             {
                 ok("Initialized empty Silex repository");
@@ -351,7 +350,7 @@ fn main() -> Result<(), Error> {
         Some(("status", _)) => check_status(),
         Some(("chat", sub)) => {
             let sender = std::env::var("USER").expect("USER must be defined");
-            let conn = connect_silex(Path::new(".")).expect("failed to connect to the database");
+            let conn = connect_lys(Path::new(".")).expect("failed to connect to the database");
             match sub.subcommand() {
                 Some(("send", arg)) => {
                     let message = arg
@@ -382,7 +381,7 @@ fn main() -> Result<(), Error> {
             }
         }
         Some(("audit", _)) => {
-            let conn = connect_silex(Path::new(".")).expect("failed to connect to the databaase");
+            let conn = connect_lys(Path::new(".")).expect("failed to connect to the databaase");
             if crypto::audit(&conn).expect("failed to connect to the database") {
                 Ok(())
             } else {
@@ -401,7 +400,7 @@ fn main() -> Result<(), Error> {
         Some(("log", args)) => {
             let page = *args.get_one::<usize>("page").unwrap();
             let limit = *args.get_one::<usize>("limit").unwrap();
-            let conn = connect_silex(Path::new(".")).expect("failed to connect to the database");
+            let conn = connect_lys(Path::new(".")).expect("failed to connect to the database");
             // On appelle la nouvelle signature
             vcs::log(&conn, page, limit).expect("failed to parse log");
             Ok(())
@@ -409,13 +408,13 @@ fn main() -> Result<(), Error> {
         Some(("diff", _)) => {
             let current_dir = std::env::current_dir()?;
             let conn =
-                connect_silex(current_dir.as_path()).map_err(|e| Error::other(e.to_string()))?;
+                connect_lys(current_dir.as_path()).map_err(|e| Error::other(e.to_string()))?;
             vcs::diff(&conn).map_err(|e| Error::other(e.to_string()))
         }
         Some(("restore", sub_matches)) => {
             let current_dir = std::env::current_dir()?;
             let conn =
-                connect_silex(current_dir.as_path()).map_err(|e| Error::other(e.to_string()))?;
+                connect_lys(current_dir.as_path()).map_err(|e| Error::other(e.to_string()))?;
 
             let path = sub_matches.get_one::<String>("path").unwrap();
             vcs::restore(&conn, path).map_err(|e| Error::other(e.to_string()))
@@ -423,21 +422,21 @@ fn main() -> Result<(), Error> {
         Some(("branch", sub_matches)) => {
             let current_dir = std::env::current_dir()?;
             let conn =
-                connect_silex(current_dir.as_path()).map_err(|e| Error::other(e.to_string()))?;
+                connect_lys(current_dir.as_path()).map_err(|e| Error::other(e.to_string()))?;
             let name = sub_matches.get_one::<String>("name").unwrap();
             vcs::create_branch(&conn, name).map_err(|e| Error::other(e.to_string()))
         }
         Some(("checkout", sub_matches)) => {
             let current_dir = std::env::current_dir()?;
             let conn =
-                connect_silex(current_dir.as_path()).map_err(|e| Error::other(e.to_string()))?;
+                connect_lys(current_dir.as_path()).map_err(|e| Error::other(e.to_string()))?;
             let name = sub_matches.get_one::<String>("name").unwrap();
             vcs::checkout(&conn, name).map_err(|e| Error::other(e.to_string()))
         }
         Some(("feat", sub_matches)) => {
             let current_dir = std::env::current_dir()?;
             let conn =
-                connect_silex(current_dir.as_path()).map_err(|e| Error::other(e.to_string()))?;
+                connect_lys(current_dir.as_path()).map_err(|e| Error::other(e.to_string()))?;
 
             // On regarde la SOUS-commande (start ou finish)
             match sub_matches.subcommand() {
@@ -458,7 +457,7 @@ fn main() -> Result<(), Error> {
         Some(("hotfix", sub_matches)) => {
             let current_dir = std::env::current_dir()?;
             let conn =
-                connect_silex(current_dir.as_path()).map_err(|e| Error::other(e.to_string()))?;
+                connect_lys(current_dir.as_path()).map_err(|e| Error::other(e.to_string()))?;
 
             match sub_matches.subcommand() {
                 Some(("start", args)) => {
@@ -478,7 +477,7 @@ fn main() -> Result<(), Error> {
         Some(("tag", sub_matches)) => {
             let current_dir = std::env::current_dir()?;
             let conn =
-                connect_silex(current_dir.as_path()).map_err(|e| Error::other(e.to_string()))?;
+                connect_lys(current_dir.as_path()).map_err(|e| Error::other(e.to_string()))?;
 
             match sub_matches.subcommand() {
                 Some(("create", args)) => {
@@ -496,7 +495,7 @@ fn main() -> Result<(), Error> {
         Some(("sync", args)) => {
             let current_dir = std::env::current_dir()?;
             let _conn =
-                connect_silex(current_dir.as_path()).map_err(|e| Error::other(e.to_string()))?;
+                connect_lys(current_dir.as_path()).map_err(|e| Error::other(e.to_string()))?;
             let path = args.get_one::<String>("path").unwrap();
             vcs::sync(path)
         }
@@ -519,7 +518,7 @@ fn main() -> Result<(), Error> {
         Some(("todo", sub)) => {
             let current_dir = std::env::current_dir()?;
             let conn =
-                connect_silex(current_dir.as_path()).expect("failed to connect to the database");
+                connect_lys(current_dir.as_path()).expect("failed to connect to the database");
             match sub.subcommand() {
                 Some(("add", args)) => {
                     let title = args.get_one::<String>("title").unwrap();

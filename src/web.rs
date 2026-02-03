@@ -19,7 +19,7 @@ pub async fn start_server(repo_path: &str, port: u16) {
     let path = PathBuf::from(repo_path);
 
     // On ouvre une connexion dédiée au serveur web
-    let conn = crate::db::connect_silex(&path).expect("Failed to connect to DB");
+    let conn = crate::db::connect_lys(&path).expect("Failed to connect to DB");
 
     let shared_state = Arc::new(AppState {
         conn: Mutex::new(conn),

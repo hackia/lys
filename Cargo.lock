@@ -1190,6 +1190,36 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 
 [[package]]
+name = "lys"
+version = "0.2.0"
+dependencies = [
+ "axum",
+ "blake3",
+ "breathes",
+ "chrono",
+ "clap",
+ "content_inspector",
+ "crossterm",
+ "ed25519-dalek",
+ "flate2",
+ "git2",
+ "glob",
+ "hex",
+ "ignore",
+ "inquire",
+ "nix",
+ "rand",
+ "serde",
+ "serde_json",
+ "similar",
+ "sqlite",
+ "tabled",
+ "textwrap",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "maplit"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1703,36 +1733,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77549399552de45a898a580c1b41d445bf730df867cc44e6c0233bbc4b8329de"
 dependencies = [
  "rand_core",
-]
-
-[[package]]
-name = "silex"
-version = "0.1.0"
-dependencies = [
- "axum",
- "blake3",
- "breathes",
- "chrono",
- "clap",
- "content_inspector",
- "crossterm",
- "ed25519-dalek",
- "flate2",
- "git2",
- "glob",
- "hex",
- "ignore",
- "inquire",
- "nix",
- "rand",
- "serde",
- "serde_json",
- "similar",
- "sqlite",
- "tabled",
- "textwrap",
- "tokio",
- "uuid",
 ]
 
 [[package]]

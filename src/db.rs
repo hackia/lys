@@ -1,14 +1,14 @@
-use chrono::Datelike;
+use chrono::{Datelike, Local};
 use flate2::Compression;
 use flate2::read::ZlibDecoder;
 use flate2::write::ZlibEncoder;
 use sqlite::{Connection, Error, State};
+use std::fmt::Display;
 use std::fs::create_dir_all;
 use std::io::prelude::*;
 use std::path::Path;
 use uuid::Uuid;
-
-pub const SILEX_INIT: &str = "
+pub const LYS_INIT: &str = "
     -- ====================================================================
     -- PARTIE STOCKAGE (store.db) - Données lourdes et immuables
     -- ====================================================================
@@ -166,19 +166,45 @@ pub fn get_current_branch(conn: &Connection) -> Result<String, Error> {
     }
 }
 
-pub fn connect_silex(root_path: &Path) -> Result<Connection, sqlite::Error> {
-    let db_dir = root_path.join(".silex/db");
+pub enum Season {
+    Winter,
+    Spring,
+    Summer,
+    Autumn,
+}
+
+impl Season {
+    pub fn current() -> Self {
+        match Local::now().month() {
+            1 | 2 | 3 => Self::Winter,
+            4 | 5 | 6 => Self::Spring,
+            7 | 8 | 9 => Self::Summer,
+            _ => Self::Autumn,
+        }
+    }
+}
+
+impl Display for Season {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Winter => write!(f, "winter"),
+            Self::Spring => write!(f, "spring"),
+            Self::Summer => write!(f, "summer"),
+            Self::Autumn => write!(f, "autumn"),
+        }
+    }
+}
+pub fn connect_lys(root_path: &Path) -> Result<Connection, sqlite::Error> {
+    let db_dir = root_path.join(".lys/db");
     let store_path = db_dir.join("store.db");
 
+    let s = Season::current();
     // 1. Calculer l'année en cours pour l'historique
     let current_year = chrono::Local::now().year();
-    let history_path = db_dir.join(format!("history_{}.db", current_year));
+    let history_path = db_dir.join(format!("{current_year}/{s}/{s}"));
 
-    // Créer les dossiers si nécessaire
-    create_dir_all(&db_dir).expect("failed to create the .silex/db directory");
-
-    // 2. Ouvrir la connexion principale sur l'HISTORIQUE (ex: 2026)
-    let conn = Connection::open(&history_path)?;
+    create_dir_all(&history_path).expect("failed to create the .silex/db directory");
+    let conn = Connection::open(format!("{}.db", history_path.to_string_lossy()).as_str())?;
 
     // 3. Attacher le STOCKAGE (Blobs) sous l'alias 'store'
     // L'astuce est là : on exécute du SQL pour lier le 2ème fichier
