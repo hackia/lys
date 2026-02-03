@@ -106,7 +106,7 @@ fn print_node(
             file_name.green().to_string()
         };
         println!(
-            "{content_type:<25} {mode_with_type:<60} {size:>25} {c_date:<35} {m_date:<35} {prefix}{connector} {display_name}"
+            "{content_type:<25} {mode_with_type:<50} {c_date:<25} {m_date:<25} {size:>25} {prefix}{connector} {display_name}"
         );
     }
 
@@ -229,7 +229,7 @@ fn extract_metadata(meta: Option<&Metadata>, entry: &DirEntry) -> (String, Strin
 
             (
                 mode_str.to_string().green().to_string(),
-                size.to_string().green().to_string(),
+                size.to_string().yellow().to_string(),
                 m_date
                     .format("%Y-%m-%d %H:%M")
                     .to_string()
