@@ -9,21 +9,9 @@ use std::fmt::{Display, Formatter};
 use std::io::Error;
 
 pub const WHY_PROMPT: &str = "Explain the reason for this change";
-pub const WHY_FILENAME: &str = "why.txt";
-
 pub const HOW_PROMPT: &str = "Details the changes";
-pub const HOW_FILENAME: &str = "how.txt";
-
-pub const WHERE_FILENAME: &str = "where.txt";
-
 pub const SUBJECT_PROMPT: &str = "Summary of changes";
-pub const SUBJECT_FILENAME: &str = "subject.txt";
-
 pub const OUTCOME_PROMPT: &str = "Outcome of changes";
-pub const OUTCOME_FILENAME: &str = "outcome.txt";
-
-pub const IMPACT_PROMPT: &str = "Consequences of changes";
-pub const IMPACT_FILENAME: &str = "impact.txt";
 
 fn commit_justify(text: &str, width: usize) -> String {
     let words: Vec<&str> = text.split_whitespace().collect();
