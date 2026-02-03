@@ -1,4 +1,4 @@
-use crate::utils::{ko, ko_audit_commit, ok, ok_audit_commit};
+use crate::utils::{ko_audit_commit, ok, ok_audit_commit};
 use ed25519_dalek::ed25519::signature::SignerMut;
 use ed25519_dalek::{Signature, SigningKey, Verifier, VerifyingKey};
 use rand::rngs::OsRng;
@@ -95,8 +95,6 @@ pub fn verify_signature(
 
 pub fn audit(conn: &Connection) -> Result<bool, sqlite::Error> {
     println!();
-    ok("Auditing commits");
-
     // On récupère Hash et Signature
     let query = "SELECT hash, signature FROM commits ORDER BY id ASC";
     let mut stmt = conn.prepare(query)?;
@@ -131,18 +129,14 @@ pub fn audit(conn: &Connection) -> Result<bool, sqlite::Error> {
     println!();
     let total = errors + unsigned + valid;
     if errors > 0 {
-        ko(format!("Audit has been detected {errors} commit's signature errors.").as_str());
-        println!();
-        ko(format!(
+        println!("{}",format!(
             "Validated ({valid}/{total}) Unsigned ({unsigned}) Errors ({errors}) Total ({total})"
         )
         .as_str());
         println!();
         return Ok(false);
     } else {
-        ok("Audit successfull");
-        println!();
-        ok(format!(
+        println!("{}",format!(
             "Validated ({valid}/{total}) Unsigned ({unsigned}) Errors ({errors}) Total ({total})"
         )
         .as_str());
