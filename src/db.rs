@@ -36,12 +36,11 @@ pub const LYS_INIT: &str = "
     CREATE TABLE IF NOT EXISTS commits (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         hash TEXT UNIQUE NOT NULL,       -- Hash (Merkle) : métadonnées + parent
-        parent_hash TEXT,                -- NULL si commit initial
+        parent_hash TEXT,
         author TEXT NOT NULL,
         message TEXT NOT NULL,
         timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-        signature TEXT,
-        FOREIGN KEY(parent_hash) REFERENCES commits(hash)
+        signature TEXT
     );
 
     CREATE TABLE IF NOT EXISTS manifest (
@@ -234,19 +233,18 @@ pub fn connect_lys(root_path: &Path) -> Result<Connection, sqlite::Error> {
     create_dir_all(&history_dir).expect("failed to create the .lys/db directory");
     let conn = Connection::open(db_full_path.to_str().unwrap())?;
 
-    // 1. Initialisation automatique (LYS_INIT) si la base est neuve
-    if conn.execute("SELECT 1 FROM commits LIMIT 1;").is_err() {
-        conn.execute(LYS_INIT)?;
-    }
-
-    // 2. Attacher le stockage (Blobs) sous l'alias 'store'
+    // --- CORRECTION : ATTACHER LE STORE EN PREMIER ---
     conn.execute(format!(
         "ATTACH DATABASE '{}' AS store;",
         store_path.display()
     ))?;
 
+    // --- CORRECTION : INITIALISER APRÈS L'ATTACHEMENT ---
+    if conn.execute("SELECT 1 FROM commits LIMIT 1;").is_err() {
+        conn.execute(LYS_INIT)?;
+    }
+
     // 3. RECONSOLIDATION DYNAMIQUE
-    // On cherche la base la plus récente (autre que l'actuelle et store.db)
     if let Some(prev_db) = find_latest_db(&db_dir, &db_full_path) {
         let attach_query = format!("ATTACH DATABASE '{}' AS old;", prev_db.display());
         conn.execute(attach_query)?;
@@ -255,8 +253,6 @@ pub fn connect_lys(root_path: &Path) -> Result<Connection, sqlite::Error> {
     // Performance
     conn.execute("PRAGMA foreign_keys = ON;")?;
     conn.execute("PRAGMA journal_mode = WAL;")?;
-    conn.execute("PRAGMA store.cache_size = -200000;")?;
-
     Ok(conn)
 }
 
