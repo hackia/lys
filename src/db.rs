@@ -7,6 +7,7 @@ use std::fmt::Display;
 use std::fs::create_dir_all;
 use std::io::prelude::*;
 use std::path::Path;
+use std::path::PathBuf;
 use uuid::Uuid;
 pub const LYS_INIT: &str = "
     -- ====================================================================
@@ -182,6 +183,32 @@ impl Season {
             _ => Self::Autumn,
         }
     }
+
+    pub fn before() -> Self {
+        match Local::now().month() {
+            1 | 2 | 3 => Self::Autumn,
+            4 | 5 | 6 => Self::Winter,
+            7 | 8 | 9 => Self::Spring,
+            _ => Self::Summer,
+        }
+    }
+    // Calcule la saison précédente et l'année correspondante
+    pub fn previous(&self, current_year: i32) -> (Self, i32) {
+        match self {
+            Self::Winter => (Self::Autumn, current_year - 1),
+            Self::Spring => (Self::Winter, current_year),
+            Self::Summer => (Self::Spring, current_year),
+            Self::Autumn => (Self::Summer, current_year),
+        }
+    }
+    pub fn after() -> Self {
+        match Local::now().month() {
+            1 | 2 | 3 => Self::Spring,
+            4 | 5 | 6 => Self::Summer,
+            7 | 8 | 9 => Self::Autumn,
+            _ => Self::Winter,
+        }
+    }
 }
 
 impl Display for Season {
@@ -194,31 +221,60 @@ impl Display for Season {
         }
     }
 }
+
 pub fn connect_lys(root_path: &Path) -> Result<Connection, sqlite::Error> {
     let db_dir = root_path.join(".lys/db");
     let store_path = db_dir.join("store.db");
 
     let s = Season::current();
-    // 1. Calculer l'année en cours pour l'historique
     let current_year = chrono::Local::now().year();
-    let history_path = db_dir.join(format!("{current_year}/{s}"));
+    let history_dir = db_dir.join(format!("{current_year}/{s}"));
+    let db_full_path = history_dir.join(format!("{s}.db"));
 
-    create_dir_all(&history_path).expect("failed to create the .lys/db directory");
-    let conn = Connection::open(format!("{}/{s}.db", history_path.to_string_lossy()).as_str())?;
+    create_dir_all(&history_dir).expect("failed to create the .lys/db directory");
+    let conn = Connection::open(db_full_path.to_str().unwrap())?;
 
-    // 3. Attacher le STOCKAGE (Blobs) sous l'alias 'store'
-    // L'astuce est là : on exécute du SQL pour lier le 2ème fichier
-    let attach_query = format!("ATTACH DATABASE '{}' AS store;", store_path.display());
-    conn.execute(attach_query)?;
+    // 1. Initialisation automatique (LYS_INIT) si la base est neuve
+    if conn.execute("SELECT 1 FROM commits LIMIT 1;").is_err() {
+        conn.execute(LYS_INIT)?;
+    }
 
-    // 4. Activer les performances (WAL + Foreign Keys)
+    // 2. Attacher le stockage (Blobs) sous l'alias 'store'
+    conn.execute(format!(
+        "ATTACH DATABASE '{}' AS store;",
+        store_path.display()
+    ))?;
+
+    // 3. RECONSOLIDATION DYNAMIQUE
+    // On cherche la base la plus récente (autre que l'actuelle et store.db)
+    if let Some(prev_db) = find_latest_db(&db_dir, &db_full_path) {
+        let attach_query = format!("ATTACH DATABASE '{}' AS old;", prev_db.display());
+        conn.execute(attach_query)?;
+    }
+
+    // Performance
     conn.execute("PRAGMA foreign_keys = ON;")?;
     conn.execute("PRAGMA journal_mode = WAL;")?;
-
-    // Configurer le cache pour le store (très important pour les blobs)
-    conn.execute("PRAGMA store.cache_size = -200000;")?; // ~200Mo cache
+    conn.execute("PRAGMA store.cache_size = -200000;")?;
 
     Ok(conn)
+}
+
+// Cherche récursivement la base .db la plus récente dans .lys/db
+fn find_latest_db(db_root: &Path, current_path: &Path) -> Option<PathBuf> {
+    let pattern = format!("{}/**/*.db", db_root.display());
+    let mut dbs: Vec<PathBuf> = glob::glob(&pattern)
+        .ok()?
+        .filter_map(|res| res.ok())
+        .filter(|path| path != current_path && !path.to_string_lossy().contains("store.db"))
+        .collect();
+    // On trie par date de modification (la plus récente d'abord)
+    dbs.sort_by(|a, b| {
+        let time_a = a.metadata().and_then(|m| m.modified()).ok();
+        let time_b = b.metadata().and_then(|m| m.modified()).ok();
+        time_b.cmp(&time_a)
+    });
+    dbs.into_iter().next()
 }
 
 // Crée une nouvelle identité de fichier (Asset)

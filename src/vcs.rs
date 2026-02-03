@@ -734,7 +734,7 @@ pub fn commit(conn: &Connection, message: &str, author: &str) -> Result<(), Erro
     let (parent_id, parent_hash) = get_branch_head_info(conn, &current_branch)?;
 
     // 1. Charger l'état parent complet (ID + Hash)
-    let parent_state = get_parent_asset_map(conn, parent_id)?;
+    let parent_state = get_parent_asset_map(conn, parent_id, &parent_hash)?;
 
     let root_path = ".";
     let walk = ignore::WalkBuilder::new(".")
@@ -875,44 +875,66 @@ pub fn commit(conn: &Connection, message: &str, author: &str) -> Result<(), Erro
     commit_created(commit_hash[0..7].to_string().as_str());
     Ok(())
 }
-// --- FONCTIONS HELPER (A mettre aussi dans vcs.rs) ---
+
+// On met à jour get_branch_head_info pour chercher dans 'old' si besoin
 fn get_branch_head_info(conn: &Connection, branch: &str) -> Result<(Option<i64>, String), Error> {
-    let query = "
-        SELECT c.id, c.hash 
-        FROM branches b 
-        JOIN commits c ON b.head_commit_id = c.id 
-        WHERE b.name = ?";
+    // 1. Base actuelle
+    let query = "SELECT c.id, c.hash FROM branches b JOIN commits c ON b.head_commit_id = c.id WHERE b.name = ?";
     let mut stmt = conn.prepare(query)?;
     stmt.bind((1, branch))?;
 
     if let Ok(State::Row) = stmt.next() {
-        Ok((Some(stmt.read("id")?), stmt.read("hash")?))
-    } else {
-        Ok((None, String::new())) // Pas de parent (Premier commit)
+        return Ok((Some(stmt.read("id")?), stmt.read("hash")?));
     }
+
+    // 2. Repli sur la base 'old' (la "Dernière Base Connue")
+    let query_old = "SELECT c.hash FROM old.branches b JOIN old.commits c ON b.head_commit_id = c.id WHERE b.name = ?";
+    if let Ok(mut stmt_old) = conn.prepare(query_old) {
+        stmt_old.bind((1, branch))?;
+        if let Ok(State::Row) = stmt_old.next() {
+            // On renvoie l'ID à None (car l'ID de 'old' n'existe pas ici) mais le HASH pour le chaînage
+            return Ok((None, stmt_old.read("hash")?));
+        }
+    }
+
+    Ok((None, String::new()))
 }
 
-// Remplace get_parent_asset_map par ceci :
+// On met à jour get_parent_asset_map pour charger le manifest depuis 'old'
 fn get_parent_asset_map(
     conn: &Connection,
     parent_id: Option<i64>,
+    parent_hash: &str,
 ) -> Result<HashMap<String, (i64, String)>, Error> {
     let mut map = HashMap::new();
+
     if let Some(pid) = parent_id {
-        // On récupère l'ID mais AUSSI le HASH pour comparer
-        let query = "
-            SELECT m.file_path, m.asset_id, b.hash 
-            FROM manifest m 
-            JOIN store.blobs b ON m.blob_id = b.id 
-            WHERE m.commit_id = ?
-        ";
+        // Parent dans la base actuelle
+        let query = "SELECT m.file_path, m.asset_id, b.hash FROM manifest m JOIN store.blobs b ON m.blob_id = b.id WHERE m.commit_id = ?";
         let mut stmt = conn.prepare(query)?;
         stmt.bind((1, pid))?;
         while let Ok(State::Row) = stmt.next() {
-            let path: String = stmt.read("file_path")?;
-            let asset_id: i64 = stmt.read("asset_id")?;
-            let hash: String = stmt.read("hash")?;
-            map.insert(path, (asset_id, hash));
+            map.insert(
+                stmt.read("file_path")?,
+                (stmt.read("asset_id")?, stmt.read("hash")?),
+            );
+        }
+    } else if !parent_hash.is_empty() {
+        // Parent dans la base 'old' (Reconsolidation)
+        let query_old = "
+            SELECT m.file_path, m.asset_id, b.hash 
+            FROM old.manifest m 
+            JOIN store.blobs b ON m.blob_id = b.id 
+            JOIN old.commits c ON m.commit_id = c.id
+            WHERE c.hash = ?";
+        if let Ok(mut stmt_old) = conn.prepare(query_old) {
+            stmt_old.bind((1, parent_hash))?;
+            while let Ok(State::Row) = stmt_old.next() {
+                map.insert(
+                    stmt_old.read("file_path")?,
+                    (stmt_old.read("asset_id")?, stmt_old.read("hash")?),
+                );
+            }
         }
     }
     Ok(map)
