@@ -38,7 +38,7 @@ impl TreeNode {
     }
 }
 
-pub fn scan_and_print_tree(root_path: &Path, max_level: Option<u32>) {
+pub fn scan_and_print_tree(root_path: &Path, max_level: Option<u32>, color: Option<bool>) {
     println!();
     let walker = WalkBuilder::new(root_path)
         .hidden(false)
@@ -70,7 +70,7 @@ pub fn scan_and_print_tree(root_path: &Path, max_level: Option<u32>) {
             Err(err) => eprintln!("Erreur scan: {err}"),
         }
     }
-    print_node(&root, "", true, 0, max_level);
+    print_node(&root, "", true, 0, max_level, color);
 
     println!("\nSummary: {dir_count} directories, {file_count} files\n");
 }
@@ -81,6 +81,7 @@ fn print_node(
     is_last: bool,
     current_level: u32,
     max_level: Option<u32>,
+    color: Option<bool>,
 ) {
     if let Some(limit) = max_level {
         if current_level > limit {
@@ -90,24 +91,44 @@ fn print_node(
 
     if let Some(entry) = &node.entry {
         let metadata = entry.metadata().ok();
-        let (mode_with_type, size, m_date, c_date) = extract_metadata(metadata.as_ref(), entry);
+        let (mode_with_type, size, m_date, c_date) =
+            extract_metadata(metadata.as_ref(), color, entry);
 
         // Détermination du type de contenu
-        let content_type = get_content_category(entry);
+        let content_type = get_content_category(entry, color);
 
         let connector = if is_last { "└──" } else { "├──" };
         let file_name = entry.file_name().to_string_lossy();
 
         let display_name = if entry.path().is_dir() {
-            file_name.blue().to_string()
+            if color.is_some() && color.expect("a") {
+                file_name.blue().to_string()
+            } else {
+                file_name.to_string()
+            }
         } else if file_name == "silexium" || file_name == ".silex" {
-            file_name.yellow().to_string()
+            if color.is_some() && color.expect("a") {
+                file_name.yellow().to_string()
+            } else {
+                file_name.to_string()
+            }
         } else {
-            file_name.green().to_string()
+            if color.is_some() && color.expect("a") {
+                file_name.green().to_string()
+            } else {
+                file_name.to_string()
+            }
         };
-        println!(
-            "{content_type:<25} {mode_with_type:<50} {c_date:<25} {m_date:<25} {size:>25} {prefix}{connector} {display_name}"
-        );
+
+        if color.is_some() && color.expect("") {
+            println!(
+                "{content_type:<25} {mode_with_type:<50} {c_date:<25} {m_date:<25} {size:>25} {prefix}{connector} {display_name}"
+            );
+        } else {
+            println!(
+                "{content_type:<8} {mode_with_type:<15} {c_date:<15} {m_date:<15} {size:>10} {prefix}{connector} {display_name}"
+            );
+        }
     }
 
     let mut children: Vec<_> = node.children.values().collect();
@@ -145,15 +166,21 @@ fn print_node(
             is_last_child,
             current_level + 1,
             max_level,
+            color,
         );
     }
 }
 
-fn get_content_category(entry: &DirEntry) -> String {
-    if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-        return format!("{} {} {}", "[".white(), "DIR".green(), "]".white());
+fn get_content_category(entry: &DirEntry, color: Option<bool>) -> String {
+    if entry.file_type().map(|t| t.is_dir()).unwrap_or(false)
+        && color.is_some()
+        && color.expect("a")
+    {
+        if color.is_some() && color.expect("a") {
+            return format!("{} {} {}", "[".white(), "DIR".green(), "]".white());
+        }
+        return format!("{} {} {}", "[", "DIR", "]");
     }
-
     let path = entry.path();
     let file_name = entry.file_name().to_string_lossy();
 
@@ -190,11 +217,18 @@ fn get_content_category(entry: &DirEntry) -> String {
             }
         }
     };
-
-    format!("{} {} {}", "[".white(), tag.green(), "]".white())
+    if color.is_some() && color.expect("") {
+        format!("{} {} {}", "[".white(), tag.green(), "]".white())
+    } else {
+        format!("{} {} {}", "[", tag, "]")
+    }
 }
 
-fn extract_metadata(meta: Option<&Metadata>, entry: &DirEntry) -> (String, String, String, String) {
+fn extract_metadata(
+    meta: Option<&Metadata>,
+    color: Option<bool>,
+    entry: &DirEntry,
+) -> (String, String, String, String) {
     let type_char = if let Some(ft) = entry.file_type() {
         if ft.is_dir() {
             "d"
@@ -209,38 +243,65 @@ fn extract_metadata(meta: Option<&Metadata>, entry: &DirEntry) -> (String, Strin
 
     match meta {
         Some(m) => {
-            let mode_str = format!(
-                "{} {}",
-                type_char.cyan(),
-                format_permissions(m.permissions().mode(), type_char)
-            );
-            let size = if m.is_dir() {
-                "-".to_string()
+            if color.is_some() && color.expect("faield to get color option") {
+                let mode_str = format!(
+                    "{} {}",
+                    type_char.cyan(),
+                    format_permissions(m.permissions().mode(), type_char, color)
+                );
+                let size = if m.is_dir() {
+                    "-".to_string()
+                } else {
+                    human_bytes(m.len())
+                };
+
+                let m_date: DateTime<Local> =
+                    m.modified().unwrap_or(std::time::SystemTime::now()).into();
+                let c_date: DateTime<Local> = m
+                    .created()
+                    .unwrap_or(m.modified().unwrap_or(std::time::SystemTime::now()))
+                    .into();
+
+                (
+                    mode_str.to_string().green().to_string(),
+                    size.to_string().yellow().to_string(),
+                    m_date
+                        .format("%Y-%m-%d %H:%M")
+                        .to_string()
+                        .cyan()
+                        .to_string(),
+                    c_date
+                        .format("%Y-%m-%d %H:%M")
+                        .to_string()
+                        .blue()
+                        .to_string(),
+                )
             } else {
-                human_bytes(m.len())
-            };
+                let mode_str = format!(
+                    "{} {}",
+                    type_char,
+                    format_permissions(m.permissions().mode(), type_char, color)
+                );
+                let size = if m.is_dir() {
+                    "-".to_string()
+                } else {
+                    human_bytes(m.len())
+                };
 
-            let m_date: DateTime<Local> =
-                m.modified().unwrap_or(std::time::SystemTime::now()).into();
-            let c_date: DateTime<Local> = m
-                .created()
-                .unwrap_or(m.modified().unwrap_or(std::time::SystemTime::now()))
-                .into();
+                let m_date: DateTime<Local> =
+                    m.modified().unwrap_or(std::time::SystemTime::now()).into();
+                let c_date: DateTime<Local> = m
+                    .created()
+                    .unwrap_or(m.modified().unwrap_or(std::time::SystemTime::now()))
+                    .into();
 
-            (
-                mode_str.to_string().green().to_string(),
-                size.to_string().yellow().to_string(),
-                m_date
-                    .format("%Y-%m-%d %H:%M")
-                    .to_string()
-                    .cyan()
-                    .to_string(),
-                c_date
-                    .format("%Y-%m-%d %H:%M")
-                    .to_string()
-                    .blue()
-                    .to_string(),
-            )
+                (
+                    mode_str.to_string(),
+                    size.to_string().to_string(),
+                    m_date.format("%Y-%m-%d %H:%M").to_string(),
+                    c_date.format("%Y-%m-%d %H:%M").to_string(),
+                )
+            }
         }
         None => (
             format!("{} ????", type_char),
@@ -251,40 +312,61 @@ fn extract_metadata(meta: Option<&Metadata>, entry: &DirEntry) -> (String, Strin
     }
 }
 
-fn format_permissions(mode: u32, type_char: &str) -> String {
+fn format_permissions(mode: u32, type_char: &str, color: Option<bool>) -> String {
     let user = (mode >> 6) & 0o7;
     let group = (mode >> 3) & 0o7;
     let other = mode & 0o7;
     format!(
         "{} {} {}",
-        fmt_triplet(user, type_char),
-        fmt_triplet(group, type_char),
-        fmt_triplet(other, type_char)
+        fmt_triplet(user, type_char, color),
+        fmt_triplet(group, type_char, color),
+        fmt_triplet(other, type_char, color)
     )
 }
 
-fn fmt_triplet(val: u32, type_char: &str) -> String {
-    let cyan = |x: &str| -> String { format!("{}", x.cyan()) };
-    let blue = |x: &str| -> String { format!("{}", x.blue()) };
-    let green = |x: &str| -> String { format!("{}", x.green()) };
-    let grey = |x: &str| -> String { format!("{}", x.grey()) };
+fn fmt_triplet(val: u32, type_char: &str, color: Option<bool>) -> String {
+    if color.is_some() && color.expect("a") {
+        let cyan = |x: &str| -> String { format!("{}", x.cyan()) };
+        let blue = |x: &str| -> String { format!("{}", x.blue()) };
+        let green = |x: &str| -> String { format!("{}", x.green()) };
+        let grey = |x: &str| -> String { format!("{}", x.grey()) };
 
-    let r = |x: bool| -> String { if x { cyan("r") } else { grey("-") } };
-    let w = |x: bool| -> String { if x { blue("w") } else { grey("-") } };
-    let x = |x: bool| -> String { if x { green("x") } else { grey("-") } };
-    let xx = |x: bool| -> String { if x { grey("x") } else { grey("-") } };
+        let r = |x: bool| -> String { if x { cyan("r") } else { grey("-") } };
+        let w = |x: bool| -> String { if x { blue("w") } else { grey("-") } };
+        let x = |x: bool| -> String { if x { green("x") } else { grey("-") } };
+        let xx = |x: bool| -> String { if x { grey("x") } else { grey("-") } };
 
-    let rwx = |a: bool, b: bool, c: bool, t: &str| -> (String, String, String) {
-        if t.eq("f") {
-            (r(a), w(b), x(c))
-        } else {
-            (r(a), w(b), xx(c))
-        }
-    };
-    let (r, w, x) = rwx(val & 4 != 0, val & 2 != 0, val & 1 != 0, type_char);
-    format!("{r}{w}{x}")
+        let rwx = |a: bool, b: bool, c: bool, t: &str| -> (String, String, String) {
+            if t.eq("f") {
+                (r(a), w(b), x(c))
+            } else {
+                (r(a), w(b), xx(c))
+            }
+        };
+        let (r, w, x) = rwx(val & 4 != 0, val & 2 != 0, val & 1 != 0, type_char);
+        format!("{r}{w}{x}")
+    } else {
+        let cyan = |x: &str| -> String { format!("{x}") };
+        let blue = |x: &str| -> String { format!("{x}") };
+        let green = |x: &str| -> String { format!("{x}") };
+        let grey = |x: &str| -> String { format!("{x}") };
+
+        let r = |x: bool| -> String { if x { cyan("r") } else { grey("-") } };
+        let w = |x: bool| -> String { if x { blue("w") } else { grey("-") } };
+        let x = |x: bool| -> String { if x { green("x") } else { grey("-") } };
+        let xx = |x: bool| -> String { if x { grey("x") } else { grey("-") } };
+
+        let rwx = |a: bool, b: bool, c: bool, t: &str| -> (String, String, String) {
+            if t.eq("f") {
+                (r(a), w(b), x(c))
+            } else {
+                (r(a), w(b), xx(c))
+            }
+        };
+        let (r, w, x) = rwx(val & 4 != 0, val & 2 != 0, val & 1 != 0, type_char);
+        format!("{r}{w}{x}")
+    }
 }
-
 fn human_bytes(size: u64) -> String {
     const UNITS: &[&str] = &["B", "KB", "MB", "GB"];
     let mut s = size as f64;

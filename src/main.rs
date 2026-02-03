@@ -32,7 +32,15 @@ fn cli() -> Command {
         .subcommand(Command::new("init").about("Initialize current directory"))
         .subcommand(Command::new("new").about("create a new silex project"))
         .subcommand(Command::new("status").about("show changes in working directory"))
-        .subcommand(Command::new("tree").about("Show repository"))
+        .subcommand(
+            Command::new("tree").about("Show repository").arg(
+                Arg::new("color")
+                    .help("colorize tree or not")
+                    .required(false)
+                    .default_value("false")
+                    .value_parser(clap::value_parser!(String)),
+            ),
+        )
         .subcommand(
             Command::new("keygen").about("Generate Ed25519 identity keys for signing commits"),
         )
@@ -329,9 +337,10 @@ fn main() -> Result<(), Error> {
             Ok(())
         }
         // Dans le match matches.subcommand()
-        Some(("tree", _)) => {
+        Some(("tree", sub)) => {
             let current_dir = std::env::current_dir()?;
-            tree::scan_and_print_tree(&current_dir, None);
+            let color = sub.get_one::<String>("color").expect("failed to get color");
+            tree::scan_and_print_tree(&current_dir, None, Some(color.eq("true")));
             Ok(())
         }
         Some(("keygen", _)) => {
