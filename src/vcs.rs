@@ -4,15 +4,17 @@ use crate::utils::ko;
 use crate::utils::ok;
 use crate::utils::ok_status;
 use crate::utils::ok_tag;
-
 use glob::GlobError;
 use glob::glob;
 use ignore::DirEntry;
+use nix::sys::wait::waitpid;
+use nix::unistd::{ForkResult, execvp, fork};
 use similar::{ChangeTag, TextDiff};
 use sqlite::Connection;
 use sqlite::Error;
 use sqlite::State;
 use std::collections::{HashMap, HashSet};
+use std::ffi::CString;
 use std::fmt::Debug;
 use std::fs;
 use std::fs::File;
@@ -23,7 +25,6 @@ use std::io::{Read, Result as IoResult};
 use std::path::{Path, PathBuf};
 use tabled::{Table, Tabled};
 use uuid::Uuid;
-
 #[derive(Tabled)]
 struct LogEntry {
     #[tabled(rename = "Hash")]
@@ -73,6 +74,174 @@ pub fn sync(destination_path: &str) -> Result<(), IoError> {
         }
     }
     ok("Backup complete");
+    Ok(())
+}
+
+#[cfg(target_os = "freebsd")]
+use nix::mount::{MntFlags, unmount};
+
+#[cfg(target_os = "freebsd")]
+pub fn umount(path: &str) -> Result<(), String> {
+    // On convertit le chemin pour l'appel système
+    let p = std::path::Path::new(path);
+
+    // Sur FreeBSD, on utilise unmount avec MntFlags
+    unmount(p, MntFlags::empty()).map_err(|e| format!("Échec du démontage de {} : {}", path, e))?;
+
+    crate::utils::ok(&format!("Démontage de {} réussi", path));
+    Ok(())
+}
+
+pub fn spawn_lys_shell(conn: &sqlite::Connection, reference: Option<&str>) -> Result<(), String> {
+    let temp_mount = format!("/tmp/lys_shell_{}", uuid::Uuid::new_v4().simple());
+    let mount_path = std::path::Path::new(&temp_mount);
+
+    // 1. On monte le code (on réutilise ta commande qui fonctionne !)
+    mount_version(conn, &temp_mount, reference).expect("failed to mount version");
+
+    // 2. Préparation du message d'accueil (Saison + Messages + TODOs)
+    let season = crate::db::Season::current(); //
+    let user = crate::commit::author(); //
+
+    println!("\nLYS SHELL - Season: {season} | User: {user}");
+    println!("🚀 Entrée dans le shell éphémère. Tapez 'exit' pour quitter.");
+
+    // 3. Gestion du processus Shell
+    match unsafe { fork() } {
+        Ok(ForkResult::Parent { child }) => {
+            // Le parent attend que l'utilisateur quitte le shell
+            waitpid(child, None).ok();
+
+            // 4. Nettoyage automatique (Lest et démontage)
+            println!("\nNettoyage du shell...");
+            umount(&temp_mount)
+                .map_err(|e| println!("Erreur nettoyage : {}", e))
+                .ok();
+            std::fs::remove_dir_all(mount_path).ok();
+            ok("Shell Lys fermé proprement.");
+        }
+
+        Ok(ForkResult::Child) => {
+            // Le fils remplace son processus par un shell (ex: fish ou bash)
+            let shell = CString::new("fish").unwrap(); // Ou ton shell préféré
+            let args = [shell.clone()];
+
+            // On change le répertoire de travail vers le montage
+            std::env::set_current_dir(mount_path).ok();
+
+            execvp(&shell, &args).map_err(|e| e.to_string())?;
+        }
+        Err(e) => return Err(format!("Fork failed: {e}")),
+    }
+
+    Ok(())
+}
+// Dans src/vcs.rs
+
+pub fn mount_version(
+    conn: &Connection,
+    target_path: &str,
+    reference: Option<&str>,
+) -> Result<(), sqlite::Error> {
+    let target = Path::new(target_path);
+
+    // 1. Créer le point de montage s'il n'existe pas
+    if !target.exists() {
+        fs::create_dir_all(target).expect("Failed to create mount point");
+    }
+
+    // 2. Déterminer quel commit monter
+    let commit_id = if let Some(r) = reference {
+        // On réutilise tes fonctions existantes pour trouver le hash
+        get_commit_id_by_hash(conn, r)?
+    } else {
+        let branch = get_current_branch(conn)?;
+        let (id, _) = get_branch_head_info(conn, &branch)?;
+        id
+    };
+
+    let commit_id = commit_id.expect("Reference not found");
+
+    // 3. Préparer le dossier "source" (Cache interne de lys)
+    let cache_source = format!(".lys/mounts/{}", commit_id);
+    let cache_path = Path::new(&cache_source);
+
+    if !cache_path.exists() {
+        fs::create_dir_all(cache_path).expect("Failed to create cache dir");
+        // Ici on réutilise ta logique de checkout_head mais vers le cache
+        reconstruct_to_path(conn, commit_id, cache_path)?;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        use nix::mount::{MsFlags as MountFlags, mount};
+        // Code spécifique à Linux
+        mount(
+            Some(cache_path),
+            target_path,
+            Some("none"),
+            MountFlags::MS_BIND | MountFlags::MS_RDONLY,
+            None::<&str>,
+        )
+        .expect("failed to mount");
+    }
+
+    #[cfg(target_os = "freebsd")]
+    {
+        use nix::mount::{MntFlags, Nmount};
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+
+        // 1. On prépare les données (on "matérialise" en CString)
+        // On doit les garder dans des variables pour qu'elles ne soient pas dropées
+        let k_type = CString::new("fstype").unwrap();
+        let v_type = CString::new("nullfs").unwrap();
+
+        let k_dest = CString::new("fspath").unwrap();
+        let v_dest = CString::new(target.as_os_str().as_bytes()).unwrap();
+
+        let k_from = CString::new("from").unwrap();
+        let v_from = CString::new(cache_path.as_os_str().as_bytes()).unwrap();
+
+        // 2. On configure nmount
+        let mut nm = Nmount::new();
+        // On passe des références (&k_type) pour ne pas déplacer (move) les variables
+        nm.str_opt(&k_type, &v_type);
+        nm.str_opt(&k_dest, &v_dest);
+        nm.str_opt(&k_from, &v_from);
+
+        // 3. L'appel système
+        nm.nmount(MntFlags::MNT_RDONLY).map_err(|e| sqlite::Error {
+            code: Some(1),
+            message: Some(format!("Erreur nmount: {}", e)),
+        })?;
+    }
+
+    ok(&format!("Monté sur {}", target.display()).as_str());
+    Ok(())
+}
+
+// Helper pour reconstruire les fichiers sans toucher au working dir actuel
+fn reconstruct_to_path(
+    conn: &Connection,
+    commit_id: i64,
+    dest: &Path,
+) -> Result<(), sqlite::Error> {
+    let query = "SELECT m.file_path, b.content FROM manifest m JOIN store.blobs b ON m.blob_id = b.id WHERE m.commit_id = ?";
+    let mut stmt = conn.prepare(query)?;
+    stmt.bind((1, commit_id))?;
+
+    while let Ok(State::Row) = stmt.next() {
+        let path_str: String = stmt.read(0)?;
+        let raw_content: Vec<u8> = stmt.read(1)?;
+        let content = crate::db::decompress(&raw_content); //
+        let full_path = dest.join(&path_str);
+
+        if let Some(parent) = full_path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(full_path, content).unwrap();
+    }
     Ok(())
 }
 

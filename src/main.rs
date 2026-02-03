@@ -34,6 +34,33 @@ fn cli() -> Command {
         .subcommand(Command::new("new").about("create a new silex project"))
         .subcommand(Command::new("status").about("show changes in working directory"))
         .subcommand(
+            Command::new("shell")
+                .about("Open a temporary shell with the code mounted")
+                .arg(
+                    Arg::new("ref")
+                        .help("Reference to mount (default: HEAD)")
+                        .required(false)
+                        .action(ArgAction::Set),
+                ),
+        )
+        .subcommand(
+            Command::new("mount")
+                .about("Mount a specific version or the current head to a directory")
+                .arg(
+                    Arg::new("target")
+                        .help("The mount point (e.g., /mnt/lys_project)")
+                        .required(true)
+                        .action(ArgAction::Set),
+                )
+                .arg(
+                    Arg::new("ref")
+                        .short('r')
+                        .long("ref")
+                        .help("Branch, tag or commit hash to mount (default: current HEAD)")
+                        .action(ArgAction::Set),
+                ),
+        )
+        .subcommand(
             Command::new("tree").about("Show repository").arg(
                 Arg::new("color")
                     .help("colorize tree or not")
@@ -287,6 +314,21 @@ fn main() -> Result<(), Error> {
     let app = args.clone().get_matches();
     match app.subcommand() {
         Some(("new", _)) => new_project(),
+        // Dans src/main.rs -> fonction main()
+        Some(("mount", sub_args)) => {
+            let target = sub_args.get_one::<String>("target").unwrap();
+            let reference = sub_args.get_one::<String>("ref");
+            let current_dir = std::env::current_dir()?;
+            let conn = connect_lys(&current_dir).map_err(|e| Error::other(e.to_string()))?;
+            vcs::mount_version(&conn, target, reference.map(|s| s.as_str()))
+                .map_err(|e| Error::other(e.to_string()))
+        }
+        Some(("shell", sub_args)) => {
+            let reference = sub_args.get_one::<String>("ref").map(|s| s.as_str());
+            let current_dir = std::env::current_dir()?;
+            let conn = connect_lys(&current_dir).map_err(|e| Error::other(e.to_string()))?;
+            vcs::spawn_lys_shell(&conn, reference).map_err(|e| Error::other(e.to_string()))
+        }
         Some(("init", _)) => {
             let current_dir = std::env::current_dir()?;
             let path_str = current_dir.to_str().unwrap();
