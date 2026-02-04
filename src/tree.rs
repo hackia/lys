@@ -83,11 +83,10 @@ fn print_node(
     max_level: Option<u32>,
     color: Option<bool>,
 ) {
-    if let Some(limit) = max_level {
-        if current_level > limit {
+    if let Some(limit) = max_level
+        && current_level > limit {
             return;
         }
-    }
 
     if let Some(entry) = &node.entry {
         let metadata = entry.metadata().ok();
@@ -112,12 +111,10 @@ fn print_node(
             } else {
                 file_name.to_string()
             }
+        } else if color.is_some() && color.expect("a") {
+            file_name.green().to_string()
         } else {
-            if color.is_some() && color.expect("a") {
-                file_name.green().to_string()
-            } else {
-                file_name.to_string()
-            }
+            file_name.to_string()
         };
 
         if color.is_some() && color.expect("") {
@@ -345,10 +342,10 @@ fn fmt_triplet(val: u32, type_char: &str, color: Option<bool>) -> String {
         let (r, w, x) = rwx(val & 4 != 0, val & 2 != 0, val & 1 != 0, type_char);
         format!("{r}{w}{x}")
     } else {
-        let cyan = |x: &str| -> String { format!("{x}") };
-        let blue = |x: &str| -> String { format!("{x}") };
-        let green = |x: &str| -> String { format!("{x}") };
-        let grey = |x: &str| -> String { format!("{x}") };
+        let cyan = |x: &str| -> String { x.to_string() };
+        let blue = |x: &str| -> String { x.to_string() };
+        let green = |x: &str| -> String { x.to_string() };
+        let grey = |x: &str| -> String { x.to_string() };
 
         let r = |x: bool| -> String { if x { cyan("r") } else { grey("-") } };
         let w = |x: bool| -> String { if x { blue("w") } else { grey("-") } };

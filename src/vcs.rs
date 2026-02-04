@@ -4,6 +4,7 @@ use crate::utils::ko;
 use crate::utils::ok;
 use crate::utils::ok_status;
 use crate::utils::ok_tag;
+use crossterm::style::Stylize;
 use glob::GlobError;
 use glob::glob;
 use ignore::DirEntry;
@@ -13,6 +14,7 @@ use similar::{ChangeTag, TextDiff};
 use sqlite::Connection;
 use sqlite::Error;
 use sqlite::State;
+use std::collections::BTreeMap;
 use std::collections::{HashMap, HashSet};
 use std::ffi::CString;
 use std::fmt::Debug;
@@ -22,9 +24,16 @@ use std::fs::create_dir_all;
 use std::io::Error as IoError; // On renomme pour clarifier
 use std::io::Write;
 use std::io::{Read, Result as IoResult};
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use tabled::{Table, Tabled};
-use uuid::Uuid;
+
+#[derive(Debug)]
+enum Node {
+    File { hash: String, mode: u32 },
+    Directory { children: BTreeMap<String, Node> },
+}
+
 #[derive(Tabled)]
 struct LogEntry {
     #[tabled(rename = "Hash")]
@@ -45,11 +54,64 @@ pub enum FileStatus {
     Unchanged,
 }
 
-pub struct ManifestEntry {
-    path: String,
-    blob_id: i64,
-    asset_id: i64,
-    perm: i64,
+pub fn ls_tree(conn: &Connection, tree_hash: &str, prefix: &str) -> Result<(), sqlite::Error> {
+    // On récupère tous les enfants directs de ce hash de dossier
+    let query =
+        "SELECT name, hash, mode FROM tree_nodes WHERE parent_tree_hash = ? ORDER BY name ASC";
+    let mut stmt = conn.prepare(query)?;
+    stmt.bind((1, tree_hash))?;
+
+    // On stocke les résultats pour gérer la récursion après l'affichage
+    let mut entries = Vec::new();
+    while let Ok(State::Row) = stmt.next() {
+        entries.push((
+            stmt.read::<String, _>("name")?,
+            stmt.read::<String, _>("hash")?,
+            stmt.read::<i64, _>("mode")?,
+        ));
+    }
+
+    let count = entries.len();
+    for (i, (name, hash, mode)) in entries.into_iter().enumerate() {
+        let is_last = i == count - 1;
+        let connector = if is_last { "└── " } else { "├── " };
+
+        // Affichage du nom avec son hash abrégé (pour le style VCS)
+        println!(
+            "{} {}{:<20} \x1b[90m({})\x1b[0m",
+            format_mode(mode),
+            prefix,
+            connector.to_string() + &name,
+            &hash[0..7]
+        );
+
+        // Si le hash possède lui-même des enfants dans tree_nodes, c'est un dossier
+        if is_directory(conn, &hash)? {
+            let new_prefix = if is_last {
+                format!("{}    ", prefix)
+            } else {
+                format!("{}│   ", prefix)
+            };
+            ls_tree(conn, &hash, &new_prefix)?;
+        }
+    }
+    Ok(())
+}
+
+// Helper pour savoir si un hash est un dossier (présent en tant que parent)
+fn is_directory(conn: &Connection, hash: &str) -> Result<bool, sqlite::Error> {
+    let query = "SELECT 1 FROM tree_nodes WHERE parent_tree_hash = ? LIMIT 1";
+    let mut stmt = conn.prepare(query)?;
+    stmt.bind((1, hash))?;
+    Ok(matches!(stmt.next(), Ok(State::Row)))
+}
+
+fn format_mode(mode: i64) -> String {
+    if mode == 0o755 {
+        "d".blue().bold().to_string()
+    } else {
+        "f".to_string()
+    }
 }
 
 pub fn sync(destination_path: &str) -> Result<(), IoError> {
@@ -217,7 +279,7 @@ pub fn mount_version(
         })?;
     }
 
-    ok(&format!("Monté sur {}", target.display()).as_str());
+    ok(format!("Monté sur {}", target.display()).as_str());
     Ok(())
 }
 
@@ -337,7 +399,7 @@ pub fn commit_manual(
     let id_query = "SELECT last_insert_rowid()";
     let mut stmt_id = conn.prepare(id_query)?;
     stmt_id.next()?;
-    Ok(stmt_id.read(0)?)
+    stmt_id.read(0)
 }
 
 pub fn tag_create(conn: &Connection, name: &str, message: Option<&str>) -> Result<(), IoError> {
@@ -898,150 +960,136 @@ pub fn files() -> Vec<String> {
     all
 }
 
+fn insert_into_tree(root: &mut Node, path: &Path, hash: String, mode: u32) {
+    let mut current = root;
+
+    // On parcourt chaque composant du chemin (ex: ["src", "ui", "main.rs"])
+    for component in path.components() {
+        let name = component.as_os_str().to_string_lossy().to_string();
+
+        // On descend dans l'arbre. Si le dossier n'existe pas, on le crée.
+        if let Node::Directory { children } = current {
+            current = children.entry(name).or_insert_with(|| Node::Directory {
+                children: BTreeMap::new(),
+            });
+        }
+    }
+
+    // Une fois arrivé au bout du chemin, on remplace le nœud par le fichier réel
+    *current = Node::File { hash, mode };
+}
+
+fn store_tree_recursive(
+    conn: &sqlite::Connection,
+    _name: &str,
+    node: &Node,
+) -> Result<String, sqlite::Error> {
+    match node {
+        // Si c'est un fichier, on retourne juste son hash (déjà calculé)
+        Node::File { hash, .. } => Ok(hash.clone()),
+
+        // Si c'est un dossier, on doit traiter ses enfants
+        Node::Directory { children } => {
+            let mut hasher = blake3::Hasher::new();
+            let mut children_data = Vec::new();
+
+            for (name, child_node) in children {
+                // Appel récursif pour obtenir le hash de l'enfant
+                let child_hash = store_tree_recursive(conn, name, child_node)?;
+
+                let mode = match child_node {
+                    Node::File { mode, .. } => *mode,
+                    Node::Directory { .. } => 0o755, // Mode par défaut pour les répertoires
+                };
+
+                // On nourrit le hash du dossier avec les données de l'enfant (Nom + Hash)
+                hasher.update(name.as_bytes());
+                hasher.update(child_hash.as_bytes());
+
+                children_data.push((name, child_hash, mode));
+            }
+
+            // Le hash final du dossier est le résultat de la combinaison de ses enfants
+            let dir_hash = hasher.finalize().to_hex().to_string();
+
+            // On enregistre chaque enfant dans la table tree_nodes
+            // parent_tree_hash est le hash du dossier que nous venons de calculer
+            for (name, hash, mode) in children_data {
+                crate::db::insert_tree_node(
+                    conn,
+                    &dir_hash,
+                    name,
+                    &hash,
+                    mode as i64,
+                    None, // On pourra passer l'env Nix ici plus tard
+                )?;
+            }
+            Ok(dir_hash)
+        }
+    }
+}
+
 pub fn commit(conn: &Connection, message: &str, author: &str) -> Result<(), Error> {
-    let current_branch = get_current_branch(conn).expect("failed to get current branch");
-    let (parent_id, parent_hash) = get_branch_head_info(conn, &current_branch)?;
+    let root_path = std::env::current_dir().unwrap();
 
-    // 1. Charger l'état parent complet (ID + Hash)
-    let parent_state = get_parent_asset_map(conn, parent_id, &parent_hash)?;
-
-    let root_path = ".";
+    // 1. On scanne et on construit l'arbre en mémoire (Bottom-up)
+    let mut root_tree = Node::Directory {
+        children: BTreeMap::new(),
+    };
     let walk = ignore::WalkBuilder::new(".")
-        .add_custom_ignore_filename("syl")
         .threads(4)
+        .add_custom_ignore_filename("syl")
         .standard_filters(true)
         .build();
 
-    let mut new_manifest: Vec<ManifestEntry> = Vec::new();
-    let mut changes_count = 0; // Compteur de modifs
-
-    // ON OUVRE LA TRANSACTION MAIS ON NE VALIDE PAS TOUT DE SUITE
-    conn.execute("BEGIN TRANSACTION;")?;
-
-    for result in walk {
-        let entry = match result {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-        let path = entry.path();
-
-        if path.components().any(|c| c.as_os_str() == ".lys") || path.is_dir() {
+    for result in walk.flatten() {
+        let path = result.path();
+        if path.is_dir() || path.components().any(|c| c.as_os_str() == ".lys") {
             continue;
         }
 
-        let content_hash = match calculate_hash(path) {
-            Ok(h) => h,
-            Err(_) => continue,
-        };
+        let relative = path.strip_prefix(&root_path).unwrap();
+        let content_hash = calculate_hash(path).unwrap();
+        let metadata = std::fs::metadata(path).unwrap();
 
-        let metadata = std::fs::metadata(path).expect("failed to get metadata");
-        let blob_id = ensure_blob_exists(conn, &content_hash, path, metadata.len())?;
-
-        let relative_path = path
-            .strip_prefix("./")
-            .unwrap_or(path)
-            .to_string_lossy()
-            .to_string();
-
-        // --- DÉTECTION INTELLIGENTE ---
-        let asset_id = match parent_state.get(&relative_path) {
-            Some((id, old_hash)) => {
-                // Le fichier existait déjà : a-t-il changé ?
-                if old_hash != &content_hash {
-                    changes_count += 1; // MODIFIED
-                }
-                *id
-            }
-            None => {
-                changes_count += 1; // NEW FILE
-                create_new_asset(conn, author)?
-            }
-        };
-
-        new_manifest.push(ManifestEntry {
-            path: relative_path,
-            blob_id,
-            asset_id,
-            perm: if metadata.permissions().readonly() {
-                444
-            } else {
-                644
-            },
-        });
+        // Insertion du fichier dans notre structure d'arbre en mémoire
+        insert_into_tree(
+            &mut root_tree,
+            relative,
+            content_hash,
+            metadata.permissions().mode(),
+        );
     }
 
-    // --- DÉTECTION DES SUPPRESSIONS ---
-    // Si un fichier était dans le parent mais n'est pas dans le nouveau manifest -> DELETED
-    for old_path in parent_state.keys() {
-        if !new_manifest.iter().any(|e| e.path == *old_path) {
-            changes_count += 1;
-        }
-    }
+    // 2. On calcule les hashes de chaque dossier et on insère dans SQLite
+    // Le hash du dossier racine (root) sera notre tree_hash pour le commit
+    conn.execute("BEGIN TRANSACTION;")?;
+    let root_hash = store_tree_recursive(conn, "ROOT", &root_tree)?;
 
-    // --- LE VERDICT ---
-    if changes_count == 0 {
-        conn.execute("ROLLBACK;")?; // On annule tout, on ne touche pas à la DB
-        ok("Nothing to commit, working tree clean."); // Message clair
-        return Ok(());
-    }
-
-    // Si on arrive ici, c'est qu'il y a des changements -> ON ÉCRIT !
-
-    // (Le reste du code reste identique : calcul hash, insert commits, insert manifest...)
+    // 3. Création du commit avec le lien vers l'arbre racine
     let timestamp = chrono::Utc::now().to_rfc3339();
-    let commit_hash_input = format!("{parent_hash}{author}{message}{timestamp}");
-    let commit_hash = blake3::hash(commit_hash_input.as_bytes())
+    let commit_hash = blake3::hash(format!("{}{}{}", root_hash, author, message).as_bytes())
         .to_hex()
         .to_string();
 
-    let signature = match crate::crypto::sign_message(Path::new(root_path), commit_hash.as_str()) {
-        Ok(sig) => sig,
-        Err(_) => String::from("UNSIGNED"),
-    };
-
-    let query_commit = "INSERT INTO commits (hash, parent_hash, author, message, timestamp, signature) VALUES (?, ?, ?, ?, ?, ?) RETURNING id;";
+    let query_commit =
+        "INSERT INTO commits (hash, tree_hash, author, message, timestamp) VALUES (?, ?, ?, ?, ?)";
     let mut stmt = conn.prepare(query_commit)?;
     stmt.bind((1, commit_hash.as_str()))?;
-    stmt.bind((
-        2,
-        if parent_hash.is_empty() {
-            None
-        } else {
-            Some(parent_hash.as_str())
-        },
-    ))?;
+    stmt.bind((2, root_hash.as_str()))?; // Lien crucial vers tree_nodes
     stmt.bind((3, author))?;
     stmt.bind((4, message))?;
     stmt.bind((5, timestamp.as_str()))?;
-    stmt.bind((6, signature.as_str()))?;
     stmt.next()?;
-    let new_commit_id: i64 = stmt.read("id")?;
 
-    let query_manifest = "INSERT INTO manifest (commit_id, asset_id, blob_id, file_path, permissions) VALUES (?, ?, ?, ?, ?)";
-    let mut stmt_m = conn.prepare(query_manifest)?;
+    // 4. On enregistre l'opération dans l'OpLog pour le Undo
+    let log_query = "INSERT INTO operations_log (operation_type, view_state) VALUES ('commit', ?)";
+    let mut log_stmt = conn.prepare(log_query)?;
+    log_stmt.bind((1, format!("{{\"head\": \"{}\"}}", commit_hash).as_str()))?;
+    log_stmt.next()?;
 
-    for entry in new_manifest {
-        stmt_m.reset()?;
-        stmt_m.bind((1, new_commit_id))?;
-        stmt_m.bind((2, entry.asset_id))?;
-        stmt_m.bind((3, entry.blob_id))?;
-        stmt_m.bind((4, entry.path.as_str()))?;
-        stmt_m.bind((5, entry.perm))?;
-        stmt_m.next()?;
-    }
-
-    let query_upsert = "INSERT INTO branches (name, head_commit_id) VALUES (?, ?) ON CONFLICT(name) DO UPDATE SET head_commit_id = excluded.head_commit_id";
-    let mut stmt_b = conn.prepare(query_upsert)?;
-    stmt_b.bind((1, current_branch.as_str()))?;
-    stmt_b.bind((2, new_commit_id))?;
-    stmt_b.next()?;
-
-    drop(stmt);
-    drop(stmt_m);
-    drop(stmt_b);
-
-    conn.execute("COMMIT;")?; // Validation finale
-    commit_created(commit_hash[0..7].to_string().as_str());
+    conn.execute("COMMIT;")?;
+    commit_created(&commit_hash[0..7]);
     Ok(())
 }
 
@@ -1067,83 +1115,6 @@ fn get_branch_head_info(conn: &Connection, branch: &str) -> Result<(Option<i64>,
     }
 
     Ok((None, String::new()))
-}
-
-// On met à jour get_parent_asset_map pour charger le manifest depuis 'old'
-fn get_parent_asset_map(
-    conn: &Connection,
-    parent_id: Option<i64>,
-    parent_hash: &str,
-) -> Result<HashMap<String, (i64, String)>, Error> {
-    let mut map = HashMap::new();
-
-    if let Some(pid) = parent_id {
-        // Parent dans la base actuelle
-        let query = "SELECT m.file_path, m.asset_id, b.hash FROM manifest m JOIN store.blobs b ON m.blob_id = b.id WHERE m.commit_id = ?";
-        let mut stmt = conn.prepare(query)?;
-        stmt.bind((1, pid))?;
-        while let Ok(State::Row) = stmt.next() {
-            map.insert(
-                stmt.read("file_path")?,
-                (stmt.read("asset_id")?, stmt.read("hash")?),
-            );
-        }
-    } else if !parent_hash.is_empty() {
-        // Parent dans la base 'old' (Reconsolidation)
-        let query_old = "
-            SELECT m.file_path, m.asset_id, b.hash 
-            FROM old.manifest m 
-            JOIN store.blobs b ON m.blob_id = b.id 
-            JOIN old.commits c ON m.commit_id = c.id
-            WHERE c.hash = ?";
-        if let Ok(mut stmt_old) = conn.prepare(query_old) {
-            stmt_old.bind((1, parent_hash))?;
-            while let Ok(State::Row) = stmt_old.next() {
-                map.insert(
-                    stmt_old.read("file_path")?,
-                    (stmt_old.read("asset_id")?, stmt_old.read("hash")?),
-                );
-            }
-        }
-    }
-    Ok(map)
-}
-
-fn ensure_blob_exists(conn: &Connection, hash: &str, path: &Path, size: u64) -> Result<i64, Error> {
-    // 1. Vérifier si le blob existe déjà (DÉDUPLICATION)
-    let check_query = "SELECT id FROM store.blobs WHERE hash = ?"; // Note le 'store.' !
-    let mut stmt = conn.prepare(check_query)?;
-    stmt.bind((1, hash))?;
-
-    if let Ok(State::Row) = stmt.next() {
-        return stmt.read("id");
-    }
-
-    // 2. Si non, on l'insère
-    // Attention : lire tout le fichier en RAM pour l'insérer en BLOB peut être lourd.
-    // Pour l'instant on fait simple :
-    let content = std::fs::read(path).expect("failed to read file");
-    let compressed_content = crate::db::compress(&content);
-    let insert_query = "
-        INSERT INTO store.blobs (hash, content, size) 
-        VALUES (?, ?, ?) 
-        RETURNING id";
-    let mut stmt_ins = conn.prepare(insert_query)?;
-    stmt_ins.bind((1, hash))?;
-    stmt_ins.bind((2, &compressed_content[..]))?; // Bind byte array
-    stmt_ins.bind((3, size as i64))?;
-
-    stmt_ins.next()?;
-    stmt_ins.read("id")
-}
-
-fn create_new_asset(conn: &Connection, _creator: &str) -> Result<i64, Error> {
-    let new_uuid = Uuid::new_v4().to_string();
-    let query = "INSERT INTO store.assets (uuid) VALUES (?) RETURNING id";
-    let mut stmt = conn.prepare(query)?;
-    stmt.bind((1, new_uuid.as_str()))?;
-    stmt.next()?;
-    stmt.read("id")
 }
 
 pub fn get_head_state(
@@ -1259,7 +1230,7 @@ fn get_commit_id_by_hash(conn: &Connection, partial_hash: &str) -> Result<Option
     stmt.bind((1, partial_hash))?;
 
     if let Ok(State::Row) = stmt.next() {
-        Ok(Some(stmt.read("id")?))
+        stmt.read("id")
     } else {
         Ok(None)
     }

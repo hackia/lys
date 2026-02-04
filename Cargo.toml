@@ -29,4 +29,5 @@ serde_json = "1.0.149"
 content_inspector = "0.2.4"
 nix = { version = "0.31.1", features = ["env", "mount", "net", "process", "pthread", "term", "time", "uio", "user"] }
 textwrap = "0.16.2"
+anyhow = "1.0.100"
 

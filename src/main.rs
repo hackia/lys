@@ -9,6 +9,7 @@ use crate::utils::ok;
 use breathes::hooks::run_hooks;
 use clap::{Arg, ArgAction, Command};
 use inquire::Text;
+use sqlite::State;
 use std::fs::File;
 use std::io::Error;
 use std::path::MAIN_SEPARATOR_STR;
@@ -377,11 +378,27 @@ fn main() -> Result<(), Error> {
             git::import_from_git(url, &target_path, depth).expect("failed to clone");
             Ok(())
         }
-        // Dans le match matches.subcommand()
-        Some(("tree", sub)) => {
+        Some(("tree", _)) => {
             let current_dir = std::env::current_dir()?;
-            let color = sub.get_one::<String>("color").expect("failed to get color");
-            tree::scan_and_print_tree(&current_dir, None, Some(color.eq("true")));
+            let conn = connect_lys(&current_dir).map_err(|e| Error::other(e.to_string()))?;
+
+            // 1. On récupère la branche actuelle
+            let branch = get_current_branch(&conn).expect("failed to get branch");
+
+            // 2. On récupère le tree_hash associé au HEAD de cette branche
+            let query = "SELECT c.tree_hash FROM branches b JOIN commits c ON b.head_commit_id = c.id WHERE b.name = ?";
+            let mut stmt = conn
+                .prepare(query)
+                .map_err(|e| Error::other(e.to_string()))?;
+            stmt.bind((1, branch.as_str())).unwrap();
+
+            if let Ok(State::Row) = stmt.next() {
+                let root_hash: String = stmt.read(0).unwrap();
+                println!("Repository tree - Root: {root_hash}");
+                vcs::ls_tree(&conn, &root_hash, "").map_err(|e| Error::other(e.to_string()))?;
+            } else {
+                println!("Repository is empty. Commit something first!");
+            }
             Ok(())
         }
         Some(("keygen", _)) => {

@@ -9,51 +9,59 @@ use std::io::prelude::*;
 use std::path::Path;
 use std::path::PathBuf;
 use uuid::Uuid;
+
 pub const LYS_INIT: &str = "
     -- ====================================================================
-    -- PARTIE STOCKAGE (store.db) - Données lourdes et immuables
+    -- PARTIE 1 : STOCKAGE ADRESSABLE (store.db)
     -- ====================================================================
-
     CREATE TABLE IF NOT EXISTS store.blobs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        hash TEXT UNIQUE NOT NULL,      -- Hash Blake3 du contenu (Déduplication)
-        content BLOB,                   -- Le contenu réel
+        hash TEXT UNIQUE NOT NULL,      -- Hash Blake3
+        content BLOB,                   -- Compressé en Zlib côté Rust
         size INTEGER NOT NULL,
-        mime_type TEXT                  -- Pour future UI / Stats
+        mime_type TEXT
     );
 
     CREATE TABLE IF NOT EXISTS store.assets (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        uuid TEXT UNIQUE NOT NULL,      -- Identité stable du fichier (UUID)
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        creator_id INTEGER              -- ID de l'auteur original (optionnel)
+        uuid TEXT UNIQUE NOT NULL,      -- Identité stable (UUID)
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
 
     -- ====================================================================
-    -- PARTIE HISTORIQUE (history_YYYY.db) - Métadonnées légères
+    -- PARTIE 2 : INDEXATION HIÉRARCHIQUE (VFS Optimized)
+    -- remplace le manifest à plat pour permettre le montage performant
     -- ====================================================================
+    CREATE TABLE IF NOT EXISTS tree_nodes (
+        parent_tree_hash TEXT,           -- Hash du répertoire parent
+        name TEXT,                       -- Nom du fichier ou dossier
+        hash TEXT,                       -- Hash du blob ou du sous-arbre
+        mode INTEGER,                    -- Permissions POSIX
+        nix_env_hash TEXT,               -- Hash de l'environnement Nix lié
+        PRIMARY KEY (parent_tree_hash, name)
+    ) WITHOUT ROWID; -- Optimisation I/O pour les index composites
 
+    -- ====================================================================
+    -- PARTIE 3 : HISTORIQUE ET ÉVOLUTION
+    -- ====================================================================
     CREATE TABLE IF NOT EXISTS commits (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        hash TEXT UNIQUE NOT NULL,       -- Hash (Merkle) : métadonnées + parent
+        hash TEXT UNIQUE NOT NULL,       -- Merkle Root
         parent_hash TEXT,
+        tree_hash TEXT NOT NULL,         -- Hash du 'tree' racine du commit
         author TEXT NOT NULL,
         message TEXT NOT NULL,
         timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-        signature TEXT
+        signature TEXT,
+        nix_env_hash TEXT                -- Reproductibilité totale
     );
 
-    CREATE TABLE IF NOT EXISTS manifest (
-        commit_id INTEGER NOT NULL,
-        asset_id INTEGER NOT NULL,       -- Réfère à store.assets(id) (Géré par Rust)
-        blob_id INTEGER NOT NULL,        -- Réfère à store.blobs(id) (Géré par Rust)
-
-        file_path TEXT NOT NULL,         -- Le chemin à cet instant T
-        permissions INTEGER DEFAULT 644,
-
-        PRIMARY KEY (commit_id, asset_id),
-        FOREIGN KEY (commit_id) REFERENCES commits(id)
-        -- NOTE: Pas de FK vers store.* car SQLite ne supporte pas les FK inter-bases
+    -- Journal d'opérations (Style Jujutsu) pour le Undo/Redo
+    CREATE TABLE IF NOT EXISTS operations_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        operation_type TEXT NOT NULL,    -- 'commit', 'checkout', 'reset'
+        view_state JSON NOT NULL,        -- État complet des refs au moment T
+        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
     );
 
     CREATE TABLE IF NOT EXISTS branches (
@@ -63,95 +71,54 @@ pub const LYS_INIT: &str = "
         FOREIGN KEY (head_commit_id) REFERENCES commits(id)
     );
 
-    CREATE TABLE IF NOT EXISTS tags (
+    -- ====================================================================
+    -- PARTIE 4 : OUTILS COLLABORATIFS ET SYSTÈME
+    -- ====================================================================
+    CREATE TABLE IF NOT EXISTS ephemeral_messages (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT UNIQUE NOT NULL,
-        commit_id INTEGER NOT NULL,
-        description TEXT,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (commit_id) REFERENCES commits(id)
+        sender TEXT NOT NULL,
+        content TEXT NOT NULL,
+        expires_at DATETIME NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS todos (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT NOT NULL,
+        status TEXT DEFAULT 'TODO',
+        assigned_to TEXT,
+        due_date DATETIME
     );
 
     CREATE TABLE IF NOT EXISTS config (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
     );
--- ====================================================================
--- PARTIE 1 : MESSAGERIE ÉPHÉMÈRE (Autodestruction à 20h)
--- ====================================================================
-CREATE TABLE IF NOT EXISTS ephemeral_messages (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    sender TEXT NOT NULL,
-    content TEXT NOT NULL,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    -- La date d'expiration est calculée à l'insertion par l'app (prochain 20h)
-    expires_at DATETIME NOT NULL, 
-    is_read BOOLEAN DEFAULT 0
-);
 
--- Index pour accélérer le nettoyage automatique
-CREATE INDEX IF NOT EXISTS idx_messages_expire ON ephemeral_messages(expires_at);
-
--- ====================================================================
--- PARTIE 2 : TODO LIST INTÉGRÉE
--- ====================================================================
-CREATE TABLE IF NOT EXISTS todos (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    title TEXT NOT NULL,
-    description TEXT,
-    status TEXT DEFAULT 'TODO', -- TODO, IN_PROGRESS, DONE
-    assigned_to TEXT,           -- Peut être lié à un auteur de commit
-    due_date DATETIME,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-
--- Trigger pour mettre à jour updated_at automatiquement
-CREATE TRIGGER IF NOT EXISTS update_todos_timestamp 
-AFTER UPDATE ON todos
-BEGIN
-    UPDATE todos SET updated_at = CURRENT_TIMESTAMP WHERE id = OLD.id;
-END;
-
--- ====================================================================
--- PARTIE 3 : STATS DE CO-OCCURRENCE (Fichiers modifiés ensemble)
--- ====================================================================
--- Cette table sert de cache pour éviter de scanner tous les commits à chaque fois
-CREATE TABLE IF NOT EXISTS file_correlations (
-    file_a TEXT NOT NULL,
-    file_b TEXT NOT NULL,
-    frequency INTEGER DEFAULT 1,
-    last_seen_commit_id INTEGER,
-    -- On force l'ordre alphabétique (file_a < file_b) pour éviter les doublons (A,B) et (B,A)
-    PRIMARY KEY (file_a, file_b)
-);
-
--- ====================================================================
--- PARTIE 4 : LOGS (Style Logstash)
--- ====================================================================
-CREATE TABLE IF NOT EXISTS system_logs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-    level TEXT NOT NULL,
-    component TEXT NOT NULL,
-    message TEXT NOT NULL,
-    metadata JSON,
-    trace_id TEXT
-);        
--- ====================================================================
--- PARTIE 5 : CLASSEMENT DES CONTRIBUTEURS
--- ====================================================================
-CREATE TABLE IF NOT EXISTS contributor_stats (
-    author_name TEXT PRIMARY KEY,
-    total_commits INTEGER DEFAULT 0,
-    first_commit_at DATETIME,
-    last_commit_at DATETIME,
-    files_touched_count INTEGER DEFAULT 0,
-    rank_score REAL DEFAULT 0.0 
-);
-    -- Initialisation par défaut (ignore si existe déjà)
     INSERT OR IGNORE INTO config (key, value) VALUES ('current_branch', 'main');
 ";
+
+pub fn insert_tree_node(
+    conn: &sqlite::Connection,
+    parent_hash: &str,
+    name: &str,
+    child_hash: &str,
+    mode: i64,
+    nix_env: Option<&str>,
+) -> Result<(), sqlite::Error> {
+    // On utilise INSERT OR IGNORE pour garantir la déduplication au niveau du stockage
+    let query = "INSERT OR IGNORE INTO tree_nodes (parent_tree_hash, name, hash, mode, nix_env_hash) VALUES (?, ?, ?, ?, ?)";
+    let mut stmt = conn.prepare(query)?;
+
+    // On lie les paramètres selon le schéma hiérarchique défini
+    stmt.bind((1, parent_hash))?;
+    stmt.bind((2, name))?;
+    stmt.bind((3, child_hash))?;
+    stmt.bind((4, mode))?;
+    stmt.bind((5, nix_env))?;
+
+    stmt.next()?;
+    Ok(())
+}
 
 pub fn get_current_branch(conn: &Connection) -> Result<String, Error> {
     let query = "SELECT value FROM config WHERE key = 'current_branch'";
@@ -176,18 +143,18 @@ pub enum Season {
 impl Season {
     pub fn current() -> Self {
         match Local::now().month() {
-            1 | 2 | 3 => Self::Winter,
-            4 | 5 | 6 => Self::Spring,
-            7 | 8 | 9 => Self::Summer,
+            1..=3 => Self::Winter,
+            4..=6 => Self::Spring,
+            7..=9 => Self::Summer,
             _ => Self::Autumn,
         }
     }
 
     pub fn before() -> Self {
         match Local::now().month() {
-            1 | 2 | 3 => Self::Autumn,
-            4 | 5 | 6 => Self::Winter,
-            7 | 8 | 9 => Self::Spring,
+            1..=3 => Self::Autumn,
+            4..=6 => Self::Winter,
+            7..=9 => Self::Spring,
             _ => Self::Summer,
         }
     }
@@ -202,9 +169,9 @@ impl Season {
     }
     pub fn after() -> Self {
         match Local::now().month() {
-            1 | 2 | 3 => Self::Spring,
-            4 | 5 | 6 => Self::Summer,
-            7 | 8 | 9 => Self::Autumn,
+            1..=3 => Self::Spring,
+            4..=6 => Self::Summer,
+            7..=9 => Self::Autumn,
             _ => Self::Winter,
         }
     }
@@ -285,7 +252,7 @@ pub fn create_asset(conn: &Connection) -> Result<i64, Error> {
     let id_query = "SELECT last_insert_rowid()";
     let mut stmt_id = conn.prepare(id_query)?;
     stmt_id.next()?;
-    Ok(stmt_id.read(0)?)
+    stmt_id.read(0)
 }
 
 // Lie un Commit + Asset + Blob dans le Manifeste
@@ -334,7 +301,7 @@ pub fn get_or_insert_blob(conn: &Connection, content: &[u8]) -> Result<i64, Erro
     let mut stmt = conn.prepare(check_query)?;
     stmt.bind((1, hash.as_str()))?;
     if let Ok(State::Row) = stmt.next() {
-        return Ok(stmt.read(0)?);
+        return stmt.read(0);
     }
 
     // 3. Compression avant insertion !
@@ -351,5 +318,5 @@ pub fn get_or_insert_blob(conn: &Connection, content: &[u8]) -> Result<i64, Erro
     let id_query = "SELECT last_insert_rowid()";
     let mut stmt_id = conn.prepare(id_query)?;
     stmt_id.next()?;
-    Ok(stmt_id.read(0)?)
+    stmt_id.read(0)
 }
