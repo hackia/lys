@@ -22,7 +22,6 @@ use std::fs;
 use std::fs::File;
 use std::fs::create_dir_all;
 use std::io::Error as IoError; // On renomme pour clarifier
-use std::io::Write;
 use std::io::{Read, Result as IoResult};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -98,6 +97,74 @@ pub fn ls_tree(conn: &Connection, tree_hash: &str, prefix: &str) -> Result<(), s
     Ok(())
 }
 
+pub fn checkout_head(conn: &Connection, root_path: &Path) -> Result<(), sqlite::Error> {
+    ok("Building working tree from Merkle Tree...");
+
+    // 1. On récupère le dernier commit pour obtenir son tree_hash
+    let query = "SELECT tree_hash FROM commits ORDER BY id DESC LIMIT 1";
+    let mut stmt = conn.prepare(query)?;
+
+    if let Ok(State::Row) = stmt.next() {
+        let tree_hash: String = stmt.read(0)?;
+        // 2. On matérialise l'arbre Merkle sur le disque
+        reconstruct_to_path(conn, &tree_hash, root_path)?;
+        ok("Repository reconstructed successfully");
+    }
+    Ok(())
+}
+
+fn get_manifest_map(
+    conn: &Connection,
+    commit_id: Option<i64>,
+) -> Result<HashMap<String, (String, i64)>, Error> {
+    let mut map = HashMap::new();
+    if let Some(id) = commit_id {
+        // On récupère le tree_hash du commit spécifique
+        let query = "SELECT tree_hash FROM commits WHERE id = ?";
+        let mut stmt = conn.prepare(query).expect("failed");
+        stmt.bind((1, id)).unwrap();
+
+        if let Ok(State::Row) = stmt.next() {
+            let tree_hash: String = stmt.read(0).unwrap();
+            let mut path_map = HashMap::new();
+            // On utilise ton flatten_tree pour obtenir l'état complet
+            flatten_tree(conn, &tree_hash, PathBuf::new(), &mut path_map).expect("failed");
+
+            // Conversion PathBuf -> String pour rester compatible avec la logique de checkout
+            for (p, (h, a)) in path_map {
+                map.insert(p.to_string_lossy().to_string(), (h, a));
+            }
+        }
+    }
+    Ok(map)
+}
+
+fn get_blob_bytes(conn: &Connection, branch: &str, path: &Path) -> Result<Option<Vec<u8>>, Error> {
+    // 1. On récupère l'état complet du HEAD via l'arbre Merkle
+    let state = get_head_state(conn, branch).expect("failed");
+    // On nettoie le chemin pour la recherche dans la map
+    let relative_path = path.strip_prefix("./").unwrap_or(path).to_path_buf();
+
+    if let Some((hash, _)) = state.get(&relative_path) {
+        // 2. Si trouvé, on récupère les octets via le hash
+        return get_blob_bytes_by_hash(conn, hash);
+    }
+    Ok(None)
+}
+
+fn get_file_content_from_head(
+    conn: &Connection,
+    branch: &str,
+    path: &Path,
+) -> Result<String, Error> {
+    match get_blob_bytes(conn, branch, path)? {
+        Some(content) => match String::from_utf8(content) {
+            Ok(s) => Ok(s),
+            Err(_) => Ok(String::from("(Binary content)")),
+        },
+        None => Ok(String::new()),
+    }
+}
 // Helper pour savoir si un hash est un dossier (présent en tant que parent)
 fn is_directory(conn: &Connection, hash: &str) -> Result<bool, sqlite::Error> {
     let query = "SELECT 1 FROM tree_nodes WHERE parent_tree_hash = ? LIMIT 1";
@@ -364,54 +431,6 @@ fn extract_tree_recursive(
     }
     Ok(())
 }
-
-pub fn checkout_head(conn: &Connection, root_path: &Path) -> Result<(), sqlite::Error> {
-    ok("Bulding...");
-
-    // 1. Trouver le dernier commit (HEAD)
-    // On prend le plus grand ID, ce qui correspond au dernier inséré lors de l'import
-    let query_head = "SELECT id FROM commits ORDER BY id DESC LIMIT 1";
-    let mut stmt = conn.prepare(query_head)?;
-
-    let head_id: i64 = if let Ok(State::Row) = stmt.next() {
-        stmt.read(0)?
-    } else {
-        return Ok(()); // Pas de commits, rien à faire
-    };
-
-    // 2. Récupérer la liste des fichiers pour ce commit (Manifeste + Blobs)
-    // On joint manifest et blobs pour avoir le chemin ET le contenu
-    let query_files = "
-        SELECT m.file_path, b.content 
-        FROM manifest m
-        JOIN store.blobs b ON m.blob_id = b.id
-        WHERE m.commit_id = ?
-    ";
-
-    let mut stmt_files = conn.prepare(query_files)?;
-    stmt_files.bind((1, head_id))?;
-
-    while let Ok(State::Row) = stmt_files.next() {
-        let path_str: String = stmt_files.read(0)?;
-        let raw_content: Vec<u8> = stmt_files.read(1)?;
-        let content = crate::db::decompress(&raw_content);
-
-        let full_path = root_path.join(&path_str);
-
-        // Créer les dossiers parents si nécessaire (ex: src/ui/...)
-        if let Some(parent) = full_path.parent() {
-            fs::create_dir_all(parent).unwrap(); // Ignorer erreur si existe déjà
-        }
-
-        // Écrire le fichier
-        let mut file = File::create(full_path).unwrap();
-        file.write_all(&content).unwrap();
-    }
-    ok("Clonned");
-    Ok(())
-}
-
-// Dans src/vcs.rs
 
 pub fn commit_manual(
     conn: &Connection,
@@ -765,31 +784,6 @@ pub fn checkout(conn: &Connection, target_ref: &str) -> Result<(), Error> {
     Ok(())
 }
 
-// Récupère tout le manifeste d'un commit sous forme de HashMap facile à comparer
-fn get_manifest_map(
-    conn: &Connection,
-    commit_id: Option<i64>,
-) -> Result<HashMap<String, (String, i64)>, Error> {
-    let mut map = HashMap::new();
-    if let Some(id) = commit_id {
-        let query = "
-            SELECT m.file_path, b.hash, m.asset_id 
-            FROM manifest m
-            JOIN store.blobs b ON m.blob_id = b.id
-            WHERE m.commit_id = ?
-        ";
-        let mut stmt = conn.prepare(query)?;
-        stmt.bind((1, id))?;
-        while let Ok(State::Row) = stmt.next() {
-            let path: String = stmt.read("file_path")?;
-            let hash: String = stmt.read("hash")?;
-            let asset_id: i64 = stmt.read("asset_id")?;
-            map.insert(path, (hash, asset_id));
-        }
-    }
-    Ok(map)
-}
-
 // Récupère les octets via le hash (plus rapide que via le path)
 fn get_blob_bytes_by_hash(conn: &Connection, hash: &str) -> Result<Option<Vec<u8>>, Error> {
     let query = "SELECT content FROM store.blobs WHERE hash = ?";
@@ -800,32 +794,6 @@ fn get_blob_bytes_by_hash(conn: &Connection, hash: &str) -> Result<Option<Vec<u8
         Ok(Some(crate::db::decompress(&raw)))
     } else {
         Ok(None)
-    }
-}
-
-// Helper pour récupérer le contenu BRUT (bytes) d'un fichier dans le HEAD
-// C'est vital pour restaurer des images ou des exécutables sans corruption UTF-8
-fn get_blob_bytes(conn: &Connection, branch: &str, path: &Path) -> Result<Option<Vec<u8>>, Error> {
-    let relative_path = path.strip_prefix(".").unwrap_or(path).to_string_lossy();
-
-    let query = "
-        SELECT b.content 
-        FROM branches br
-        JOIN manifest m ON m.commit_id = br.head_commit_id
-        JOIN store.blobs b ON m.blob_id = b.id
-        WHERE br.name = ? AND m.file_path = ?
-    ";
-
-    let mut stmt = conn.prepare(query)?;
-    stmt.bind((1, branch))?;
-    stmt.bind((2, relative_path.as_ref()))?;
-
-    if let Ok(State::Row) = stmt.next() {
-        let raw_content: Vec<u8> = stmt.read("content")?;
-        let content = crate::db::decompress(&raw_content);
-        Ok(Some(content))
-    } else {
-        Ok(None) // Le fichier n'existe pas dans le HEAD
     }
 }
 
@@ -904,40 +872,6 @@ pub fn diff(conn: &Connection) -> Result<(), Error> {
         }
     }
     Ok(())
-}
-
-// Helper pour récupérer le contenu textuel d'un blob depuis le HEAD
-fn get_file_content_from_head(
-    conn: &Connection,
-    branch: &str,
-    path: &Path,
-) -> Result<String, Error> {
-    let relative_path = path.strip_prefix(".").unwrap_or(path).to_string_lossy();
-
-    // 1. Trouver le hash du fichier dans le commit HEAD
-    let query = "
-        SELECT b.content 
-        FROM branches br
-        JOIN manifest m ON m.commit_id = br.head_commit_id
-        JOIN store.blobs b ON m.blob_id = b.id
-        WHERE br.name = ? AND m.file_path = ?
-    ";
-
-    let mut stmt = conn.prepare(query)?;
-    stmt.bind((1, branch))?;
-    stmt.bind((2, relative_path.as_ref()))?;
-
-    if let Ok(State::Row) = stmt.next() {
-        // Attention : On suppose ici que c'est du texte (UTF-8)
-        let raw_content_blob: Vec<u8> = stmt.read("content")?;
-        let content_blob = crate::db::decompress(&raw_content_blob);
-        match String::from_utf8(content_blob) {
-            Ok(s) => Ok(s),
-            Err(_) => Ok(String::from("(Binary content)")),
-        }
-    } else {
-        Ok(String::new()) // Fichier introuvable (ne devrait pas arriver si Modified)
-    }
 }
 
 pub fn log(conn: &Connection, page: usize, per_page: usize) -> Result<(), sqlite::Error> {
