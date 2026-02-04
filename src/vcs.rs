@@ -2,9 +2,9 @@ use crate::db::get_current_branch;
 use crate::utils::commit_created;
 use crate::utils::ko;
 use crate::utils::ok;
+use crate::utils::ok_merkle_hash;
 use crate::utils::ok_status;
 use crate::utils::ok_tag;
-use crossterm::style::Stylize;
 use glob::GlobError;
 use glob::glob;
 use ignore::DirEntry;
@@ -217,7 +217,7 @@ fn is_directory(conn: &Connection, hash: &str) -> Result<bool, sqlite::Error> {
 
 fn format_mode(mode: i64) -> String {
     if mode == 0o755 {
-        "d".blue().bold().to_string()
+        "d".to_string()
     } else {
         "f".to_string()
     }
@@ -363,7 +363,7 @@ pub fn mount_version(
     let cache_path = Path::new(&cache_source);
 
     if !cache_path.exists() {
-        ok(&format!("Merkle tree ({})", &tree_hash[0..7]));
+        ok_merkle_hash(&tree_hash[0..7]);
         reconstruct_to_path(conn, &tree_hash, cache_path)?;
     }
 

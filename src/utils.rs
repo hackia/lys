@@ -29,11 +29,12 @@ pub fn ok_merkle_hash(h: &str) {
     let padding = x - h.len() as u16 - "m".len() as u16 - 5;
     let _ = execute!(
         stdout(),
-        Print("m".white()),
+        Print("m"),
         Print(" ".repeat(padding as usize)),
-        Print(" [ ".white().bold()),
-        Print(h.green().bold()),
-        Print(" ]\n".white().bold()),
+        Print(" [ "),
+        Print(h),
+        Print(" ]"),
+        Print("\n")
     );
 }
 
