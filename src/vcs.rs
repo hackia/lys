@@ -486,46 +486,45 @@ pub fn commit_manual(
     message: &str,
     author: &str,
     timestamp: i64,
+    tree_hash: &str, // Ajout du paramètre
 ) -> Result<i64, sqlite::Error> {
-    // 1. On récupère le hash du dernier commit inséré (le parent) pour la chaîne cryptographique
-    // Cela permet de lier mathématiquement ce commit au précédent
     let query_last = "SELECT hash FROM commits ORDER BY id DESC LIMIT 1";
     let mut stmt_last = conn.prepare(query_last)?;
-
     let parent_hash = if let Ok(State::Row) = stmt_last.next() {
         stmt_last.read::<String, _>(0)?
     } else {
-        String::from("") // Premier commit (Genesis)
+        String::from("")
     };
 
-    // 2. CORRECTION : On calcule un VRAI hash Blake3
-    // On mélange : Parent + Auteur + Message + Date
-    let commit_data = format!("{}{}{}{}", parent_hash, author, message, timestamp);
+    let commit_data = format!(
+        "{}{}{}{}{}",
+        parent_hash, author, message, timestamp, tree_hash
+    );
     let silex_hash = blake3::hash(commit_data.as_bytes()).to_hex().to_string();
 
-    // 3. Insertion propre
-    let query = "INSERT INTO commits (hash, parent_hash, author, message, timestamp) VALUES (?, ?, ?, ?, datetime(?, 'unixepoch'))";
+    // AJOUT DE tree_hash DANS LA REQUÊTE
+    let query = "INSERT INTO commits (hash, parent_hash, tree_hash, author, message, timestamp) 
+                 VALUES (?, ?, ?, ?, ?, datetime(?, 'unixepoch'))";
     let mut stmt = conn.prepare(query)?;
-
-    stmt.bind((1, silex_hash.as_str()))?; // On utilise le hash calculé
-
-    // On lie le parent (pour que l'arbre soit valide)
-    if parent_hash.is_empty() {
-        stmt.bind((2, Option::<&str>::None))?;
-    } else {
-        stmt.bind((2, Some(parent_hash.as_str())))?;
-    }
-
-    stmt.bind((3, author))?;
-    stmt.bind((4, message))?;
-    stmt.bind((5, timestamp))?;
+    stmt.bind((1, silex_hash.as_str()))?;
+    stmt.bind((
+        2,
+        if parent_hash.is_empty() {
+            None
+        } else {
+            Some(parent_hash.as_str())
+        },
+    ))?;
+    stmt.bind((3, tree_hash))?; // Bind de la valeur
+    stmt.bind((4, author))?;
+    stmt.bind((5, message))?;
+    stmt.bind((6, timestamp))?;
     stmt.next()?;
 
-    // On retourne l'ID
     let id_query = "SELECT last_insert_rowid()";
     let mut stmt_id = conn.prepare(id_query)?;
     stmt_id.next()?;
-    stmt_id.read(0)
+    Ok(stmt_id.read(0)?)
 }
 
 pub fn tag_create(conn: &Connection, name: &str, message: Option<&str>) -> Result<(), IoError> {
