@@ -11,6 +11,7 @@ use clap::{Arg, ArgAction, Command};
 use inquire::Text;
 use sqlite::State;
 use std::fs::File;
+use std::fs::read_to_string;
 use std::io::Error;
 use std::path::MAIN_SEPARATOR_STR;
 use std::path::Path;
@@ -247,6 +248,7 @@ fn perform_commit() -> Result<(), Error> {
     if !Path::new(".lys").exists() {
         return Err(Error::other("Not a lys repository."));
     }
+
     let connection =
         connect_lys(Path::new(current_dir_str)).map_err(|e| Error::other(e.to_string()))?;
 
@@ -455,7 +457,18 @@ fn main() -> Result<(), Error> {
             }
             Ok(())
         }
-        Some(("commit", _)) => perform_commit(),
+        Some(("commit", _)) => {
+            if read_to_string("syl")
+                .expect("missing syl file")
+                .trim()
+                .is_empty()
+            {
+                return Err(Error::other(
+                    "syl content cannot be empty ignore content before commit.",
+                ));
+            }
+            perform_commit()
+        }
         Some(("log", args)) => {
             let page = *args.get_one::<usize>("page").unwrap();
             let limit = *args.get_one::<usize>("limit").unwrap();
