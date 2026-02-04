@@ -198,7 +198,9 @@ pub fn spawn_lys_shell(conn: &sqlite::Connection, reference: Option<&str>) -> Re
 
     Ok(())
 }
-// Dans src/vcs.rs
+// Dans src/
+//
+//homevcs.rs
 
 pub fn mount_version(
     conn: &Connection,
@@ -207,33 +209,49 @@ pub fn mount_version(
 ) -> Result<(), sqlite::Error> {
     let target = Path::new(target_path);
 
-    // 1. Créer le point de montage s'il n'existe pas
-    if !target.exists() {
-        fs::create_dir_all(target).expect("Failed to create mount point");
-    }
-
-    // 2. Déterminer quel commit monter
-    let commit_id = if let Some(r) = reference {
-        // On réutilise tes fonctions existantes pour trouver le hash
-        get_commit_id_by_hash(conn, r)?
+    // 1. On récupère le tree_hash du commit cible
+    let tree_hash = if let Some(r) = reference {
+        // Recherche par hash partiel de commit
+        let query = "SELECT tree_hash FROM commits WHERE hash LIKE ? || '%' LIMIT 1";
+        let mut stmt = conn.prepare(query)?;
+        stmt.bind((1, r))?;
+        if let Ok(State::Row) = stmt.next() {
+            stmt.read::<String, _>(0)?
+        } else {
+            return Err(sqlite::Error {
+                code: None,
+                message: Some("Commit non trouvé".into()),
+            });
+        }
     } else {
-        let branch = get_current_branch(conn)?;
-        let (id, _) = get_branch_head_info(conn, &branch)?;
-        id
+        // Sinon HEAD de la branche actuelle
+        let branch = crate::db::get_current_branch(conn)?;
+        let query = "SELECT c.tree_hash FROM branches b JOIN commits c ON b.head_commit_id = c.id WHERE b.name = ?";
+        let mut stmt = conn.prepare(query)?;
+        stmt.bind((1, branch.as_str()))?;
+        if let Ok(State::Row) = stmt.next() {
+            stmt.read::<String, _>(0)?
+        } else {
+            return Err(sqlite::Error {
+                code: None,
+                message: Some("Branche vide".into()),
+            });
+        }
     };
 
-    let commit_id = commit_id.expect("Reference not found");
-
-    // 3. Préparer le dossier "source" (Cache interne de lys)
-    let cache_source = format!(".lys/mounts/{}", commit_id);
+    // 2. Préparation du cache interne (Identifié par le tree_hash pour déduplication)
+    let cache_source = format!(".lys/mounts/{}", &tree_hash[0..12]);
     let cache_path = Path::new(&cache_source);
 
     if !cache_path.exists() {
-        fs::create_dir_all(cache_path).expect("Failed to create cache dir");
-        // Ici on réutilise ta logique de checkout_head mais vers le cache
-        reconstruct_to_path(conn, commit_id, cache_path)?;
+        ok(&format!(
+            "Matérialisation de l'arbre Merkle {}...",
+            &tree_hash[0..7]
+        ));
+        reconstruct_to_path(conn, &tree_hash, cache_path)?;
     }
 
+    // 3. Appel au noyau (Linux/FreeBSD)
     #[cfg(target_os = "linux")]
     {
         use nix::mount::{MsFlags as MountFlags, mount};
@@ -279,30 +297,70 @@ pub fn mount_version(
         })?;
     }
 
-    ok(format!("Monté sur {}", target.display()).as_str());
+    // ... reste du code de montage (MS_BIND ou nmount) identique ...
+
+    ok(format!(
+        "Version {} montée avec succès sur {}",
+        &tree_hash[0..7],
+        target_path
+    )
+    .as_str());
     Ok(())
 }
 
-// Helper pour reconstruire les fichiers sans toucher au working dir actuel
 fn reconstruct_to_path(
     conn: &Connection,
-    commit_id: i64,
+    tree_hash: &str,
     dest: &Path,
 ) -> Result<(), sqlite::Error> {
-    let query = "SELECT m.file_path, b.content FROM manifest m JOIN store.blobs b ON m.blob_id = b.id WHERE m.commit_id = ?";
+    // 1. On s'assure que le dossier de destination existe
+    if !dest.exists() {
+        fs::create_dir_all(dest).unwrap();
+    }
+
+    // 2. On lance l'extraction récursive
+    extract_tree_recursive(conn, tree_hash, dest)?;
+
+    Ok(())
+}
+
+fn extract_tree_recursive(
+    conn: &Connection,
+    tree_hash: &str,
+    current_dest: &Path,
+) -> Result<(), sqlite::Error> {
+    // On récupère les enfants et on joint avec store.blobs pour avoir le contenu
+    let query = "
+        SELECT tn.name, tn.hash, tn.mode, b.content 
+        FROM tree_nodes tn
+        LEFT JOIN store.blobs b ON tn.hash = b.hash
+        WHERE tn.parent_tree_hash = ?";
+
     let mut stmt = conn.prepare(query)?;
-    stmt.bind((1, commit_id))?;
+    stmt.bind((1, tree_hash))?;
 
+    let mut entries = Vec::new();
     while let Ok(State::Row) = stmt.next() {
-        let path_str: String = stmt.read(0)?;
-        let raw_content: Vec<u8> = stmt.read(1)?;
-        let content = crate::db::decompress(&raw_content); //
-        let full_path = dest.join(&path_str);
+        entries.push((
+            stmt.read::<String, _>("name")?,
+            stmt.read::<String, _>("hash")?,
+            stmt.read::<i64, _>("mode")?,
+            stmt.read::<Option<Vec<u8>>, _>("content")?,
+        ));
+    }
 
-        if let Some(parent) = full_path.parent() {
-            fs::create_dir_all(parent).unwrap();
+    for (name, hash, mode, content) in entries {
+        let full_path = current_dest.join(name);
+
+        if mode == 0o755 {
+            // C'est un dossier
+            fs::create_dir_all(&full_path).unwrap();
+            extract_tree_recursive(conn, &hash, &full_path)?;
+        } else if let Some(raw_data) = content {
+            // C'est un fichier : on décompresse et on écrit
+            let decoded = crate::db::decompress(&raw_data);
+            fs::write(full_path, decoded).unwrap();
         }
-        fs::write(full_path, content).unwrap();
     }
     Ok(())
 }
