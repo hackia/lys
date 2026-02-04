@@ -1030,8 +1030,6 @@ fn store_tree_recursive(
 }
 
 pub fn commit(conn: &Connection, message: &str, author: &str) -> Result<(), Error> {
-    let root_path = std::env::current_dir().unwrap();
-
     // 1. On scanne et on construit l'arbre en mémoire (Bottom-up)
     let mut root_tree = Node::Directory {
         children: BTreeMap::new(),
@@ -1048,7 +1046,7 @@ pub fn commit(conn: &Connection, message: &str, author: &str) -> Result<(), Erro
             continue;
         }
 
-        let relative = path.strip_prefix(&root_path).unwrap();
+        let relative = path.strip_prefix("./").unwrap_or(path);
         let content_hash = calculate_hash(path).unwrap();
         let metadata = std::fs::metadata(path).unwrap();
 
@@ -1088,11 +1086,48 @@ pub fn commit(conn: &Connection, message: &str, author: &str) -> Result<(), Erro
     log_stmt.bind((1, format!("{{\"head\": \"{}\"}}", commit_hash).as_str()))?;
     log_stmt.next()?;
 
+    let id_query = "SELECT last_insert_rowid()";
+    let mut stmt_id = conn.prepare(id_query)?;
+    stmt_id.next()?;
+    let commit_id: i64 = stmt_id.read(0)?;
+
+    // On récupère la branche actuelle et on met à jour son pointeur HEAD
+    let branch = crate::db::get_current_branch(conn)?;
+    let update_branch = "INSERT INTO branches (name, head_commit_id) VALUES (?, ?) 
+                         ON CONFLICT(name) DO UPDATE SET head_commit_id = excluded.head_commit_id";
+    let mut stmt_br = conn.prepare(update_branch)?;
+    stmt_br.bind((1, branch.as_str()))?;
+    stmt_br.bind((2, commit_id))?;
+    stmt_br.next()?;
+
     conn.execute("COMMIT;")?;
     commit_created(&commit_hash[0..7]);
     Ok(())
 }
 
+pub fn get_head_state(
+    conn: &Connection,
+    branch: &str,
+) -> Result<HashMap<PathBuf, (String, i64)>, sqlite::Error> {
+    let mut state_map = HashMap::new();
+
+    // On va chercher le tree_hash du dernier commit de la branche
+    let query = "
+        SELECT c.tree_hash 
+        FROM branches b 
+        JOIN commits c ON b.head_commit_id = c.id 
+        WHERE b.name = ?";
+    let mut stmt = conn.prepare(query)?;
+    stmt.bind((1, branch))?;
+
+    if let Ok(State::Row) = stmt.next() {
+        let root_hash: String = stmt.read(0)?;
+        // On "aplatit" l'arbre Merkle pour obtenir une liste de fichiers utilisable
+        flatten_tree(conn, &root_hash, PathBuf::new(), &mut state_map)?;
+    }
+
+    Ok(state_map)
+}
 // On met à jour get_branch_head_info pour chercher dans 'old' si besoin
 fn get_branch_head_info(conn: &Connection, branch: &str) -> Result<(Option<i64>, String), Error> {
     // 1. Base actuelle
@@ -1117,39 +1152,36 @@ fn get_branch_head_info(conn: &Connection, branch: &str) -> Result<(Option<i64>,
     Ok((None, String::new()))
 }
 
-pub fn get_head_state(
+fn flatten_tree(
     conn: &Connection,
-    branch: &str,
-) -> Result<HashMap<PathBuf, (String, i64)>, sqlite::Error> {
-    let mut state_map = HashMap::new();
-    let query_head = "SELECT head_commit_id FROM branches WHERE name = ?";
-    let mut statement = conn.prepare(query_head)?;
-    statement.bind((1, branch))?;
+    tree_hash: &str,
+    current_path: PathBuf,
+    state: &mut HashMap<PathBuf, (String, i64)>,
+) -> Result<(), sqlite::Error> {
+    let query = "SELECT name, hash, mode FROM tree_nodes WHERE parent_tree_hash = ?";
+    let mut stmt = conn.prepare(query)?;
+    stmt.bind((1, tree_hash))?;
 
-    let head_commit_id = if let Ok(State::Row) = statement.next() {
-        statement.read::<i64, _>("head_commit_id")?
-    } else {
-        return Ok(state_map); // Pas de commit, repo vide
-    };
-
-    // 2. Récupérer le manifest de ce commit
-    let query_manifest = "
-        SELECT m.file_path, b.hash, m.asset_id 
-        FROM manifest m
-        JOIN store.blobs b ON m.blob_id = b.id
-        WHERE m.commit_id = ?
-    ";
-    let mut statement = conn.prepare(query_manifest)?;
-    statement.bind((1, head_commit_id))?;
-
-    while let Ok(State::Row) = statement.next() {
-        let path_str: String = statement.read("file_path")?;
-        let hash: String = statement.read("hash")?;
-        let asset_id: i64 = statement.read("asset_id")?;
-
-        state_map.insert(PathBuf::from(path_str), (hash, asset_id));
+    let mut entries = Vec::new();
+    while let Ok(State::Row) = stmt.next() {
+        entries.push((
+            stmt.read::<String, _>("name")?,
+            stmt.read::<String, _>("hash")?,
+            stmt.read::<i64, _>("mode")?,
+        ));
     }
-    Ok(state_map)
+
+    for (name, hash, mode) in entries {
+        let path = current_path.join(name);
+        if mode == 0o755 {
+            // C'est un répertoire
+            flatten_tree(conn, &hash, path, state)?;
+        } else {
+            // On stocke le fichier (Asset ID à 0 car on utilise maintenant les hashes)
+            state.insert(path, (hash, 0));
+        }
+    }
+    Ok(())
 }
 
 pub fn status(conn: &Connection, root_path: &str, branch: &str) -> Result<Vec<FileStatus>, Error> {
