@@ -32,9 +32,10 @@ fn cli() -> Command {
         .about(env!("CARGO_PKG_DESCRIPTION"))
         .author("Saigo Ekitae <saigoekitae@gmail.com>")
         .version(env!("CARGO_PKG_VERSION"))
+        .subcommand(Command::new("doctor").about("Check system health and permissions for lys"))
         .subcommand(Command::new("init").about("Initialize current directory"))
-        .subcommand(Command::new("new").about("create a new silex project"))
-        .subcommand(Command::new("status").about("show changes in working directory"))
+        .subcommand(Command::new("new").about("Create a new lys project"))
+        .subcommand(Command::new("status").about("Show changes in working directory"))
         .subcommand(
             Command::new("shell")
                 .about("Open a temporary shell with the code mounted")
@@ -317,7 +318,10 @@ fn main() -> Result<(), Error> {
     let app = args.clone().get_matches();
     match app.subcommand() {
         Some(("new", _)) => new_project(),
-        // Dans src/main.rs -> fonction main()
+        Some(("doctor", _)) => {
+            vcs::doctor().expect("system health degraded");
+            Ok(())
+        }
         Some(("mount", sub_args)) => {
             let target = sub_args.get_one::<String>("target").unwrap();
             let reference = sub_args.get_one::<String>("ref");

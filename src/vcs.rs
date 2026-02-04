@@ -53,6 +53,49 @@ pub enum FileStatus {
     Unchanged,
 }
 
+// Dans src/vcs.rs
+
+#[cfg(target_os = "freebsd")]
+pub fn doctor() -> Result<(), String> {
+    use std::process::Command;
+
+    // 1. Vérification du dossier .lys
+    if Path::new(".lys").exists() {
+        ok("Database .lys detected");
+    } else {
+        ko("Not a lys repository.");
+    }
+
+    // 2. Vérification de vfs.usermount (FreeBSD spécifique)
+    let output = Command::new("sysctl")
+        .arg("-n")
+        .arg("vfs.usermount")
+        .output()
+        .map_err(|_| "failed to read sysctl")?;
+
+    let usermount = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if usermount == "1" {
+        ok("vfs.usermount eq 1 (User mount authorized).");
+    } else {
+        ko("vfs.usermount eq 0. run sudo sysctl vfs.usermount=1 !");
+    }
+
+    // 3. Vérification des permissions sur /tmp (pour le shell)
+    if fs::metadata("/tmp").is_ok() {
+        ok("The /tmp dir is accessible for the ephemeral operations.");
+    }
+
+    // 4. Vérification du cache de montage
+    let cache_path = Path::new(".lys/mounts");
+    if !cache_path.exists() {
+        ok("The cache will be created by 'lys mount'.");
+    } else {
+        ok("Cache ready to use.");
+    }
+    ok("The system ready");
+    Ok(())
+}
+
 pub fn ls_tree(conn: &Connection, tree_hash: &str, prefix: &str) -> Result<(), sqlite::Error> {
     // On récupère tous les enfants directs de ce hash de dossier
     let query =
@@ -215,9 +258,9 @@ pub fn umount(path: &str) -> Result<(), String> {
     let p = std::path::Path::new(path);
 
     // Sur FreeBSD, on utilise unmount avec MntFlags
-    unmount(p, MntFlags::empty()).map_err(|e| format!("Échec du démontage de {} : {}", path, e))?;
+    unmount(p, MntFlags::empty()).map_err(|e| format!("umount of the path {path} failed : {e}"))?;
 
-    crate::utils::ok(&format!("Démontage de {} réussi", path));
+    ok(&format!("Umounted: {path}"));
     Ok(())
 }
 
@@ -225,39 +268,41 @@ pub fn spawn_lys_shell(conn: &sqlite::Connection, reference: Option<&str>) -> Re
     let temp_mount = format!("/tmp/lys_shell_{}", uuid::Uuid::new_v4().simple());
     let mount_path = std::path::Path::new(&temp_mount);
 
-    // 1. On monte le code (on réutilise ta commande qui fonctionne !)
-    mount_version(conn, &temp_mount, reference).expect("failed to mount version");
+    std::fs::create_dir_all(mount_path).map_err(|e| e.to_string())?;
+    if let Err(e) = mount_version(conn, &temp_mount, reference) {
+        let _ = std::fs::remove_dir_all(mount_path);
+        return Err(format!("Mount error: {e}"));
+    }
 
     // 2. Préparation du message d'accueil (Saison + Messages + TODOs)
     let season = crate::db::Season::current(); //
     let user = crate::commit::author(); //
 
-    println!("\nLYS SHELL - Season: {season} | User: {user}");
-    println!("🚀 Entrée dans le shell éphémère. Tapez 'exit' pour quitter.");
+    let (shell, s) = if cfg!(target_os = "linux") {
+        (CString::new("bash").expect(""), "bash")
+    } else {
+        (CString::new("tcsh").expect(""), "tcsh")
+    };
+    ok(format!("Season: {season} User: {user} Shell: {s}").as_str());
+    ok("Enter exit to quit");
 
     // 3. Gestion du processus Shell
     match unsafe { fork() } {
         Ok(ForkResult::Parent { child }) => {
             // Le parent attend que l'utilisateur quitte le shell
             waitpid(child, None).ok();
-
+            println!();
+            ok("clean the shell");
             // 4. Nettoyage automatique (Lest et démontage)
-            println!("\nNettoyage du shell...");
-            umount(&temp_mount)
-                .map_err(|e| println!("Erreur nettoyage : {}", e))
-                .ok();
+            umount(&temp_mount).map_err(|e| println!("Error: {e}")).ok();
             std::fs::remove_dir_all(mount_path).ok();
-            ok("Shell Lys fermé proprement.");
+            ok("shell lys successfully cleaned.");
         }
 
         Ok(ForkResult::Child) => {
-            // Le fils remplace son processus par un shell (ex: fish ou bash)
-            let shell = CString::new("fish").unwrap(); // Ou ton shell préféré
             let args = [shell.clone()];
-
             // On change le répertoire de travail vers le montage
             std::env::set_current_dir(mount_path).ok();
-
             execvp(&shell, &args).map_err(|e| e.to_string())?;
         }
         Err(e) => return Err(format!("Fork failed: {e}")),
@@ -287,7 +332,7 @@ pub fn mount_version(
         } else {
             return Err(sqlite::Error {
                 code: None,
-                message: Some("Commit non trouvé".into()),
+                message: Some("Commit not founded".into()),
             });
         }
     } else {
@@ -301,7 +346,7 @@ pub fn mount_version(
         } else {
             return Err(sqlite::Error {
                 code: None,
-                message: Some("Branche vide".into()),
+                message: Some("Branch empty".into()),
             });
         }
     };
@@ -311,10 +356,7 @@ pub fn mount_version(
     let cache_path = Path::new(&cache_source);
 
     if !cache_path.exists() {
-        ok(&format!(
-            "Matérialisation de l'arbre Merkle {}...",
-            &tree_hash[0..7]
-        ));
+        ok(&format!("Merkle tree ({})", &tree_hash[0..7]));
         reconstruct_to_path(conn, &tree_hash, cache_path)?;
     }
 
@@ -360,14 +402,14 @@ pub fn mount_version(
         // 3. L'appel système
         nm.nmount(MntFlags::MNT_RDONLY).map_err(|e| sqlite::Error {
             code: Some(1),
-            message: Some(format!("Erreur nmount: {}", e)),
+            message: Some(format!("nmount error: {e}")),
         })?;
     }
 
     // ... reste du code de montage (MS_BIND ou nmount) identique ...
 
     ok(format!(
-        "Version {} montée avec succès sur {}",
+        "Version {} monted successfully on {}",
         &tree_hash[0..7],
         target_path
     )
