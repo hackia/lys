@@ -6,6 +6,7 @@ use crate::db::{connect_lys, get_current_branch};
 use crate::git::extract_repo_name;
 use crate::utils::ko;
 use crate::utils::ok;
+use crate::utils::ok_merkle_hash;
 use breathes::hooks::run_hooks;
 use clap::{Arg, ArgAction, Command};
 use inquire::Text;
@@ -345,7 +346,7 @@ fn main() -> Result<(), Error> {
                 .execute(LYS_INIT)
                 .is_ok()
             {
-                ok("Initialized empty Silex repository");
+                ok("Initialized empty lys repository");
                 Ok(())
             } else {
                 Err(Error::other("Failed to init"))
@@ -400,16 +401,17 @@ fn main() -> Result<(), Error> {
 
             if let Ok(State::Row) = stmt.next() {
                 let root_hash: String = stmt.read(0).unwrap();
-                println!("Repository tree - Root: {root_hash}");
+                ok_merkle_hash(root_hash.as_str());
                 vcs::ls_tree(&conn, &root_hash, "").map_err(|e| Error::other(e.to_string()))?;
             } else {
-                println!("Repository is empty. Commit something first!");
+                ok("repository empty. Commit something first!");
             }
             Ok(())
         }
         Some(("keygen", _)) => {
             let current_dir = std::env::current_dir()?;
             crypto::generate_keypair(&current_dir).expect("failed to create keys");
+            ok("keys generated successfully");
             Ok(())
         }
         Some(("status", _)) => check_status(),

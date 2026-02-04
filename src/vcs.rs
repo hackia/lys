@@ -118,13 +118,12 @@ pub fn ls_tree(conn: &Connection, tree_hash: &str, prefix: &str) -> Result<(), s
         let is_last = i == count - 1;
         let connector = if is_last { "└── " } else { "├── " };
 
-        // Affichage du nom avec son hash abrégé (pour le style VCS)
         println!(
-            "{} {}{:<20} \x1b[90m({})\x1b[0m",
+            "{} [ {} ] {}{:<20}\x1b[0m",
             format_mode(mode),
+            &hash[0..7],
             prefix,
             connector.to_string() + &name,
-            &hash[0..7]
         );
 
         // Si le hash possède lui-même des enfants dans tree_nodes, c'est un dossier
@@ -292,14 +291,22 @@ pub fn spawn_lys_shell(conn: &sqlite::Connection, reference: Option<&str>) -> Re
             // Le parent attend que l'utilisateur quitte le shell
             waitpid(child, None).ok();
             println!();
-            ok("clean the shell");
+            ok("Clean the shell");
             // 4. Nettoyage automatique (Lest et démontage)
             umount(&temp_mount).map_err(|e| println!("Error: {e}")).ok();
             std::fs::remove_dir_all(mount_path).ok();
-            ok("shell lys successfully cleaned.");
+            ok("Shell lys successfully cleaned.");
         }
-
+        // Dans src/vcs.rs, dans ForkResult::Child
         Ok(ForkResult::Child) => {
+            // On récupère le chemin absolu du projet actuel (Base Terre)
+            let project_root = std::env::current_dir().unwrap();
+
+            unsafe {
+                std::env::set_var("LYS_PROJECT_ROOT", project_root.to_str().unwrap());
+            }
+
+            // ... reste de ta logique (PS1, variables, etc.) ...
             let args = [shell.clone()];
             // On change le répertoire de travail vers le montage
             std::env::set_current_dir(mount_path).ok();

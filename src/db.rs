@@ -197,7 +197,9 @@ pub fn connect_lys(root_path: &Path) -> Result<Connection, sqlite::Error> {
     let history_dir = db_dir.join(format!("{current_year}/{s}"));
     let db_full_path = history_dir.join(format!("{s}.db"));
 
-    create_dir_all(&history_dir).expect("failed to create the .lys/db directory");
+    if std::env::var("LYS_SHELL").is_err() {
+        create_dir_all(&history_dir).expect("failed to create the .lys/db directory");
+    }
     let conn = Connection::open(db_full_path.to_str().unwrap())?;
 
     // --- CORRECTION : ATTACHER LE STORE EN PREMIER ---

@@ -23,6 +23,20 @@ pub fn ok(description: &str) {
     );
 }
 
+pub fn ok_merkle_hash(h: &str) {
+    let (x, _) = size().expect("failed to get term size");
+
+    let padding = x - h.len() as u16 - "m".len() as u16 - 5;
+    let _ = execute!(
+        stdout(),
+        Print("m".white()),
+        Print(" ".repeat(padding as usize)),
+        Print(" [ ".white().bold()),
+        Print(h.green().bold()),
+        Print(" ]\n".white().bold()),
+    );
+}
+
 pub fn ko(description: &str) {
     let (x, _) = size().expect("failed to get term size");
 
