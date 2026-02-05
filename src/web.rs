@@ -1,18 +1,23 @@
+use crate::crypto::verify_signature;
+use crate::db::decompress;
 use crate::utils::ok;
 use axum::{
     Router,
+    body::Bytes,
     extract::{Path as UrlPath, State},
+    http::{HeaderMap, StatusCode},
     response::Html,
-    routing::get,
+    routing::{get, post},
 };
 use sqlite::Connection;
 use std::net::SocketAddr;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 // On a besoin de partager la connexion BDD entre les threads du serveur
 // SQLite n'est pas "Thread Safe" par défaut, on le met dans un Mutex
-struct AppState {
-    conn: Mutex<Connection>,
+pub struct AppState {
+    pub conn: Mutex<Connection>,
 }
 
 pub async fn start_server(repo_path: &str, port: u16) {
@@ -25,11 +30,12 @@ pub async fn start_server(repo_path: &str, port: u16) {
         conn: Mutex::new(conn),
     });
 
-    // Définition des routes
     let app = Router::new()
         .route("/", get(idx_commits))
         .route("/commit/{id}", get(show_commit))
         .route("/file/{hash}", get(show_file))
+        // --- NOUVELLE ROUTE POUR LE TRANSFERT ---
+        .route("/upload/{hash}", post(upload_atom))
         .with_state(shared_state);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
@@ -41,10 +47,7 @@ pub async fn start_server(repo_path: &str, port: u16) {
     axum::serve(listener, app).await.unwrap();
 }
 
-// --- HANDLERS (Les fonctions qui répondent aux requêtes) ---
-
-// 1. PAGE D'ACCUEIL : LISTE DES COMMITS
-async fn idx_commits(State(state): State<Arc<AppState>>) -> Html<String> {
+pub async fn idx_commits(State(state): State<Arc<AppState>>) -> Html<String> {
     let conn = state.conn.lock().unwrap();
     let query = "SELECT id, hash, author, message, timestamp FROM commits ORDER BY id DESC";
 
@@ -144,7 +147,7 @@ async fn show_file(
     if let Ok(sqlite::State::Row) = stmt.next() {
         let content: Vec<u8> = stmt.read("content").unwrap();
         // On essaie de convertir en UTF-8 pour l'afficher
-        let text = String::from_utf8(content)
+        let text = String::from_utf8(decompress(&content))
             .unwrap_or_else(|_| String::from("[Binary Content - Cannot Display]"));
 
         return Html(format!(
@@ -156,4 +159,44 @@ async fn show_file(
         ));
     }
     Html(String::from("File not found"))
+}
+
+async fn upload_atom(
+    State(state): State<Arc<AppState>>,
+    UrlPath(hash): UrlPath<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> StatusCode {
+    // 1. On récupère la signature envoyée par le client dans l'entête
+    let signature = match headers.get("X-Silex-Signature") {
+        Some(s) => s.to_str().unwrap_or(""),
+        None => return StatusCode::UNAUTHORIZED, // Pas de signature = Rejet
+    };
+
+    // 2. Vérification de la signature (Souveraineté)
+    // On utilise la clé publique stockée localement sur le serveur
+    let root_path = Path::new(".");
+    match verify_signature(root_path, &hash, signature) {
+        Ok(true) => {
+            // 3. Vérification de l'intégrité (Sanctité du Numérateur)
+            let actual_hash = blake3::hash(&body).to_hex().to_string();
+            if actual_hash != hash {
+                return StatusCode::BAD_REQUEST; // Le contenu a été modifié !
+            }
+
+            // 4. Stockage dans la base SQLite
+            let conn = state.conn.lock().unwrap();
+            let query = "INSERT OR IGNORE INTO store.blobs (hash, content, size) VALUES (?, ?, ?)";
+            let mut stmt = conn.prepare(query).unwrap();
+            stmt.bind((1, hash.as_str())).unwrap();
+            stmt.bind((2, &body[..])).unwrap();
+            stmt.bind((3, body.len() as i64)).unwrap();
+
+            match stmt.next() {
+                Ok(_) => StatusCode::CREATED,
+                Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            }
+        }
+        _ => StatusCode::FORBIDDEN, // Signature invalide !
+    }
 }

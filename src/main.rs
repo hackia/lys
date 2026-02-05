@@ -37,6 +37,8 @@ fn cli() -> Command {
         .subcommand(Command::new("init").about("Initialize current directory"))
         .subcommand(Command::new("new").about("Create a new lys project"))
         .subcommand(Command::new("status").about("Show changes in working directory"))
+        .subcommand(Command::new("push").about("Push local commits to a remote architect"))
+        .subcommand(Command::new("pull").about("Pull commits from a remote architect"))
         .subcommand(
             Command::new("shell")
                 .about("Open a temporary shell with the code mounted")
@@ -75,6 +77,11 @@ fn cli() -> Command {
         )
         .subcommand(
             Command::new("keygen").about("Generate Ed25519 identity keys for signing commits"),
+        )
+        .subcommand(
+            Command::new("serve")
+                .about("Start the Silex Node (Daemon) to receive atoms")
+                .arg(Arg::new("port").short('p').default_value("3000")),
         )
         .subcommand(Command::new("audit").about("Verify integrity of commit signatures"))
         .subcommand(
@@ -294,6 +301,7 @@ fn new_project() -> Result<(), Error> {
             .expect("failed to get name")
             .to_string();
         if (Path::new(project.as_str())).is_dir() {
+            ko("project already exist");
             project.clear();
         }
     }
@@ -319,6 +327,17 @@ fn main() -> Result<(), Error> {
     let app = args.clone().get_matches();
     match app.subcommand() {
         Some(("new", _)) => new_project(),
+        Some(("serve", args)) => {
+            let port: u16 = args
+                .get_one::<String>("port")
+                .unwrap()
+                .parse()
+                .unwrap_or(3000);
+            let rt = tokio::runtime::Runtime::new()?;
+            // On lance le serveur sur le répertoire actuel
+            rt.block_on(crate::web::start_server(".", port));
+            Ok(())
+        }
         Some(("doctor", _)) => {
             vcs::doctor().expect("system health degraded");
             Ok(())

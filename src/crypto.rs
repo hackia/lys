@@ -1,12 +1,29 @@
 use crate::utils::{ko_audit_commit, ok, ok_audit_commit};
-use ed25519_dalek::ed25519::signature::SignerMut;
-use ed25519_dalek::{Signature, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::Signature;
+use ed25519_dalek::SigningKey;
+use ed25519_dalek::VerifyingKey;
+use ed25519_dalek::{Signer, Verifier};
 use rand::rngs::OsRng;
 use sqlite::{Connection, State};
 use std::fs;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::Path;
+
+pub fn sign_transfer(hash: &str, private_key_bytes: &[u8]) -> Vec<u8> {
+    let signing_key = SigningKey::from_bytes(private_key_bytes.try_into().unwrap());
+    // On signe le hash de l'atome
+    let signature: Signature = signing_key.sign(hash.as_bytes());
+    signature.to_vec()
+}
+
+pub fn verify_transfer(hash: &str, signature_bytes: &[u8], public_key_bytes: &[u8]) -> bool {
+    let verifying_key = VerifyingKey::from_bytes(public_key_bytes.try_into().unwrap()).unwrap();
+    let signature = Signature::from_slice(signature_bytes).unwrap();
+
+    // Si la signature est valide, l'atome est authentique
+    verifying_key.verify(hash.as_bytes(), &signature).is_ok()
+}
 
 pub fn generate_keypair(root_path: &Path) -> Result<(), String> {
     let identity_dir = root_path.join(".lys/identity");
@@ -36,8 +53,6 @@ pub fn generate_keypair(root_path: &Path) -> Result<(), String> {
     ok("Keys has been successfully generated");
     Ok(())
 }
-
-// Signe un message (le hash du commit)
 pub fn sign_message(root_path: &Path, message: &str) -> Result<String, String> {
     let secret_path = root_path.join(".lys/identity/secret.key");
 
@@ -50,7 +65,7 @@ pub fn sign_message(root_path: &Path, message: &str) -> Result<String, String> {
     let mut bytes = [0u8; 32];
     file.read_exact(&mut bytes).expect("failed to read key");
 
-    let mut signing_key = SigningKey::from_bytes(&bytes);
+    let signing_key = SigningKey::from_bytes(&bytes);
 
     // 2. Signature
     let signature: Signature = signing_key.sign(message.as_bytes());

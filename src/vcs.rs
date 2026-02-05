@@ -8,6 +8,7 @@ use crate::utils::ok_tag;
 use glob::GlobError;
 use glob::glob;
 use ignore::DirEntry;
+use indicatif::{ProgressBar, ProgressStyle};
 use miniz_oxide::inflate;
 use nix::sys::wait::waitpid;
 use nix::unistd::{ForkResult, execvp, fork};
@@ -25,7 +26,6 @@ use std::fs::create_dir_all;
 use std::fs::remove_dir_all;
 use std::io::Error as IoError;
 use std::io::Write;
-// On renomme pour clarifier
 use std::io::{Read, Result as IoResult};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -57,6 +57,66 @@ pub enum FileStatus {
     Unchanged,
 }
 
+pub fn push_atoms(
+    conn: &sqlite::Connection,
+    remote_url: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // 1. Lister les hashes que tu possèdes
+    let mut stmt = conn.prepare("SELECT hash FROM blobs")?;
+
+    // 2. Préparer une requête (ex: avec reqwest) pour envoyer chaque blob
+    let client = reqwest::blocking::Client::new();
+
+    while let Ok(sqlite::State::Row) = stmt.next() {
+        let hash: String = stmt.read(0)?;
+
+        // On récupère le contenu brut (déjà compressé en zlib dans ta DB)
+        // fetch_blob utilise déjà le chemin vers .lys/db/store.db
+        let content = fetch_blob(std::path::Path::new("."), &hash)?;
+
+        // 3. Le transfert : On envoie le hash et le binaire
+        let res = client
+            .post(format!("{remote_url}/upload/{hash}"))
+            .body(content)
+            .send()?;
+
+        if res.status().is_success() {
+            ok(format!("Atom {} transfered", &hash[0..7]).as_str());
+        }
+    }
+    Ok(())
+}
+
+pub fn sync(destination_path: &str) -> Result<(), IoError> {
+    let files: Vec<Result<PathBuf, GlobError>> = glob("./.lys/db/*.db").expect("a").collect();
+    let total_files = files.len();
+
+    // Création de la barre
+    let pb = ProgressBar::new(total_files as u64);
+    pb.set_style(ProgressStyle::default_bar()
+        .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta}) {msg}")
+        .expect("style fail")
+        .progress_chars("#>-"));
+
+    let x = Path::new(destination_path);
+    create_dir_all(format!("{destination_path}/.lys/db"))?;
+    if x.exists() {
+        for file in files.iter().flatten() {
+            let z = file.file_name().expect("failed to get filename");
+            pb.set_message(format!("Syncing {}", z.to_string_lossy()));
+
+            copy(
+                file.as_path().to_str().expect("failed to get file path"),
+                x.join(format!(".lys/db/{}", z.display())),
+            )?;
+
+            pb.inc(1); // On avance la barre
+        }
+    }
+    pb.finish_with_message("Backup complete");
+    Ok(())
+}
+
 /// Va chercher un blob en utilisant un chemin absolu ou calculé
 pub fn fetch_blob(repo_root: &Path, hash: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     // Construction propre du chemin : repo_root + .lys/db/store.db
@@ -65,8 +125,7 @@ pub fn fetch_blob(repo_root: &Path, hash: &str) -> Result<Vec<u8>, Box<dyn std::
     // Vérification de survie : est-ce que le fichier existe vraiment ?
     if !db_path.exists() {
         return Err(format!(
-            "Erreur fatale : La base de données est introuvable au chemin : {:?}",
-            db_path
+            "Erreur fatale : La base de données est introuvable au chemin : {db_path:?}"
         )
         .into());
     }
@@ -82,14 +141,13 @@ pub fn fetch_blob(repo_root: &Path, hash: &str) -> Result<Vec<u8>, Box<dyn std::
 
     if let Ok(sqlite::State::Row) = stmt.next() {
         let compressed: Vec<u8> = stmt.read(0)?;
-
         let decompressed = inflate::decompress_to_vec_zlib(&compressed)
-            .map_err(|e| format!("Erreur de décompression pour {}: {:?}", hash, e))?;
+            .map_err(|e| format!("Erreur de décompression pour {hash}: {e:?}"))?;
 
         return Ok(decompressed);
     }
 
-    Err(format!("Blob {} introuvable dans le store à {:?}", hash, db_path).into())
+    Err(format!("Blob {hash} not found in the store {db_path:?}").into())
 }
 
 fn restore_tree(
@@ -316,31 +374,6 @@ fn format_mode(mode: i64) -> String {
     }
 }
 
-pub fn sync(destination_path: &str) -> Result<(), IoError> {
-    let files: Vec<Result<PathBuf, GlobError>> = glob("./.lys/db/*.db").expect("a").collect();
-    let x = Path::new(destination_path);
-    create_dir_all(format!("{destination_path}/.lys/db"))?;
-    if x.exists() {
-        for file in files.iter().flatten() {
-            let z = file.file_name().expect("failed to get filename");
-            copy(
-                file.as_path()
-                    .to_str()
-                    .expect("failed to get file path")
-                    .to_string()
-                    .as_str(),
-                x.join(format!(".lys/db/{}", z.display()).as_str()),
-            )?;
-            ok(z.to_str()
-                .expect("failed to get filename")
-                .to_string()
-                .as_str());
-        }
-    }
-    ok("Backup complete");
-    Ok(())
-}
-
 #[cfg(target_os = "freebsd")]
 use nix::mount::{MntFlags, unmount};
 
@@ -357,7 +390,7 @@ pub fn umount(path: &str) -> Result<(), String> {
 }
 
 pub fn spawn_lys_shell(conn: &sqlite::Connection, reference: Option<&str>) -> Result<(), String> {
-    let temp_mount = format!("/tmp/lys_shell_{}", uuid::Uuid::new_v4().simple());
+    let temp_mount = format!("/tmp/_{}", uuid::Uuid::new_v4().simple());
     let mount_path = std::path::Path::new(&temp_mount);
 
     std::fs::create_dir_all(mount_path).map_err(|e| e.to_string())?;
@@ -399,7 +432,6 @@ pub fn spawn_lys_shell(conn: &sqlite::Connection, reference: Option<&str>) -> Re
                 std::env::set_var("LYS_PROJECT_ROOT", project_root.to_str().unwrap());
             }
 
-            // ... reste de ta logique (PS1, variables, etc.) ...
             let args = [shell.clone()];
             // On change le répertoire de travail vers le montage
             std::env::set_current_dir(mount_path).ok();
@@ -418,7 +450,6 @@ pub fn mount_version(
 ) -> Result<(), sqlite::Error> {
     let target = Path::new(target_path);
 
-    // 1. On récupère le tree_hash du commit cible
     let tree_hash = if let Some(r) = reference {
         // Recherche par hash partiel de commit
         let query = "SELECT tree_hash FROM commits WHERE hash LIKE ? || '%' LIMIT 1";
@@ -585,17 +616,14 @@ pub fn commit_manual(
         String::from("")
     };
 
-    let commit_data = format!(
-        "{}{}{}{}{}",
-        parent_hash, author, message, timestamp, tree_hash
-    );
-    let silex_hash = blake3::hash(commit_data.as_bytes()).to_hex().to_string();
+    let commit_data = format!("{parent_hash}{author}{message}{timestamp}{tree_hash}");
+    let lys_hash = blake3::hash(commit_data.as_bytes()).to_hex().to_string();
 
     // AJOUT DE tree_hash DANS LA REQUÊTE
     let query = "INSERT INTO commits (hash, parent_hash, tree_hash, author, message, timestamp) 
                  VALUES (?, ?, ?, ?, ?, datetime(?, 'unixepoch'))";
     let mut stmt = conn.prepare(query)?;
-    stmt.bind((1, silex_hash.as_str()))?;
+    stmt.bind((1, lys_hash.as_str()))?;
     stmt.bind((
         2,
         if parent_hash.is_empty() {
@@ -613,7 +641,7 @@ pub fn commit_manual(
     let id_query = "SELECT last_insert_rowid()";
     let mut stmt_id = conn.prepare(id_query)?;
     stmt_id.next()?;
-    Ok(stmt_id.read(0)?)
+    stmt_id.read(0)
 }
 
 pub fn tag_create(conn: &Connection, name: &str, message: Option<&str>) -> Result<(), IoError> {
@@ -1054,8 +1082,7 @@ pub fn log(conn: &Connection, page: usize, per_page: usize) -> Result<(), sqlite
         println!("{}", Table::new(&logs));
         if x >= 120 {
             ok(format!(
-                "\nPage {page} ({}/{per_page} commits). Use --page {} for see the suite.",
-                x,
+                "\nPage {page} ({x}/{per_page} commits). Use --page {} for see the suite.",
                 page + 1
             )
             .as_str());
@@ -1195,7 +1222,7 @@ pub fn commit(conn: &Connection, message: &str, author: &str) -> Result<(), Erro
 
     // 3. Création du commit avec le lien vers l'arbre racine
     let timestamp = chrono::Utc::now().to_rfc3339();
-    let commit_hash = blake3::hash(format!("{}{}{}", root_hash, author, message).as_bytes())
+    let commit_hash = blake3::hash(format!("{root_hash}{author}{message}").as_bytes())
         .to_hex()
         .to_string();
 
@@ -1212,7 +1239,7 @@ pub fn commit(conn: &Connection, message: &str, author: &str) -> Result<(), Erro
     // 4. On enregistre l'opération dans l'OpLog pour le Undo
     let log_query = "INSERT INTO operations_log (operation_type, view_state) VALUES ('commit', ?)";
     let mut log_stmt = conn.prepare(log_query)?;
-    log_stmt.bind((1, format!("{{\"head\": \"{}\"}}", commit_hash).as_str()))?;
+    log_stmt.bind((1, format!("{{\"head\": \"{commit_hash}\"}}").as_str()))?;
     log_stmt.next()?;
 
     let id_query = "SELECT last_insert_rowid()";

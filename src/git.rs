@@ -56,7 +56,7 @@ fn build_vfs_tree_parallel(
                             Ok(_) => {
                                 indexed.insert(h);
                             }
-                            Err(e) => eprintln!("Erreur store : {}", e),
+                            Err(e) => eprintln!("Erreur store : {e}"),
                         }
                     }
                 }
@@ -66,7 +66,7 @@ fn build_vfs_tree_parallel(
     // 3. PHASE SÉQUENTIELLE : Construction de l'arborescence
     for (oid, name, kind, mode) in entries {
         let entry_hash = oid.to_string();
-        pb.set_message(format!("{entry_hash}"));
+        pb.set_message(entry_hash.to_string());
 
         // FIX PERFORMANCE : On utilise la connexion 'conn' passée en paramètre
         // au lieu de réouvrir la DB à chaque fichier
@@ -112,7 +112,7 @@ pub fn import_from_git(
     pb_git.set_style(
         ProgressStyle::default_bar()
             .template(
-                "{spinner:.white} [1/2] Git Fetch:    [{bar:40.white}] {pos}/{len} objects ({msg})",
+                "{spinner:.white} [1/2] Git Fetch    [{bar:40.white}] {pos}/{len} objects ({msg})",
             )?
             .progress_chars("=>-"),
     );
@@ -162,7 +162,7 @@ pub fn import_from_git(
         // --- BARRE 2 : IMPORTATION LYS ---
         let pb_lys = m.add(ProgressBar::new(commits_oids.len() as u64));
         pb_lys.set_style(ProgressStyle::default_bar()
-            .template("{spinner:.white} [2/2] Lys Import:   [{bar:40.white}] {pos}/{len} commits ({msg})")?
+            .template("{spinner:.white} [2/2] Lys Import    [{bar:40.white}] {pos}/{len} commits ({msg})")?
             .progress_chars("=>-"));
 
         conn.execute("BEGIN TRANSACTION;")?;
@@ -176,7 +176,7 @@ pub fn import_from_git(
             let tree = commit.tree()?;
             let tree_hash = tree.id().to_string();
 
-            pb_lys.set_message(format!("{:.7}", tree_hash));
+            pb_lys.set_message(tree_hash.to_string());
 
             // UTILISE LA VERSION PARALLELE (et passe le chemin du repo, pas la connexion)
             build_vfs_tree_parallel(
