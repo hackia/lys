@@ -186,9 +186,9 @@ pub fn import_from_git(
                 &temp_path, // repo_path
                 target_dir,
                 &conn,
-                &tree,
-                "ROOT",
-                Arc::clone(&indexed_cache),
+               &tree,
+               &tree_hash,
+               Arc::clone(&indexed_cache),
                 &pb_lys,
             )?;
 

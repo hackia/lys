@@ -302,7 +302,7 @@ fn is_directory(conn: &Connection, hash: &str) -> Result<bool, sqlite::Error> {
 }
 
 fn format_mode(mode: i64) -> String {
-    if mode == 0o755 {
+    if mode == 16384 || mode == 0o040000 {
         "d".to_string()
     } else {
         "f".to_string()
