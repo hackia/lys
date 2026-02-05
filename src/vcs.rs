@@ -19,10 +19,13 @@ use std::collections::BTreeMap;
 use std::collections::{HashMap, HashSet};
 use std::ffi::CString;
 use std::fmt::Debug;
-use std::fs;
 use std::fs::File;
+use std::fs::copy;
 use std::fs::create_dir_all;
-use std::io::Error as IoError; // On renomme pour clarifier
+use std::fs::remove_dir_all;
+use std::io::Error as IoError;
+use std::io::Write;
+// On renomme pour clarifier
 use std::io::{Read, Result as IoResult};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -114,7 +117,7 @@ fn restore_tree(
 
         // 16384 est le mode Git pour un dossier (040000 en octal)
         if mode == 16384 || mode == 0o040000 {
-            fs::create_dir_all(&path)?;
+            create_dir_all(&path)?;
             // Récursion : on va chercher les fichiers DANS ce dossier
             restore_tree(conn, &hash, &path, repo_root)?;
         } else {
@@ -122,17 +125,21 @@ fn restore_tree(
             if let Ok(content) = fetch_blob(repo_root, &hash) {
                 // Création du dossier parent au cas où
                 if let Some(parent) = path.parent() {
-                    fs::create_dir_all(parent)?;
+                    create_dir_all(parent)?;
                 }
-                fs::write(&path, content)?;
-
+                let mut f = File::create(&path)?;
+                f.write_all(&content)?;
+                f.sync_data()?;
                 // Sur FreeBSD/Linux, on peut même remettre les droits d'exécution !
                 #[cfg(unix)]
                 {
-                    use std::os::unix::fs::PermissionsExt;
+                    use std::fs::Permissions;
+
+                    f.set_permissions(Permissions::from_mode(0o755)).expect("");
+
                     if mode == 33261 {
                         // Exécutable
-                        fs::set_permissions(&path, fs::Permissions::from_mode(0o755))?;
+                        f.set_permissions(Permissions::from_mode(0o755))?;
                     }
                 }
             }
@@ -168,7 +175,7 @@ pub fn doctor() -> Result<(), String> {
     }
 
     // 3. Vérification des permissions sur /tmp (pour le shell)
-    if fs::metadata("/tmp").is_ok() {
+    if File::open("/tmp").expect("").metadata().is_ok() {
         ok("The /tmp dir is accessible for the ephemeral operations.");
     }
 
@@ -316,7 +323,7 @@ pub fn sync(destination_path: &str) -> Result<(), IoError> {
     if x.exists() {
         for file in files.iter().flatten() {
             let z = file.file_name().expect("failed to get filename");
-            fs::copy(
+            copy(
                 file.as_path()
                     .to_str()
                     .expect("failed to get file path")
@@ -380,7 +387,7 @@ pub fn spawn_lys_shell(conn: &sqlite::Connection, reference: Option<&str>) -> Re
             ok("Clean the shell");
             // 4. Nettoyage automatique (Lest et démontage)
             umount(&temp_mount).map_err(|e| println!("Error: {e}")).ok();
-            std::fs::remove_dir_all(mount_path).ok();
+            remove_dir_all(mount_path).ok();
             ok("Shell lys successfully cleaned.");
         }
         // Dans src/vcs.rs, dans ForkResult::Child
@@ -403,9 +410,6 @@ pub fn spawn_lys_shell(conn: &sqlite::Connection, reference: Option<&str>) -> Re
 
     Ok(())
 }
-// Dans src/
-//
-//homevcs.rs
 
 pub fn mount_version(
     conn: &Connection,
@@ -498,9 +502,6 @@ pub fn mount_version(
             message: Some(format!("nmount error: {e}")),
         })?;
     }
-
-    // ... reste du code de montage (MS_BIND ou nmount) identique ...
-
     ok(format!(
         "Version {} monted successfully on {}",
         &tree_hash[0..7],
@@ -517,7 +518,7 @@ fn reconstruct_to_path(
 ) -> Result<(), sqlite::Error> {
     // 1. On s'assure que le dossier de destination existe
     if !dest.exists() {
-        fs::create_dir_all(dest).unwrap();
+        create_dir_all(dest).unwrap();
     }
 
     // 2. On lance l'extraction récursive
@@ -556,12 +557,14 @@ fn extract_tree_recursive(
 
         if mode == 0o755 {
             // C'est un dossier
-            fs::create_dir_all(&full_path).unwrap();
+            create_dir_all(&full_path).unwrap();
             extract_tree_recursive(conn, &hash, &full_path)?;
         } else if let Some(raw_data) = content {
             // C'est un fichier : on décompresse et on écrit
             let decoded = crate::db::decompress(&raw_data);
-            fs::write(full_path, decoded).unwrap();
+            let mut f = File::create(full_path).expect("");
+            f.write_all(&decoded).expect("a");
+            f.sync_all().expect("a");
         }
     }
     Ok(())

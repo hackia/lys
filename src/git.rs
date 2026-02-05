@@ -1,4 +1,4 @@
-use crate::db;
+use crate::db::{self, insert_tree_node};
 use crate::utils::ok;
 use crate::vcs;
 use dashmap::DashSet;
@@ -8,7 +8,7 @@ use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use std::path::Path;
 use std::sync::Arc;
-
+use std::sync::Mutex;
 pub fn extract_repo_name(url: &str) -> String {
     let last_part = url.rsplit('/').next().unwrap_or("lys_repo");
     last_part
@@ -29,12 +29,6 @@ fn build_vfs_tree_parallel(
     pb: &ProgressBar,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let tree_id = tree.id().to_string();
-
-    // On évite de retraiter un dossier déjà vu
-    if indexed.contains(&tree_id) && parent_hash != "ROOT" {
-        return Ok(());
-    }
-
     // 1. COLLECTE : On détache les données Git pour Rayon
     let entries: Vec<(Oid, String, ObjectType, i32)> = tree
         .iter()
@@ -47,33 +41,36 @@ fn build_vfs_tree_parallel(
             )
         })
         .collect();
-
-    // 2. PHASE PARALLÈLE : Tous les cœurs du Dell compressent les Blobs
+    let db_lock = Mutex::new(());
     entries.par_iter().for_each(|(oid, _name, kind, _)| {
         if let ObjectType::Blob = kind {
             let h = oid.to_string();
             if !indexed.contains(&h) {
-                // Chaque thread ouvre sa propre vue sur le dépôt Git
                 if let Ok(local_repo) = Repository::open(repo_path) {
                     if let Ok(blob) = local_repo.find_blob(*oid) {
-                        // FIX CRITIQUE : On enregistre dans target_dir (le vrai projet)
-                        // et non dans repo_path (le dossier temporaire)
-                        let _ = db::get_or_insert_blob_parallel(target_dir, blob.content());
-                        indexed.insert(h);
+                        let content = blob.content();
+
+                        // ON VERROUILLE UNIQUEMENT L'INSERTION
+                        let _guard = db_lock.lock().unwrap();
+                        match db::get_or_insert_blob_parallel(target_dir, &h, content) {
+                            Ok(_) => {
+                                indexed.insert(h);
+                            }
+                            Err(e) => eprintln!("Erreur store : {}", e),
+                        }
                     }
                 }
             }
         }
     });
-
     // 3. PHASE SÉQUENTIELLE : Construction de l'arborescence
     for (oid, name, kind, mode) in entries {
         let entry_hash = oid.to_string();
-        pb.set_message(format!("{}", name));
+        pb.set_message(format!("{entry_hash}"));
 
         // FIX PERFORMANCE : On utilise la connexion 'conn' passée en paramètre
         // au lieu de réouvrir la DB à chaque fichier
-        db::insert_tree_node(
+        insert_tree_node(
             conn,
             parent_hash,
             &name,
@@ -186,9 +183,9 @@ pub fn import_from_git(
                 &temp_path, // repo_path
                 target_dir,
                 &conn,
-               &tree,
-               &tree_hash,
-               Arc::clone(&indexed_cache),
+                &tree,
+                &tree_hash,
+                Arc::clone(&indexed_cache),
                 &pb_lys,
             )?;
 

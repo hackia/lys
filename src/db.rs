@@ -119,25 +119,22 @@ pub fn insert_tree_node(
 
 pub fn get_or_insert_blob_parallel(
     repo_root: &Path,
+    hash: &str, // On ajoute le paramètre hash
     content: &[u8],
-) -> Result<String, sqlite::Error> {
-    let hash = blake3::hash(content).to_string();
+) -> Result<(), sqlite::Error> {
     let db_path = repo_root.join(".lys/db/store.db");
-
     let conn = sqlite::open(db_path)?;
-    // On blinde pour le multi-thread
     conn.execute("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;")?;
 
     let compressed = compress(content);
     let mut stmt =
         conn.prepare("INSERT OR IGNORE INTO blobs (hash, content, size) VALUES (?, ?, ?)")?;
-    stmt.bind((1, hash.as_str()))?;
+    stmt.bind((1, hash))?; // On utilise le hash passé (le SHA1 de Git)
     stmt.bind((2, &compressed[..]))?;
-    stmt.bind((3, content.len() as i64))?; // On stocke la taille
+    stmt.bind((3, content.len() as i64))?;
     stmt.next()?;
-    Ok(hash)
+    Ok(())
 }
-
 // 2. Correction de l'insertion pour inclure la colonne 'size'
 pub fn get_current_branch(conn: &Connection) -> Result<String, Error> {
     let query = "SELECT value FROM config WHERE key = 'current_branch'";
