@@ -1,3 +1,4 @@
+use crate::commit::Log;
 use crate::db::get_current_branch;
 use crate::utils::commit_created;
 use crate::utils::ko;
@@ -29,24 +30,11 @@ use std::io::Write;
 use std::io::{Read, Result as IoResult};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use tabled::{Table, Tabled};
 
 #[derive(Debug)]
 enum Node {
     File { hash: String, mode: u32 },
     Directory { children: BTreeMap<String, Node> },
-}
-
-#[derive(Tabled)]
-struct LogEntry {
-    #[tabled(rename = "Hash")]
-    hash: String,
-    #[tabled(rename = "Author")]
-    author: String,
-    #[tabled(rename = "Message")]
-    message: String,
-    #[tabled(rename = "Date")]
-    date: String,
 }
 
 #[derive(Debug)]
@@ -93,10 +81,14 @@ pub fn sync(destination_path: &str) -> Result<(), IoError> {
 
     // Création de la barre
     let pb = ProgressBar::new(total_files as u64);
-    pb.set_style(ProgressStyle::default_bar()
-        .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta}) {msg}")
-        .expect("style fail")
-        .progress_chars("#>-"));
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template(
+                "{spinner:.white} [{elapsed_precise}] [{bar:40.white}] {pos}/{len} ({eta}) {msg}",
+            )
+            .expect("style fail")
+            .progress_chars("=>-"),
+    );
 
     let x = Path::new(destination_path);
     create_dir_all(format!("{destination_path}/.lys/db"))?;
@@ -122,12 +114,9 @@ pub fn fetch_blob(repo_root: &Path, hash: &str) -> Result<Vec<u8>, Box<dyn std::
     // Construction propre du chemin : repo_root + .lys/db/store.db
     let db_path = repo_root.join(".lys").join("db").join("store.db");
 
-    // Vérification de survie : est-ce que le fichier existe vraiment ?
+    // Vérification dxe survie : est-ce que le fichier existe vraiment ?
     if !db_path.exists() {
-        return Err(format!(
-            "Erreur fatale : La base de données est introuvable au chemin : {db_path:?}"
-        )
-        .into());
+        return Err(format!("Fatal error no found the db at : {db_path:?}").into());
     }
 
     // On ouvre la connexion avec le chemin blindé
@@ -390,7 +379,7 @@ pub fn umount(path: &str) -> Result<(), String> {
 }
 
 pub fn spawn_lys_shell(conn: &sqlite::Connection, reference: Option<&str>) -> Result<(), String> {
-    let temp_mount = format!("/tmp/_{}", uuid::Uuid::new_v4().simple());
+    let temp_mount = format!("/tmp/{}", uuid::Uuid::new_v4().simple());
     let mount_path = std::path::Path::new(&temp_mount);
 
     std::fs::create_dir_all(mount_path).map_err(|e| e.to_string())?;
@@ -829,7 +818,6 @@ pub fn feature_finish(conn: &Connection, name: &str) -> Result<(), Error> {
     let mut del_stmt = conn.prepare(delete_query)?;
     del_stmt.bind((1, feat_branch.as_str()))?;
     del_stmt.next()?;
-
     ok(&format!("Feature '{name}' finished and branch deleted."));
     Ok(())
 }
@@ -928,12 +916,6 @@ pub fn checkout(conn: &Connection, target_ref: &str) -> Result<(), Error> {
             // Optionnel : Supprimer les dossiers vides parents
         }
     }
-
-    // 4. METTRE À JOUR LA CONFIGURATION
-    // ... LE RESTE DE LA FONCTION (BOUCLES FOR) RESTE IDENTIQUE ...
-    // ... (Partie 3: MISE À JOUR DU DISQUE) ...
-
-    // 4. METTRE À JOUR LA CONFIGURATION (Ajustement final)
     let query = "INSERT INTO config (key, value) VALUES ('current_branch', ?) 
                  ON CONFLICT(key) DO UPDATE SET value = excluded.value";
     let mut stmt = conn.prepare(query)?;
@@ -1063,12 +1045,16 @@ pub fn log(conn: &Connection, page: usize, per_page: usize) -> Result<(), sqlite
         } else {
             full_hash
         };
-        logs.push(LogEntry {
-            hash: short_hash,
-            author: stmt.read(1)?,
-            message: stmt.read(2)?,
-            date: stmt.read(3)?,
-        });
+
+        logs.push(
+            Log {
+                author: stmt.read(1)?,
+                at: stmt.read(3)?,
+                message: stmt.read(2)?,
+                signature: short_hash,
+            }
+            .to_string(),
+        );
     }
 
     if logs.is_empty() {
@@ -1079,7 +1065,7 @@ pub fn log(conn: &Connection, page: usize, per_page: usize) -> Result<(), sqlite
         }
     } else {
         let x = logs.len();
-        println!("{}", Table::new(&logs));
+        println!("{}", logs.join("\n"));
         if x >= 120 {
             ok(format!(
                 "\nPage {page} ({x}/{per_page} commits). Use --page {} for see the suite.",

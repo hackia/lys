@@ -9,6 +9,7 @@ use rayon::prelude::*;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
+
 pub fn extract_repo_name(url: &str) -> String {
     let last_part = url.rsplit('/').next().unwrap_or("lys_repo");
     last_part
@@ -111,9 +112,7 @@ pub fn import_from_git(
     let pb_git = m.add(ProgressBar::new(0));
     pb_git.set_style(
         ProgressStyle::default_bar()
-            .template(
-                "{spinner:.white} [1/2] Git Fetch    [{bar:40.white}] {pos}/{len} objects ({msg})",
-            )?
+            .template("{spinner:.white} Git [{bar:40.white}] {pos}/{len} objects ({msg})")?
             .progress_chars("=>-"),
     );
 
@@ -161,9 +160,11 @@ pub fn import_from_git(
 
         // --- BARRE 2 : IMPORTATION LYS ---
         let pb_lys = m.add(ProgressBar::new(commits_oids.len() as u64));
-        pb_lys.set_style(ProgressStyle::default_bar()
-            .template("{spinner:.white} [2/2] Lys Import    [{bar:40.white}] {pos}/{len} commits ({msg})")?
-            .progress_chars("=>-"));
+        pb_lys.set_style(
+            ProgressStyle::default_bar()
+                .template("{spinner:.white} Lys [{bar:40.white}] {pos}/{len} commits ({msg})")?
+                .progress_chars("=>-"),
+        );
 
         conn.execute("BEGIN TRANSACTION;")?;
 

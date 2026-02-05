@@ -13,6 +13,20 @@ pub const HOW_PROMPT: &str = "Details the changes";
 pub const SUBJECT_PROMPT: &str = "Summary of changes";
 pub const OUTCOME_PROMPT: &str = "Outcome of changes";
 
+pub struct Log {
+    pub author: String,
+    pub message: String,
+    pub at: String,
+    pub signature: String,
+}
+
+impl Display for Log {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "\n{} at {} ({})\n", self.author, self.at, self.signature)?;
+        writeln!(f, "{}\n", self.message)?;
+        Ok(())
+    }
+}
 fn commit_justify(text: &str, width: usize) -> String {
     let words: Vec<&str> = text.split_whitespace().collect();
     let mut lines = Vec::new();
