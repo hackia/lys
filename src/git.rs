@@ -1,12 +1,13 @@
-use git2::build::RepoBuilder;
-use git2::{FetchOptions, ObjectType, Oid, RemoteCallbacks, Repository, Tree};
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use std::collections::HashSet;
-use std::path::Path;
-
 use crate::db;
 use crate::utils::ok;
 use crate::vcs;
+use dashmap::DashSet;
+use git2::build::RepoBuilder;
+use git2::{FetchOptions, ObjectType, Oid, RemoteCallbacks, Repository};
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use rayon::prelude::*;
+use std::path::Path;
+use std::sync::Arc;
 
 pub fn extract_repo_name(url: &str) -> String {
     let last_part = url.rsplit('/').next().unwrap_or("lys_repo");
@@ -14,6 +15,92 @@ pub fn extract_repo_name(url: &str) -> String {
         .strip_suffix(".git")
         .unwrap_or(last_part)
         .to_string()
+}
+
+// Dans src/git.rs
+
+fn build_vfs_tree_parallel(
+    repo_path: &Path,          // Le dossier temporaire du clone (.git)
+    target_dir: &Path,         // La racine de ton projet (où se trouve le vrai .lys)
+    conn: &sqlite::Connection, // La connexion déjà ouverte vers ta DB saisonnière
+    tree: &git2::Tree,
+    parent_hash: &str,
+    indexed: Arc<DashSet<String>>, // Cache thread-safe
+    pb: &ProgressBar,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let tree_id = tree.id().to_string();
+
+    // On évite de retraiter un dossier déjà vu
+    if indexed.contains(&tree_id) && parent_hash != "ROOT" {
+        return Ok(());
+    }
+
+    // 1. COLLECTE : On détache les données Git pour Rayon
+    let entries: Vec<(Oid, String, ObjectType, i32)> = tree
+        .iter()
+        .map(|e| {
+            (
+                e.id(),
+                e.name().unwrap_or("").to_string(),
+                e.kind().unwrap_or(ObjectType::Any),
+                e.filemode(),
+            )
+        })
+        .collect();
+
+    // 2. PHASE PARALLÈLE : Tous les cœurs du Dell compressent les Blobs
+    entries.par_iter().for_each(|(oid, _name, kind, _)| {
+        if let ObjectType::Blob = kind {
+            let h = oid.to_string();
+            if !indexed.contains(&h) {
+                // Chaque thread ouvre sa propre vue sur le dépôt Git
+                if let Ok(local_repo) = Repository::open(repo_path) {
+                    if let Ok(blob) = local_repo.find_blob(*oid) {
+                        // FIX CRITIQUE : On enregistre dans target_dir (le vrai projet)
+                        // et non dans repo_path (le dossier temporaire)
+                        let _ = db::get_or_insert_blob_parallel(target_dir, blob.content());
+                        indexed.insert(h);
+                    }
+                }
+            }
+        }
+    });
+
+    // 3. PHASE SÉQUENTIELLE : Construction de l'arborescence
+    for (oid, name, kind, mode) in entries {
+        let entry_hash = oid.to_string();
+        pb.set_message(format!("{}", name));
+
+        // FIX PERFORMANCE : On utilise la connexion 'conn' passée en paramètre
+        // au lieu de réouvrir la DB à chaque fichier
+        db::insert_tree_node(
+            conn,
+            parent_hash,
+            &name,
+            &entry_hash,
+            mode as i64,
+            None, // Le 'size' sera récupéré plus tard si besoin
+        )?;
+
+        if let ObjectType::Tree = kind {
+            // Pour les dossiers, on descend récursivement
+            if let Ok(local_repo) = Repository::open(repo_path) {
+                let subtree = local_repo.find_tree(oid)?;
+                build_vfs_tree_parallel(
+                    repo_path,
+                    target_dir,
+                    conn,
+                    &subtree,
+                    &entry_hash,
+                    Arc::clone(&indexed),
+                    pb,
+                )?;
+            }
+        }
+    }
+
+    indexed.insert(tree_id);
+    Ok(())
 }
 
 pub fn import_from_git(
@@ -60,7 +147,6 @@ pub fn import_from_git(
 
     // --- PRÉPARATION LYS ---
     let conn = db::connect_lys(target_dir).expect("Failed to connect to Lys");
-    let mut indexed_cache = HashSet::new();
 
     {
         let mut revwalk = repo.revwalk()?;
@@ -85,6 +171,9 @@ pub fn import_from_git(
         conn.execute("BEGIN TRANSACTION;")?;
 
         let mut commit_count = 0;
+
+        let indexed_cache = Arc::new(DashSet::new()); // Pour chaque commit ou global
+        // Dans src/git.rs - Fonction import_from_git
         for oid in commits_oids {
             let commit = repo.find_commit(oid)?;
             let tree = commit.tree()?;
@@ -92,10 +181,17 @@ pub fn import_from_git(
 
             pb_lys.set_message(format!("{:.7}", tree_hash));
 
-            // Indexation optimisée (VFS)
-            build_vfs_tree(&conn, &repo, &tree, "ROOT", &mut indexed_cache)?;
+            // UTILISE LA VERSION PARALLELE (et passe le chemin du repo, pas la connexion)
+            build_vfs_tree_parallel(
+                &temp_path, // repo_path
+                target_dir,
+                &conn,
+                &tree,
+                "ROOT",
+                Arc::clone(&indexed_cache),
+                &pb_lys,
+            )?;
 
-            // Création du commit manuel
             let lys_commit_id = vcs::commit_manual(
                 &conn,
                 commit.message().unwrap_or("Import"),
@@ -132,47 +228,5 @@ pub fn import_from_git(
     vcs::checkout_head(&conn, target_dir).ok();
 
     ok("Repository ready!");
-    Ok(())
-}
-
-fn build_vfs_tree(
-    conn: &sqlite::Connection,
-    repo: &Repository,
-    tree: &Tree,
-    parent_hash: &str,
-    indexed: &mut HashSet<String>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let tree_id = tree.id().to_string();
-
-    // Si on a déjà indexé ce dossier (et qu'on n'est pas à la racine), on skip
-    if indexed.contains(&tree_id) && parent_hash != "ROOT" {
-        return Ok(());
-    }
-
-    for entry in tree.iter() {
-        let name = entry.name().unwrap_or("unnamed");
-        let entry_hash = entry.id().to_string();
-        let mode = entry.filemode() as i64;
-
-        // Insertion hiérarchique
-        db::insert_tree_node(conn, parent_hash, name, &entry_hash, mode, None)?;
-
-        match entry.kind() {
-            Some(ObjectType::Tree) => {
-                let subtree = repo.find_tree(entry.id())?;
-                build_vfs_tree(conn, repo, &subtree, &entry_hash, indexed)?;
-            }
-            Some(ObjectType::Blob) => {
-                // On n'insère le blob que s'il est inconnu
-                if !indexed.contains(&entry_hash) {
-                    let blob = repo.find_blob(entry.id())?;
-                    db::get_or_insert_blob(conn, blob.content())?;
-                    indexed.insert(entry_hash);
-                }
-            }
-            _ => {}
-        }
-    }
-    indexed.insert(tree_id);
     Ok(())
 }

@@ -8,6 +8,7 @@ use crate::utils::ok_tag;
 use glob::GlobError;
 use glob::glob;
 use ignore::DirEntry;
+use miniz_oxide::inflate;
 use nix::sys::wait::waitpid;
 use nix::unistd::{ForkResult, execvp, fork};
 use similar::{ChangeTag, TextDiff};
@@ -53,6 +54,92 @@ pub enum FileStatus {
     Unchanged,
 }
 
+/// Va chercher un blob en utilisant un chemin absolu ou calculé
+pub fn fetch_blob(repo_root: &Path, hash: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    // Construction propre du chemin : repo_root + .lys/db/store.db
+    let db_path = repo_root.join(".lys").join("db").join("store.db");
+
+    // Vérification de survie : est-ce que le fichier existe vraiment ?
+    if !db_path.exists() {
+        return Err(format!(
+            "Erreur fatale : La base de données est introuvable au chemin : {:?}",
+            db_path
+        )
+        .into());
+    }
+
+    // On ouvre la connexion avec le chemin blindé
+    let conn = sqlite::open(&db_path)?;
+
+    // Petite optimisation pour la lecture seule
+    conn.execute("PRAGMA query_only = ON;")?;
+
+    let mut stmt = conn.prepare("SELECT content FROM blobs WHERE hash = ?")?;
+    stmt.bind((1, hash))?;
+
+    if let Ok(sqlite::State::Row) = stmt.next() {
+        let compressed: Vec<u8> = stmt.read(0)?;
+
+        let decompressed = inflate::decompress_to_vec_zlib(&compressed)
+            .map_err(|e| format!("Erreur de décompression pour {}: {:?}", hash, e))?;
+
+        return Ok(decompressed);
+    }
+
+    Err(format!("Blob {} introuvable dans le store à {:?}", hash, db_path).into())
+}
+
+fn restore_tree(
+    conn: &sqlite::Connection,
+    tree_hash: &str,
+    current_path: &Path,
+    repo_root: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // On cherche tous les enfants de ce dossier/tree
+    let mut stmt =
+        conn.prepare("SELECT name, hash, mode FROM tree_nodes WHERE parent_tree_hash = ?")?;
+    stmt.bind((1, tree_hash))?;
+
+    let mut nodes = Vec::new();
+    while let Ok(sqlite::State::Row) = stmt.next() {
+        nodes.push((
+            stmt.read::<String, _>(0)?,
+            stmt.read::<String, _>(1)?,
+            stmt.read::<i64, _>(2)?,
+        ));
+    }
+
+    for (name, hash, mode) in nodes {
+        let path = current_path.join(&name);
+
+        // 16384 est le mode Git pour un dossier (040000 en octal)
+        if mode == 16384 || mode == 0o040000 {
+            fs::create_dir_all(&path)?;
+            // Récursion : on va chercher les fichiers DANS ce dossier
+            restore_tree(conn, &hash, &path, repo_root)?;
+        } else {
+            // C'est un fichier : on l'extrait de store.db
+            if let Ok(content) = fetch_blob(repo_root, &hash) {
+                // Création du dossier parent au cas où
+                if let Some(parent) = path.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::write(&path, content)?;
+
+                // Sur FreeBSD/Linux, on peut même remettre les droits d'exécution !
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    if mode == 33261 {
+                        // Exécutable
+                        fs::set_permissions(&path, fs::Permissions::from_mode(0o755))?;
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
 // Dans src/vcs.rs
 
 #[cfg(target_os = "freebsd")]
@@ -139,18 +226,17 @@ pub fn ls_tree(conn: &Connection, tree_hash: &str, prefix: &str) -> Result<(), s
     Ok(())
 }
 
-pub fn checkout_head(conn: &Connection, root_path: &Path) -> Result<(), sqlite::Error> {
-    ok("Building working tree from Merkle Tree...");
-
-    // 1. On récupère le dernier commit pour obtenir son tree_hash
+pub fn checkout_head(
+    conn: &Connection,
+    root_path: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
     let query = "SELECT tree_hash FROM commits ORDER BY id DESC LIMIT 1";
     let mut stmt = conn.prepare(query)?;
 
     if let Ok(State::Row) = stmt.next() {
         let tree_hash: String = stmt.read(0)?;
-        // 2. On matérialise l'arbre Merkle sur le disque
-        reconstruct_to_path(conn, &tree_hash, root_path)?;
-        ok("Repository reconstructed successfully");
+        // On passe root_path à restore_tree
+        restore_tree(conn, &tree_hash, root_path, root_path)?;
     }
     Ok(())
 }

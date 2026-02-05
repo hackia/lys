@@ -10,7 +10,16 @@ use std::path::Path;
 use std::path::PathBuf;
 use uuid::Uuid;
 
-pub const LYS_INIT: &str = "
+pub const LYS_INIT: &str = "CREATE TABLE IF NOT EXISTS tree_nodes (
+        parent_tree_hash TEXT,
+        name TEXT,
+        hash TEXT,
+        mode INTEGER,
+        size INTEGER,
+        nix_env_hash TEXT,
+        PRIMARY KEY (parent_tree_hash, name)
+    ) WITHOUT ROWID;
+    
     -- ====================================================================
     -- PARTIE 1 : STOCKAGE ADRESSABLE (store.db)
     -- ====================================================================
@@ -32,14 +41,6 @@ pub const LYS_INIT: &str = "
     -- PARTIE 2 : INDEXATION HIÉRARCHIQUE (VFS Optimized)
     -- remplace le manifest à plat pour permettre le montage performant
     -- ====================================================================
-    CREATE TABLE IF NOT EXISTS tree_nodes (
-        parent_tree_hash TEXT,           -- Hash du répertoire parent
-        name TEXT,                       -- Nom du fichier ou dossier
-        hash TEXT,                       -- Hash du blob ou du sous-arbre
-        mode INTEGER,                    -- Permissions POSIX
-        nix_env_hash TEXT,               -- Hash de l'environnement Nix lié
-        PRIMARY KEY (parent_tree_hash, name)
-    ) WITHOUT ROWID; -- Optimisation I/O pour les index composites
 
     -- ====================================================================
     -- PARTIE 3 : HISTORIQUE ET ÉVOLUTION
@@ -103,23 +104,41 @@ pub fn insert_tree_node(
     name: &str,
     child_hash: &str,
     mode: i64,
-    nix_env: Option<&str>,
+    size: Option<i64>, // Utilise size ici
 ) -> Result<(), sqlite::Error> {
-    // On utilise INSERT OR IGNORE pour garantir la déduplication au niveau du stockage
-    let query = "INSERT OR IGNORE INTO tree_nodes (parent_tree_hash, name, hash, mode, nix_env_hash) VALUES (?, ?, ?, ?, ?)";
+    let query = "INSERT OR IGNORE INTO tree_nodes (parent_tree_hash, name, hash, mode, size) VALUES (?, ?, ?, ?, ?)";
     let mut stmt = conn.prepare(query)?;
-
-    // On lie les paramètres selon le schéma hiérarchique défini
     stmt.bind((1, parent_hash))?;
     stmt.bind((2, name))?;
     stmt.bind((3, child_hash))?;
     stmt.bind((4, mode))?;
-    stmt.bind((5, nix_env))?;
-
+    stmt.bind((5, size.unwrap_or(0)))?; // Bind de la taille réelle
     stmt.next()?;
     Ok(())
 }
 
+pub fn get_or_insert_blob_parallel(
+    repo_root: &Path,
+    content: &[u8],
+) -> Result<String, sqlite::Error> {
+    let hash = blake3::hash(content).to_string();
+    let db_path = repo_root.join(".lys/db/store.db");
+
+    let conn = sqlite::open(db_path)?;
+    // On blinde pour le multi-thread
+    conn.execute("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;")?;
+
+    let compressed = compress(content);
+    let mut stmt =
+        conn.prepare("INSERT OR IGNORE INTO blobs (hash, content, size) VALUES (?, ?, ?)")?;
+    stmt.bind((1, hash.as_str()))?;
+    stmt.bind((2, &compressed[..]))?;
+    stmt.bind((3, content.len() as i64))?; // On stocke la taille
+    stmt.next()?;
+    Ok(hash)
+}
+
+// 2. Correction de l'insertion pour inclure la colonne 'size'
 pub fn get_current_branch(conn: &Connection) -> Result<String, Error> {
     let query = "SELECT value FROM config WHERE key = 'current_branch'";
     let mut statement = conn.prepare(query)?;
