@@ -345,9 +345,21 @@ fn main() -> Result<(), Error> {
     match app.subcommand() {
         Some(("new", _)) => new_project(),
         Some(("summary", _)) => summary(),
+
         Some(("prune", _)) => {
             let conn = db::connect_lys(Path::new(".")).expect("faield to connect to the database");
-            db::prune(&conn).expect("failed to prune");
+            let ans = inquire::Confirm::new("Are you sure you want to prune the repository?")
+        .with_help_message("This action will PERMANENTLY delete all commits older than 2 years and reclaim disk space.")
+        .with_default(false)
+        .prompt();
+            match ans {
+                Ok(true) => {
+                    // Lancement de la fonction de nettoyage que nous avons codée
+                    db::prune(&conn).expect("failed to prune");
+                }
+                Ok(false) => println!("Prune operation cancelled."),
+                Err(_) => println!("Error during confirmation. Operation aborted."),
+            }
             Ok(())
         }
         Some(("serve", args)) => {
