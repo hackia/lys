@@ -42,6 +42,11 @@ fn cli() -> Command {
         .subcommand(Command::new("push").about("Push local commits to a remote architect"))
         .subcommand(Command::new("pull").about("Pull commits from a remote architect"))
         .subcommand(
+            Command::new("prune").about(
+                "Maintain repository health by removing old history and reclaiming disk space.",
+            ),
+        )
+        .subcommand(
             Command::new("shell")
                 .about("Open a temporary shell with the code mounted")
                 .arg(
@@ -340,6 +345,11 @@ fn main() -> Result<(), Error> {
     match app.subcommand() {
         Some(("new", _)) => new_project(),
         Some(("summary", _)) => summary(),
+        Some(("prune", _)) => {
+            let conn = db::connect_lys(Path::new(".")).expect("faield to connect to the database");
+            db::prune(&conn).expect("failed to prune");
+            Ok(())
+        }
         Some(("serve", args)) => {
             let port: u16 = args
                 .get_one::<String>("port")

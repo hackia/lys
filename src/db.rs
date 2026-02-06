@@ -10,6 +10,8 @@ use std::path::Path;
 use std::path::PathBuf;
 use uuid::Uuid;
 
+use crate::utils::ok;
+
 pub const LYS_INIT: &str = "CREATE TABLE IF NOT EXISTS tree_nodes (
         parent_tree_hash TEXT,
         name TEXT,
@@ -361,5 +363,106 @@ pub fn insert_blob_with_conn(
     stmt.bind((2, &compressed[..]))?;
     stmt.bind((3, content.len() as i64))?;
     stmt.next()?;
+    Ok(())
+}
+
+// À ajouter dans src/db.rs
+pub fn prune_orphans(conn: &sqlite::Connection) -> Result<usize, sqlite::Error> {
+    // 1. On compte combien on va supprimer pour informer l'utilisateur
+    let count_query =
+        "SELECT COUNT(*) FROM store.blobs WHERE hash NOT IN (SELECT DISTINCT hash FROM tree_nodes)";
+    let mut stmt = conn.prepare(count_query)?;
+    stmt.next()?;
+    let count: i64 = stmt.read(0)?;
+
+    if count > 0 {
+        // 2. On effectue la suppression réelle
+        conn.execute(
+            "DELETE FROM store.blobs WHERE hash NOT IN (SELECT DISTINCT hash FROM tree_nodes)",
+        )?;
+
+        ok("Please wait");
+        // 3. Optionnel : On libère l'espace disque sur le fichier .db (VACUUM)
+        // Attention : VACUUM peut être lent sur de très grosses bases
+        conn.execute("VACUUM;")?;
+    }
+
+    Ok(count as usize)
+}
+
+pub fn prune(conn: &sqlite::Connection) -> Result<(), Box<dyn std::error::Error>> {
+    ok("Starting prune");
+
+    conn.execute("BEGIN TRANSACTION;")?;
+
+    // 1. Supprimer les vieux commits (Plus vieux que 2 ans)
+    // On utilise la fonction datetime d'SQLite pour cibler la colonne timestamp
+    let del_commits = "DELETE FROM commits WHERE timestamp < datetime('now', '-2 years');";
+    conn.execute(del_commits)?;
+
+    // 2. Créer une table temporaire pour lister les hashes à CONSERVER
+    // On utilise un Merkle Tree récursif pour trouver tous les descendants des commits restants
+    conn.execute("CREATE TEMP TABLE live_hashes(hash TEXT PRIMARY KEY);")?;
+
+    // A. On commence par les racines (tree_hash) des commits survivants
+    conn.execute("INSERT OR IGNORE INTO live_hashes (hash) SELECT tree_hash FROM commits;")?;
+
+    // B. Propagation récursive : on cherche tous les fichiers et sous-dossiers liés
+    // On boucle jusqu'à ce que le nombre de hashes vivants n'évolue plus
+    loop {
+        let count_before = {
+            let mut stmt = conn.prepare("SELECT COUNT(*) FROM live_hashes")?;
+            stmt.next()?;
+            stmt.read::<i64, _>(0)?
+        };
+
+        // On insère les enfants des dossiers déjà marqués comme vivants
+        conn.execute(
+            "
+            INSERT OR IGNORE INTO live_hashes (hash)
+            SELECT hash FROM tree_nodes
+            WHERE parent_tree_hash IN (SELECT hash FROM live_hashes);
+        ",
+        )?;
+
+        let count_after = {
+            let mut stmt = conn.prepare("SELECT COUNT(*) FROM live_hashes")?;
+            stmt.next()?;
+            stmt.read::<i64, _>(0)?
+        };
+
+        if count_before == count_after {
+            break;
+        }
+    }
+
+    // 3. Nettoyage de la structure (tree_nodes)
+    // On supprime les dossiers qui n'ont plus de parent vivant
+    conn.execute(
+        "DELETE FROM tree_nodes WHERE parent_tree_hash NOT IN (SELECT hash FROM live_hashes);",
+    )?;
+
+    // 4. Nettoyage des données binaires (store.blobs)
+    let before_blobs = {
+        let mut stmt = conn.prepare("SELECT COUNT(*) FROM store.blobs")?;
+        stmt.next()?;
+        stmt.read::<i64, _>(0)?
+    };
+
+    // On supprime les contenus qui ne sont plus référencés par aucun nœud vivant
+    conn.execute("DELETE FROM store.blobs WHERE hash NOT IN (SELECT hash FROM live_hashes);")?;
+
+    let after_blobs = {
+        let mut stmt = conn.prepare("SELECT COUNT(*) FROM store.blobs")?;
+        stmt.next()?;
+        stmt.read::<i64, _>(0)?
+    };
+
+    conn.execute("COMMIT;")?;
+    ok(format!("Blobs deleted : {}", before_blobs - after_blobs).as_str());
+
+    // 5. Compression physique de la base de données
+    ok("Optimisation");
+    conn.execute("VACUUM;")?;
     Ok(())
 }
