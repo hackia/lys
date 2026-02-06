@@ -2,15 +2,14 @@ use crate::db;
 use crate::vcs;
 use dashmap::DashSet;
 use git2::build::RepoBuilder;
-use git2::{ObjectType, Oid};
+use git2::{FetchOptions, ObjectType, Oid, RemoteCallbacks, Repository};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-
 /// Explore un arbre Git et insère les objets dans Lys de manière parallèle.
 fn build_vfs_tree_parallel(
-    repo: &Mutex<git2::Repository>,
+    repo: &Mutex<Repository>,
     target_dir: &Path,
     conn: &sqlite::Connection,
     store_conn: &Mutex<sqlite::Connection>,
@@ -96,12 +95,33 @@ pub fn import_from_git(
     depth: Option<i32>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let m = MultiProgress::new();
+
+    // --- BARRE 1 : CLONAGE GIT ---
     let pb_git = m.add(ProgressBar::new(0));
     pb_git.set_style(
-        ProgressStyle::default_spinner()
-            .template("{spinner:.green} {msg}")
-            .unwrap(),
+        ProgressStyle::default_bar()
+            .template("{spinner:.white} Git [{bar:40.white}] {pos}/{len} objects ({msg})")?
+            .progress_chars("=>-"),
     );
+
+    let mut callbacks = RemoteCallbacks::new();
+    callbacks.transfer_progress(|stats| {
+        pb_git.set_length(stats.total_objects() as u64);
+        pb_git.set_position(stats.received_objects() as u64);
+        pb_git.set_message("Downloading...");
+        true
+    });
+
+    let mut fetch_options = FetchOptions::new();
+    fetch_options.remote_callbacks(callbacks);
+    if let Some(d) = depth {
+        fetch_options.depth(d);
+    }
+
+    let temp_path = target_dir.join("temp_git_import");
+    if temp_path.exists() {
+        std::fs::remove_dir_all(&temp_path)?;
+    }
     pb_git.set_message("Cloning git repository...");
 
     let temp_path = target_dir.join("temp_git_import");
@@ -141,7 +161,7 @@ pub fn import_from_git(
         let pb = m.add(ProgressBar::new(oids.len() as u64));
         pb.set_style(
             ProgressStyle::default_bar()
-                .template("{spinner:.green} [{bar:40.white}] {pos}/{len} {msg}")
+                .template("{spinner:.green} Lys [{bar:40.white}] {pos}/{len} {msg}")
                 .unwrap()
                 .progress_chars("=>-"),
         );
@@ -189,7 +209,7 @@ pub fn import_from_git(
     }
 
     conn.execute("COMMIT;")?;
-    pb_lys.finish_with_message("Lys import complete");
+    pb_lys.finish_with_message("import complete");
 
     // Nettoyage et checkout final
     std::fs::remove_dir_all(&temp_path)?;
