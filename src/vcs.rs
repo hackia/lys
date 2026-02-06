@@ -11,6 +11,8 @@ use glob::glob;
 use ignore::DirEntry;
 use indicatif::{ProgressBar, ProgressStyle};
 use miniz_oxide::inflate;
+#[cfg(target_os = "linux")]
+use nix::mount::umount;
 use nix::sys::wait::waitpid;
 use nix::unistd::{ForkResult, execvp, fork};
 use similar::{ChangeTag, TextDiff};
@@ -30,7 +32,7 @@ use std::io::Write;
 use std::io::{Read, Result as IoResult};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use nix::mount::umount;
+
 #[derive(Debug)]
 enum Node {
     File { hash: String, mode: u32 },
@@ -426,7 +428,9 @@ pub fn spawn_lys_shell(conn: &sqlite::Connection, reference: Option<&str>) -> Re
             println!();
             ok("Clean the shell");
             // 4. Nettoyage automatique (Lest et démontage)
-            umount(temp_mount.as_str()).map_err(|e| println!("Error: {e}")).ok();
+            umount(temp_mount.as_str())
+                .map_err(|e| println!("Error: {e}"))
+                .ok();
             remove_dir_all(mount_path).ok();
             ok("Shell lys successfully cleaned.");
         }
@@ -455,7 +459,6 @@ pub fn mount_version(
     target_path: &str,
     reference: Option<&str>,
 ) -> Result<(), sqlite::Error> {
-    
     let tree_hash = if let Some(r) = reference {
         // Recherche par hash partiel de commit
         let query = "SELECT tree_hash FROM commits WHERE hash LIKE ? || '%' LIMIT 1";
@@ -514,7 +517,7 @@ pub fn mount_version(
         use nix::mount::{MntFlags, Nmount};
         use std::ffi::CString;
         use std::os::unix::ffi::OsStrExt;
-
+        let target = Path::new(target_path);
         // 1. On prépare les données (on "matérialise" en CString)
         // On doit les garder dans des variables pour qu'elles ne soient pas dropées
         let k_type = CString::new("fstype").unwrap();
