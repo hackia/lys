@@ -30,7 +30,7 @@ use std::io::Write;
 use std::io::{Read, Result as IoResult};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-
+use nix::mount::umount;
 #[derive(Debug)]
 enum Node {
     File { hash: String, mode: u32 },
