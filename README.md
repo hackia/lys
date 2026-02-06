@@ -1,4 +1,6 @@
-# Silex
+# Lys
+
+[![Rust](https://github.com/hackia/lys/actions/workflows/rust.yml/badge.svg)](https://github.com/hackia/lys/actions/workflows/rust.yml)
 
 ## Installation
 
@@ -57,7 +59,7 @@ Options:
 ## tree
  
 ```
-m                                                                                                                                                                                                                                   [ 5175fa51cbe248ee2ae0cb3553f1276fa77626ac ]
+m                                                                        [ 5175fa51cbe248ee2ae0cb3553f1276fa77626ac ]
 d [ 53653f5 ] ├── .github         
 d [ 2c3fa72 ] │   └── workflows      
 f [ f456e60 ] │       └── ci.yml    
