@@ -93,7 +93,11 @@ pub fn import_from_git(
     git_url: &str,
     target_dir: &Path,
     depth: Option<i32>,
+    only_recent: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if only_recent {
+        return import_from_git_and_purge(git_url, target_dir, depth);
+    }
     let m = MultiProgress::new();
 
     let pb_git = m.add(ProgressBar::new(0));
@@ -173,6 +177,147 @@ pub fn import_from_git(
         (oids, pb)
     };
 
+    conn.execute("BEGIN TRANSACTION;")?;
+    let indexed_cache = Arc::new(DashSet::new());
+    for oid in commits_oids {
+        let (tree_oid, author, message, time) = {
+            let repo_guard = repo.lock().unwrap();
+            let commit = repo_guard.find_commit(oid)?;
+            (
+                commit.tree_id(),
+                commit.author().name().unwrap_or("Unknown").to_string(),
+                commit.message().unwrap_or("").to_string(),
+                commit.time().seconds(),
+            )
+        };
+
+        build_vfs_tree_parallel(
+            &repo,
+            target_dir,
+            &conn,
+            &store_conn,
+            tree_oid,
+            &tree_oid.to_string(),
+            Arc::clone(&indexed_cache),
+            &pb_lys,
+        )?;
+
+        vcs::commit_manual(&conn, &message, &author, time, &tree_oid.to_string())?;
+        pb_lys.inc(1);
+    }
+
+    // Mise à jour de la branche principale
+    let last_commit_query = "SELECT id FROM commits ORDER BY id DESC LIMIT 1";
+    let mut stmt = conn.prepare(last_commit_query)?;
+    if let Ok(sqlite::State::Row) = stmt.next() {
+        let last_id: i64 = stmt.read(0)?;
+        let mut br_stmt = conn
+            .prepare("INSERT OR REPLACE INTO branches (name, head_commit_id) VALUES ('main', ?)")?;
+        br_stmt.bind((1, last_id))?;
+        br_stmt.next()?;
+    }
+
+    conn.execute("COMMIT;")?;
+    pb_lys.finish_with_message("import complete");
+
+    // Nettoyage et checkout final
+    std::fs::remove_dir_all(&temp_path)?;
+    vcs::checkout_head(&conn, target_dir)?;
+
+    Ok(())
+}
+
+pub fn import_from_git_and_purge(
+    git_url: &str,
+    target_dir: &Path,
+    depth: Option<i32>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let two_years_ago = chrono::Utc::now() - chrono::Duration::days(2 * 365);
+    let cutoff_timestamp = two_years_ago.timestamp();
+    let m = MultiProgress::new();
+
+    let pb_git = m.add(ProgressBar::new(0));
+    pb_git.set_style(
+        ProgressStyle::default_bar()
+            .template("{spinner:.white} Git [{bar:40.white}] {pos}/{len} objects ({msg})")?
+            .progress_chars("=>-"),
+    );
+
+    let mut callbacks = RemoteCallbacks::new();
+
+    // On clone la progress bar pour l'utiliser dans le closure
+    let pb_clone = pb_git.clone();
+    callbacks.transfer_progress(move |stats| {
+        if stats.total_objects() > 0 {
+            pb_clone.set_length(stats.total_objects() as u64);
+            pb_clone.set_position(stats.received_objects() as u64);
+            pb_clone.set_message(format!(
+                "{:.1} MB",
+                stats.received_bytes() as f64 / 1_048_576.0
+            ));
+        }
+        true // Continuer le transfert
+    });
+
+    let mut fetch_options = FetchOptions::new();
+    fetch_options.remote_callbacks(callbacks);
+    if let Some(d) = depth {
+        fetch_options.depth(d);
+    }
+    let mut repo_builder = RepoBuilder::new();
+    repo_builder.fetch_options(fetch_options);
+
+    pb_git.set_message("Cloning git repository...");
+
+    let temp_path = target_dir.join("temp_git_import");
+    if temp_path.exists() {
+        std::fs::remove_dir_all(&temp_path)?;
+    }
+
+    // Clonage et mise en Mutex immédiate
+    let repo_raw = repo_builder.clone(git_url, &temp_path)?;
+    let repo = Mutex::new(repo_raw);
+    pb_git.finish_with_message("Git clone complete");
+
+    let conn = db::connect_lys(target_dir)?;
+    let store_db_path = target_dir.join(".lys/db/store.db");
+    let store_conn = Mutex::new(sqlite::open(store_db_path)?);
+
+    // OPTIMISATION SQL: On booste les perfs pour l'import (pas de synchro disque immédiate)
+    conn.execute("PRAGMA synchronous = OFF; PRAGMA journal_mode = MEMORY;")?;
+    {
+        let s = store_conn.lock().unwrap();
+        s.execute("PRAGMA synchronous = OFF; PRAGMA journal_mode = MEMORY;")?;
+    }
+
+    let (commits_oids, pb_lys) = {
+        let repo_guard = repo.lock().unwrap();
+        let mut revwalk = repo_guard.revwalk()?;
+        revwalk.push_head()?;
+        revwalk.set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::REVERSE)?;
+
+        // On ne garde que les commits dont le timestamp >= cutoff
+        let oids: Vec<Oid> = revwalk
+            .filter_map(|id| {
+                let oid = id.ok()?;
+                let commit = repo_guard.find_commit(oid).ok()?;
+                if commit.time().seconds() >= cutoff_timestamp {
+                    Some(oid)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        let pb = m.add(ProgressBar::new(oids.len() as u64));
+        pb.set_style(
+            ProgressStyle::default_bar()
+                .template("{spinner:.green} Lys [{bar:40.white}] {pos}/{len} {msg}")
+                .unwrap()
+                .progress_chars("=>-"),
+        );
+        (oids, pb)
+    };
     conn.execute("BEGIN TRANSACTION;")?;
     let indexed_cache = Arc::new(DashSet::new());
     for oid in commits_oids {

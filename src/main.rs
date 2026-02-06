@@ -8,6 +8,7 @@ use crate::utils::ko;
 use crate::utils::ok;
 use crate::utils::ok_merkle_hash;
 use breathes::hooks::run_hooks;
+use clap::value_parser;
 use clap::{Arg, ArgAction, Command};
 use inquire::Text;
 use sqlite::State;
@@ -81,6 +82,23 @@ fn cli() -> Command {
                     .default_value("false")
                     .value_parser(clap::value_parser!(String)),
             ),
+        )
+        .subcommand(
+            Command::new("import")
+                .about("Import a Git repository into Lys")
+                .arg(Arg::new("url").required(true).help("Git repository URL"))
+                .arg(
+                    Arg::new("depth")
+                        .long("depth")
+                        .value_parser(value_parser!(i32))
+                        .help("Number of commits to import"),
+                )
+                .arg(
+                    Arg::new("recent")
+                        .long("recent")
+                        .action(ArgAction::SetTrue)
+                        .help("Only import the last 2 years of history (Lean mode)"),
+                ),
         )
         .subcommand(
             Command::new("keygen").about("Generate Ed25519 identity keys for signing commits"),
@@ -345,7 +363,6 @@ fn main() -> Result<(), Error> {
     match app.subcommand() {
         Some(("new", _)) => new_project(),
         Some(("summary", _)) => summary(),
-
         Some(("prune", _)) => {
             let conn = db::connect_lys(Path::new(".")).expect("faield to connect to the database");
             let ans = inquire::Confirm::new("Are you sure you want to prune the repository?")
@@ -371,6 +388,17 @@ fn main() -> Result<(), Error> {
             let rt = tokio::runtime::Runtime::new()?;
             // On lance le serveur sur le répertoire actuel
             rt.block_on(crate::web::start_server(".", port));
+            Ok(())
+        }
+        Some(("import", sub_m)) => {
+            let url = sub_m.get_one::<String>("url").unwrap();
+            let depth = sub_m.get_one::<i32>("depth").copied();
+            let only_recent = sub_m.get_flag("recent"); // Récupère le flag --recent
+            let repo_name = import::extract_repo_name(url);
+            let target_dir = std::env::current_dir()?.join(&repo_name);
+            // On passe le nouveau paramètre à ta fonction
+            import::import_from_git(url, &target_dir, depth, only_recent).expect("failed");
+            ok("ready");
             Ok(())
         }
         Some(("doctor", _)) => {
@@ -431,7 +459,7 @@ fn main() -> Result<(), Error> {
             ok("Creation of the repository");
             std::fs::create_dir(&target_path)?;
             // Appel avec le nouveau paramètre
-            import::import_from_git(url, &target_path, depth).expect("failed to clone");
+            import::import_from_git(url, &target_path, depth, false).expect("failed to clone");
             ok("ready");
             Ok(())
         }
