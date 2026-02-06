@@ -219,7 +219,8 @@ pub fn connect_lys(root_path: &Path) -> Result<Connection, sqlite::Error> {
         create_dir_all(&history_dir).expect("failed to create the .lys/db directory");
     }
     let conn = Connection::open(db_full_path.to_str().unwrap())?;
-    conn.execute("PRAGMA busy_timeout = 5000;")?;
+    conn.execute("PRAGMA temp_store = MEMORY;")?;
+    conn.execute("PRAGMA mmap_size = 30000000000;")?;
     // --- CORRECTION : ATTACHER LE STORE EN PREMIER ---
     conn.execute(format!(
         "ATTACH DATABASE '{}' AS store;",

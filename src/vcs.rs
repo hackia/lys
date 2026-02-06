@@ -109,6 +109,23 @@ pub fn sync(destination_path: &str) -> Result<(), IoError> {
     Ok(())
 }
 
+// Dans src/vcs.rs - Version optimisée
+pub fn fetch_blob_with_conn(
+    conn: &sqlite::Connection,
+    hash: &str,
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let mut stmt = conn.prepare("SELECT content FROM blobs WHERE hash = ?")?;
+    stmt.bind((1, hash))?;
+
+    if let Ok(sqlite::State::Row) = stmt.next() {
+        let compressed: Vec<u8> = stmt.read(0)?;
+        let decompressed = inflate::decompress_to_vec_zlib(&compressed)
+            .map_err(|e| format!("Erreur de décompression pour {hash}: {e:?}"))?;
+        return Ok(decompressed);
+    }
+    Err(format!("Blob {hash} not found").into())
+}
+
 /// Va chercher un blob en utilisant un chemin absolu ou calculé
 pub fn fetch_blob(repo_root: &Path, hash: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     // Construction propre du chemin : repo_root + .lys/db/store.db
@@ -170,7 +187,7 @@ fn restore_tree(
             restore_tree(conn, &hash, &path, repo_root)?;
         } else {
             // C'est un fichier : on l'extrait de store.db
-            if let Ok(content) = fetch_blob(repo_root, &hash) {
+            if let Ok(content) = fetch_blob_with_conn(conn, &hash) {
                 // Création du dossier parent au cas où
                 if let Some(parent) = path.parent() {
                     create_dir_all(parent)?;
