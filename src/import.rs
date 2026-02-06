@@ -19,6 +19,13 @@ fn build_vfs_tree_parallel(
     indexed: Arc<DashSet<String>>,
     pb: &ProgressBar,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let tree_hash_str = tree_oid.to_string();
+
+    // OPTIMISATION: Si ce dossier a déjà été scanné (Merkle), on ne descend pas
+    if indexed.contains(&tree_hash_str) {
+        return Ok(());
+    }
+
     // 1. Extraction des entrées de l'arbre (Séquentiel sous verrou court)
     let entries: Vec<(Oid, String, ObjectType, i32)> = {
         let repo_guard = repo.lock().unwrap();
@@ -79,7 +86,7 @@ fn build_vfs_tree_parallel(
             )?;
         }
     }
-
+    indexed.insert(tree_hash_str);
     Ok(())
 }
 
@@ -107,10 +114,16 @@ pub fn import_from_git(
     let repo = Mutex::new(repo_raw);
     pb_git.finish_with_message("Git clone complete");
 
-    // Connexions aux bases de données
     let conn = db::connect_lys(target_dir)?;
     let store_db_path = target_dir.join(".lys/db/store.db");
     let store_conn = Mutex::new(sqlite::open(store_db_path)?);
+
+    // OPTIMISATION SQL: On booste les perfs pour l'import (pas de synchro disque immédiate)
+    conn.execute("PRAGMA synchronous = OFF; PRAGMA journal_mode = MEMORY;")?;
+    {
+        let s = store_conn.lock().unwrap();
+        s.execute("PRAGMA synchronous = OFF; PRAGMA journal_mode = MEMORY;")?;
+    }
 
     // Analyse de l'historique
     let (commits_oids, pb_lys) = {
@@ -137,7 +150,6 @@ pub fn import_from_git(
 
     conn.execute("BEGIN TRANSACTION;")?;
     let indexed_cache = Arc::new(DashSet::new());
-
     for oid in commits_oids {
         let (tree_oid, author, message, time) = {
             let repo_guard = repo.lock().unwrap();
