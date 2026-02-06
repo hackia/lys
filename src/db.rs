@@ -219,7 +219,7 @@ pub fn connect_lys(root_path: &Path) -> Result<Connection, sqlite::Error> {
         create_dir_all(&history_dir).expect("failed to create the .lys/db directory");
     }
     let conn = Connection::open(db_full_path.to_str().unwrap())?;
-
+    conn.execute("PRAGMA busy_timeout = 5000;")?;
     // --- CORRECTION : ATTACHER LE STORE EN PREMIER ---
     conn.execute(format!(
         "ATTACH DATABASE '{}' AS store;",
@@ -368,6 +368,7 @@ pub fn insert_blob_with_conn(
 
 // À ajouter dans src/db.rs
 pub fn prune_orphans(conn: &sqlite::Connection) -> Result<usize, sqlite::Error> {
+    conn.execute("PRAGMA busy_timeout = 5000;")?;
     // 1. On compte combien on va supprimer pour informer l'utilisateur
     let count_query =
         "SELECT COUNT(*) FROM store.blobs WHERE hash NOT IN (SELECT DISTINCT hash FROM tree_nodes)";
