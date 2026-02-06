@@ -84,9 +84,10 @@ fn print_node(
     color: Option<bool>,
 ) {
     if let Some(limit) = max_level
-        && current_level > limit {
-            return;
-        }
+        && current_level > limit
+    {
+        return;
+    }
 
     if let Some(entry) = &node.entry {
         let metadata = entry.metadata().ok();

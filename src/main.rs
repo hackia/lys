@@ -3,7 +3,7 @@ use crate::chat::send_message;
 use crate::commit::author;
 use crate::db::LYS_INIT;
 use crate::db::{connect_lys, get_current_branch};
-use crate::git::extract_repo_name;
+use crate::import::extract_repo_name;
 use crate::utils::ko;
 use crate::utils::ok;
 use crate::utils::ok_merkle_hash;
@@ -22,7 +22,7 @@ pub mod chat;
 pub mod commit;
 pub mod crypto;
 pub mod db;
-pub mod git;
+pub mod import;
 pub mod todo;
 pub mod tree;
 pub mod utils;
@@ -329,12 +329,9 @@ fn summary() -> Result<(), Error> {
     let conn = connect_lys(root_path.as_path()).expect("failed");
     let contributors = db::get_unique_contributors(&conn).expect("aa");
 
-    println!("--- Repository Summary ---");
-    println!(
-        "Contributors ({}): {}",
-        contributors.len(),
-        contributors.join(", ")
-    );
+    for contributor in &contributors {
+        ok(contributor.as_str());
+    }
     Ok(())
 }
 fn main() -> Result<(), Error> {
@@ -411,13 +408,9 @@ fn main() -> Result<(), Error> {
             // 3. Créer le dossier
             ok("Creation of the repository");
             std::fs::create_dir(&target_path)?;
-
-            // 4. Lancer l'import DANS ce dossier
-            // ... (Logique de nom de dossier identique) ...
-            // ... (Création dossier identique) ...
-
             // Appel avec le nouveau paramètre
-            git::import_from_git(url, &target_path, depth).expect("failed to clone");
+            import::import_from_git(url, &target_path, depth).expect("failed to clone");
+            ok("ready");
             Ok(())
         }
         Some(("tree", _)) => {

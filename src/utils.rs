@@ -11,22 +11,38 @@ use crate::vcs::FileStatus;
 pub fn ok(description: &str) {
     let (x, _) = size().expect("failed to get term size");
 
-    let padding = x - " ok ".len() as u16 - description.len() as u16 - 6;
+    // 1. Calcul de la largeur réelle des caractères UTF-8
+    let desc_width = description.chars().count();
+
+    // 2. Définition des symboles et labels
+    let icon = " * "; // Symbole UTF-8 (Checkmark)
+    let status_label = "ok";
+    let brackets = (" [ ", " ] "); // Délimiteurs UTF-8 élégants
+
+    // 3. Calcul du padding sécurisé
+    // On retire la largeur de l'icone (3), du label (2), des brackets (6) et des espaces
+
+    let occupied_width = (desc_width + 11) as u16;
+    let padding = x.saturating_sub(occupied_width);
     let _ = execute!(
         stdout(),
-        Print(" * ".green().bold()),
+        // Icône en vert brillant
+        Print(icon.green().bold()),
         Print(description),
+        // Remplissage dynamique
         Print(" ".repeat(padding as usize)),
-        Print(" [ ".white().bold()),
-        Print("ok".green().bold()),
-        Print(" ]\n".white().bold()),
+        // Bloc de statut avec délimiteurs UTF-8
+        Print(brackets.0.white().bold()),
+        Print(status_label.green().bold()),
+        Print(brackets.1.white().bold()),
+        Print("\n"),
     );
 }
 
 pub fn ok_merkle_hash(h: &str) {
     let (x, _) = size().expect("failed to get term size");
 
-    let padding = x - h.len() as u16 - "m".len() as u16 - 5;
+    let padding = x - h.chars().count() as u16 - 6;
     let _ = execute!(
         stdout(),
         Print("m"),
@@ -40,9 +56,14 @@ pub fn ok_merkle_hash(h: &str) {
 
 pub fn ko(description: &str) {
     let (x, _) = size().expect("failed to get term size");
+    // 1. Calcul de la largeur réelle des caractères UTF-8
+    let desc_width = description.chars().count();
 
-    let padding = x - " ko ".len() as u16 - description.len() as u16 - 6;
+    // 3. Calcul du padding sécurisé
+    // On retire la largeur de l'icone (3), du label (2), des brackets (6) et des espaces
 
+    let occupied_width = (desc_width + 11) as u16;
+    let padding = x.saturating_sub(occupied_width);
     let _ = execute!(
         stdout(),
         Print(" ! ".red().bold()),
@@ -80,7 +101,11 @@ pub fn ok_status(verb: &FileStatus) {
 pub fn ok_tag(tag: &str, description: &str, date: &str, _hash: &str) {
     let (x, _) = size().expect("failed to get term size");
 
-    let padding = x - tag.len() as u16 - description.len() as u16 - date.len() as u16 - 9;
+    let padding = x
+        - tag.chars().count() as u16
+        - description.chars().count() as u16
+        - date.chars().count() as u16
+        - 9;
     let _ = execute!(
         stdout(),
         Print(" * ".green().bold()),
@@ -98,7 +123,7 @@ pub fn ok_audit_commit(hash: &str) {
     let (x, _) = size().expect("failed to get term size");
 
     let description = " Signature is valid ";
-    let padding = x - hash.len() as u16 - description.len() as u16 - 7;
+    let padding = x - hash.chars().count() as u16 - description.chars().count() as u16 - 7;
 
     let _ = execute!(
         stdout(),
@@ -115,7 +140,7 @@ pub fn commit_created(hash: &str) {
     let (x, _) = size().expect("failed to get term size");
 
     let description = " Commited successfully ";
-    let padding = x - hash.len() as u16 - description.len() as u16 - 7;
+    let padding = x - hash.chars().count() as u16 - description.chars().count() as u16 - 7;
 
     let _ = execute!(
         stdout(),
@@ -132,7 +157,7 @@ pub fn ko_audit_commit(hash: &str) {
     let (x, _) = size().expect("failed to get term size");
 
     let description = " Signature is unvalid ";
-    let padding = x - hash.len() as u16 - description.len() as u16 - 7;
+    let padding = x - hash.chars().count() as u16 - description.chars().count() as u16 - 7;
 
     let _ = execute!(
         stdout(),

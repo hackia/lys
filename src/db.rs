@@ -347,3 +347,19 @@ pub fn get_unique_contributors(conn: &sqlite::Connection) -> Result<Vec<String>,
     }
     Ok(contributors)
 }
+
+// Dans src/db.rs
+pub fn insert_blob_with_conn(
+    conn: &sqlite::Connection,
+    hash: &str,
+    content: &[u8],
+) -> Result<(), sqlite::Error> {
+    let compressed = compress(content); // Ta fonction de compression existante
+    let mut stmt =
+        conn.prepare("INSERT OR IGNORE INTO blobs (hash, content, size) VALUES (?, ?, ?)")?;
+    stmt.bind((1, hash))?;
+    stmt.bind((2, &compressed[..]))?;
+    stmt.bind((3, content.len() as i64))?;
+    stmt.next()?;
+    Ok(())
+}
