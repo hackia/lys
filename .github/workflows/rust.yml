@@ -10,6 +10,8 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
+    - name: deps
+      run: sudo apt-get install build-essential pkg-config libssl-dev libsqlite3-dev zlib1g-dev -y      
     - uses: actions/checkout@v4
     - name: Build
       run: cargo build --verbose
