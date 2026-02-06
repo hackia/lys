@@ -122,6 +122,7 @@ pub fn fetch_blob(repo_root: &Path, hash: &str) -> Result<Vec<u8>, Box<dyn std::
     // On ouvre la connexion avec le chemin blindé
     let conn = sqlite::open(&db_path)?;
 
+    conn.execute("PRAGMA busy_timeout = 5000;")?;
     // Petite optimisation pour la lecture seule
     conn.execute("PRAGMA query_only = ON;")?;
 

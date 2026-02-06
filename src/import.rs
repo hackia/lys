@@ -281,7 +281,11 @@ pub fn import_from_git_and_purge(
 
     let conn = db::connect_lys(target_dir)?;
     let store_db_path = target_dir.join(".lys/db/store.db");
-    let store_conn = Mutex::new(sqlite::open(store_db_path)?);
+
+    let store_conn_raw = sqlite::open(store_db_path.to_path_buf())?;
+    // Ajoute le timeout ici aussi
+    store_conn_raw.execute("PRAGMA busy_timeout = 5000;")?;
+    let store_conn = Mutex::new(store_conn_raw);
 
     // OPTIMISATION SQL: On booste les perfs pour l'import (pas de synchro disque immédiate)
     conn.execute("PRAGMA synchronous = OFF; PRAGMA journal_mode = MEMORY;")?;
