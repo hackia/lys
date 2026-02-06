@@ -178,6 +178,13 @@ fn cli() -> Command {
                                 .help("Due date (YYYY-MM-DD)"),
                         ),
                 )
+                .subcommand(
+                    Command::new("start").arg(
+                        Arg::new("id")
+                            .required(true)
+                            .value_parser(value_parser!(i64)),
+                    ),
+                )
                 .subcommand(Command::new("list"))
                 .subcommand(
                     Command::new("close").arg(
@@ -698,6 +705,11 @@ fn main() -> Result<(), Error> {
                     let user = args.get_one::<String>("user").map(|s| s.as_str());
                     let due = args.get_one::<String>("due").map(|s| s.as_str());
                     todo::add_todo(&conn, title, user, due).expect("failed to add todo");
+                    Ok(())
+                }
+                Some(("start", args)) => {
+                    let id = args.get_one::<i64>("id").unwrap();
+                    todo::start_todo(&conn, *id).expect("failed to start todo");
                     Ok(())
                 }
                 Some(("list", _)) => {

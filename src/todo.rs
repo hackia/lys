@@ -16,6 +16,14 @@ pub struct TodoItem {
     pub due_date: String,
 }
 
+pub fn start_todo(conn: &Connection, id: i64) -> Result<(), Error> {
+    let query = "UPDATE todos SET status = 'IN_PROGRESS' WHERE id = ?";
+    let mut stmt = conn.prepare(query)?;
+    stmt.bind((1, id))?;
+    stmt.next()?;
+    ok(format!("Task #{id} is now in progress").as_str());
+    Ok(())
+}
 pub fn add_todo(
     conn: &Connection,
     title: &str,
