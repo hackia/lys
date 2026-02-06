@@ -11,6 +11,7 @@ use breathes::hooks::run_hooks;
 use clap::{Arg, ArgAction, Command};
 use inquire::Text;
 use sqlite::State;
+use std::env::current_dir;
 use std::fs::File;
 use std::fs::read_to_string;
 use std::io::Error;
@@ -36,6 +37,7 @@ fn cli() -> Command {
         .subcommand(Command::new("doctor").about("Check system health and permissions for lys"))
         .subcommand(Command::new("init").about("Initialize current directory"))
         .subcommand(Command::new("new").about("Create a new lys project"))
+        .subcommand(Command::new("summary").about("Show working directory infos"))
         .subcommand(Command::new("status").about("Show changes in working directory"))
         .subcommand(Command::new("push").about("Push local commits to a remote architect"))
         .subcommand(Command::new("pull").about("Pull commits from a remote architect"))
@@ -322,11 +324,25 @@ fn new_project() -> Result<(), Error> {
     }
 }
 
+fn summary() -> Result<(), Error> {
+    let root_path = current_dir().expect("fail");
+    let conn = connect_lys(root_path.as_path()).expect("failed");
+    let contributors = db::get_unique_contributors(&conn).expect("aa");
+
+    println!("--- Repository Summary ---");
+    println!(
+        "Contributors ({}): {}",
+        contributors.len(),
+        contributors.join(", ")
+    );
+    Ok(())
+}
 fn main() -> Result<(), Error> {
     let args = cli();
     let app = args.clone().get_matches();
     match app.subcommand() {
         Some(("new", _)) => new_project(),
+        Some(("summary", _)) => summary(),
         Some(("serve", args)) => {
             let port: u16 = args
                 .get_one::<String>("port")

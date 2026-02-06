@@ -336,3 +336,14 @@ pub fn get_or_insert_blob(conn: &Connection, content: &[u8]) -> Result<i64, Erro
     stmt_id.next()?;
     stmt_id.read(0)
 }
+
+pub fn get_unique_contributors(conn: &sqlite::Connection) -> Result<Vec<String>, sqlite::Error> {
+    let query = "SELECT DISTINCT author FROM commits ORDER BY author ASC";
+    let mut stmt = conn.prepare(query)?;
+
+    let mut contributors = Vec::new();
+    while let Ok(sqlite::State::Row) = stmt.next() {
+        contributors.push(stmt.read::<String, _>(0)?);
+    }
+    Ok(contributors)
+}
