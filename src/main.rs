@@ -35,7 +35,6 @@ fn cli() -> Command {
         .about(env!("CARGO_PKG_DESCRIPTION"))
         .author("Saigo Ekitae <saigoekitae@gmail.com>")
         .version(env!("CARGO_PKG_VERSION"))
-        .subcommand(Command::new("doctor").about("Check system health and permissions for lys"))
         .subcommand(Command::new("init").about("Initialize current directory"))
         .subcommand(Command::new("new").about("Create a new lys project"))
         .subcommand(
@@ -423,10 +422,6 @@ fn main() -> Result<(), Error> {
             // On passe le nouveau paramètre à ta fonction
             import::import_from_git(url, &target_dir, depth, only_recent).expect("failed");
             ok("ready");
-            Ok(())
-        }
-        Some(("doctor", _)) => {
-            vcs::doctor().expect("system health degraded");
             Ok(())
         }
         Some(("mount", sub_args)) => {
