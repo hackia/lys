@@ -220,6 +220,7 @@ pub fn connect_lys(root_path: &Path) -> Result<Connection, sqlite::Error> {
     }
     let conn = Connection::open(db_full_path.to_str().unwrap())?;
     conn.execute("PRAGMA temp_store = MEMORY;")?;
+    conn.execute("PRAGMA busy_timeout = 5000;")?;
     conn.execute("PRAGMA mmap_size = 30000000000;")?;
     // --- CORRECTION : ATTACHER LE STORE EN PREMIER ---
     conn.execute(format!(
@@ -235,8 +236,7 @@ pub fn connect_lys(root_path: &Path) -> Result<Connection, sqlite::Error> {
         let attach_query = format!("ATTACH DATABASE '{}' AS old;", prev_db.display());
         conn.execute(attach_query)?;
     }
-
-    // Performance
+    // Performances
     conn.execute("PRAGMA foreign_keys = ON;")?;
     conn.execute("PRAGMA journal_mode = WAL;")?;
     Ok(conn)

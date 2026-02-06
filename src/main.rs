@@ -398,9 +398,7 @@ fn main() -> Result<(), Error> {
             let target_dir = std::env::current_dir()?.join(&repo_name);
             // On passe le nouveau paramètre à ta fonction
             import::import_from_git(url, &target_dir, depth, only_recent).expect("failed");
-            if connect_lys(Path::new(&repo_name)).is_ok() {
-                ok("ready");
-            }
+            ok("ready");
             Ok(())
         }
         Some(("doctor", _)) => {

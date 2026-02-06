@@ -147,13 +147,12 @@ pub fn import_from_git(
     let store_db_path = target_dir.join(".lys/db/store.db");
     let store_conn = Mutex::new(sqlite::open(store_db_path)?);
 
-    // OPTIMISATION SQL: On booste les perfs pour l'import (pas de synchro disque immédiate)
-    conn.execute("PRAGMA synchronous = OFF; PRAGMA journal_mode = MEMORY;")?;
+    conn.execute("PRAGMA synchronous = OFF;")?; // Vitesse sans sacrifier le mode WAL
     {
         let s = store_conn.lock().unwrap();
-        s.execute("PRAGMA synchronous = OFF; PRAGMA journal_mode = MEMORY;")?;
+        s.execute("PRAGMA busy_timeout = 5000;")?; // Sécurité
+        s.execute("PRAGMA synchronous = OFF;")?;
     }
-
     // Analyse de l'historique
     let (commits_oids, pb_lys) = {
         let repo_guard = repo.lock().unwrap();
@@ -218,6 +217,11 @@ pub fn import_from_git(
     }
 
     conn.execute("COMMIT;")?;
+    conn.execute("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;")?;
+    {
+        let s = store_conn.lock().unwrap();
+        s.execute("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;")?;
+    }
     pb_lys.finish_with_message("import complete");
 
     // Nettoyage et checkout final
@@ -287,11 +291,12 @@ pub fn import_from_git_and_purge(
     store_conn_raw.execute("PRAGMA busy_timeout = 5000;")?;
     let store_conn = Mutex::new(store_conn_raw);
 
-    // OPTIMISATION SQL: On booste les perfs pour l'import (pas de synchro disque immédiate)
-    conn.execute("PRAGMA synchronous = OFF; PRAGMA journal_mode = MEMORY;")?;
+    // Remplace le bloc d'optimisation par celui-ci :
+    conn.execute("PRAGMA synchronous = OFF;")?; // Vitesse sans sacrifier le mode WAL
     {
         let s = store_conn.lock().unwrap();
-        s.execute("PRAGMA synchronous = OFF; PRAGMA journal_mode = MEMORY;")?;
+        s.execute("PRAGMA busy_timeout = 5000;")?; // Sécurité
+        s.execute("PRAGMA synchronous = OFF;")?;
     }
 
     let (commits_oids, pb_lys) = {
@@ -363,6 +368,11 @@ pub fn import_from_git_and_purge(
     }
 
     conn.execute("COMMIT;")?;
+    conn.execute("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;")?;
+    {
+        let s = store_conn.lock().unwrap();
+        s.execute("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;")?;
+    }
     pb_lys.finish_with_message("import complete");
 
     // Nettoyage et checkout final
