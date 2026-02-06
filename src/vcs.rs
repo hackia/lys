@@ -426,7 +426,7 @@ pub fn spawn_lys_shell(conn: &sqlite::Connection, reference: Option<&str>) -> Re
             println!();
             ok("Clean the shell");
             // 4. Nettoyage automatique (Lest et démontage)
-            umount(&temp_mount).map_err(|e| println!("Error: {e}")).ok();
+            umount(temp_mount.as_str()).map_err(|e| println!("Error: {e}")).ok();
             remove_dir_all(mount_path).ok();
             ok("Shell lys successfully cleaned.");
         }
@@ -455,8 +455,7 @@ pub fn mount_version(
     target_path: &str,
     reference: Option<&str>,
 ) -> Result<(), sqlite::Error> {
-    let target = Path::new(target_path);
-
+    
     let tree_hash = if let Some(r) = reference {
         // Recherche par hash partiel de commit
         let query = "SELECT tree_hash FROM commits WHERE hash LIKE ? || '%' LIMIT 1";
