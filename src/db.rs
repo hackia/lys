@@ -21,7 +21,14 @@ pub const LYS_INIT: &str = "CREATE TABLE IF NOT EXISTS tree_nodes (
         nix_env_hash TEXT,
         PRIMARY KEY (parent_tree_hash, name)
     ) WITHOUT ROWID;
-    
+ CREATE TABLE IF NOT EXISTS todos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    status TEXT DEFAULT 'TODO',
+    assigned_to TEXT,
+    due_date DATETIME,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP -- Ajouté pour le tri
+);   
     -- ====================================================================
     -- PARTIE 1 : STOCKAGE ADRESSABLE (store.db)
     -- ====================================================================
@@ -83,15 +90,6 @@ pub const LYS_INIT: &str = "CREATE TABLE IF NOT EXISTS tree_nodes (
         content TEXT NOT NULL,
         expires_at DATETIME NOT NULL
     );
-
-    CREATE TABLE IF NOT EXISTS todos (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        title TEXT NOT NULL,
-        status TEXT DEFAULT 'TODO',
-        assigned_to TEXT,
-        due_date DATETIME
-    );
-
     CREATE TABLE IF NOT EXISTS config (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL

@@ -37,9 +37,11 @@ pub fn add_todo(
 }
 
 pub fn list_todos(conn: &Connection) -> Result<(), Error> {
-    let query = "SELECT id, title, status, assigned_to, due_date  FROM todos WHERE status != 'DONE' ORDER BY created_at DESC";
+    // On récupère les colonnes, en gérant les NULL potentiels avec des valeurs par défaut
+    let query = "SELECT id, title, status, IFNULL(assigned_to, 'None'), IFNULL(due_date, 'No limit') FROM todos WHERE status != 'DONE' ORDER BY created_at DESC";
     let mut stmt = conn.prepare(query)?;
     let mut todos = Vec::new();
+
     while let Ok(State::Row) = stmt.next() {
         todos.push(TodoItem {
             id: stmt.read(0)?,
@@ -51,7 +53,7 @@ pub fn list_todos(conn: &Connection) -> Result<(), Error> {
     }
 
     if todos.is_empty() {
-        ok("nothing here");
+        ok("No pending tasks. You're all caught up!");
     } else {
         println!("{}", Table::new(todos));
     }
