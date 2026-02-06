@@ -34,13 +34,12 @@ pub async fn start_server(repo_path: &str, port: u16) {
         .route("/", get(idx_commits))
         .route("/commit/{id}", get(show_commit))
         .route("/file/{hash}", get(show_file))
-        // --- NOUVELLE ROUTE POUR LE TRANSFERT ---
         .route("/upload/{hash}", post(upload_atom))
         .with_state(shared_state);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
 
-    ok(format!("Server running at http://{addr}\x1b").as_str());
+    ok(format!("Server running at http://{addr}").as_str());
     ok("Press Ctrl+C to stop.");
 
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();

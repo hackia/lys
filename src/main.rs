@@ -682,10 +682,9 @@ fn main() -> Result<(), Error> {
         Some(("web", args)) => {
             let current_dir = std::env::current_dir()?;
             let current_dir_str = current_dir.to_str().unwrap();
-            if !Path::new(".silex").exists() {
-                return Err(Error::other("Not a silex repository."));
+            if !Path::new(".lys").exists() {
+                return Err(Error::other("Not a lys repository."));
             }
-
             let port: u16 = args
                 .get_one::<String>("port")
                 .unwrap()
