@@ -206,6 +206,70 @@ impl Display for Season {
     }
 }
 
+// Dans src/db.rs
+
+pub fn verify(conn: &sqlite::Connection, deep: bool) -> Result<(), Box<dyn std::error::Error>> {
+    ok("Starting repository integrity verification...");
+    if deep {
+        ok("Deep mode enabled: Recalculating all checksums...");
+    }
+
+    // On récupère les objets référencés par les commits (ignorant les dossiers)
+    let query = "SELECT DISTINCT hash, name FROM tree_nodes WHERE mode != 16384";
+    let mut stmt = conn.prepare(query)?;
+
+    let mut missing = 0;
+    let mut corrupted = 0;
+    let mut total = 0;
+
+    while let Ok(State::Row) = stmt.next() {
+        total += 1;
+        let expected_hash: String = stmt.read(0)?;
+        let name: String = stmt.read(1)?;
+
+        // On récupère le contenu pour vérifier l'existence
+        let mut check_stmt =
+            conn.prepare("SELECT content FROM store.blobs WHERE hash = ? LIMIT 1")?;
+        check_stmt.bind((1, expected_hash.as_str()))?;
+
+        if let Ok(State::Row) = check_stmt.next() {
+            if deep {
+                // VERIFICATION PROFONDE : On décompresse et on rehache
+                let compressed: Vec<u8> = check_stmt.read(0)?;
+                let decompressed = decompress(&compressed); // Ta fonction de décompression
+
+                let actual_hash = blake3::hash(&decompressed).to_hex().to_string();
+
+                if actual_hash != expected_hash {
+                    corrupted += 1;
+                    crate::utils::ko(&format!(
+                        "CORRUPTED: Hash mismatch for '{name}' (Expected: {}, Actual: {})",
+                        &expected_hash[..7],
+                        &actual_hash[..7]
+                    ));
+                }
+            }
+        } else {
+            missing += 1;
+            crate::utils::ko(&format!(
+                "MISSING: Data for '{name}' (hash: {})",
+                &expected_hash[..7]
+            ));
+        }
+    }
+
+    // Rapport final
+    if missing == 0 && corrupted == 0 {
+        ok(&format!(
+            "Verification success! All {total} objects are intact.",
+        ));
+    } else {
+        crate::utils::ko(&format!(
+            "Integrity report: {missing} missing, {corrupted} corrupted / {total} total",
+        ));
+    }
+    Ok(())
+}
 pub fn connect_lys(root_path: &Path) -> Result<Connection, sqlite::Error> {
     let db_dir = root_path.join(".lys/db");
     let store_path = db_dir.join("store.db");
@@ -220,6 +284,7 @@ pub fn connect_lys(root_path: &Path) -> Result<Connection, sqlite::Error> {
     }
     let conn = Connection::open(db_full_path.to_str().unwrap())?;
     conn.execute("PRAGMA temp_store = MEMORY;")?;
+    conn.execute("PRAGMA cache_size = -64000;")?;
     conn.execute("PRAGMA busy_timeout = 5000;")?;
     conn.execute("PRAGMA mmap_size = 30000000000;")?;
     // --- CORRECTION : ATTACHER LE STORE EN PREMIER ---

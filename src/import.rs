@@ -8,6 +8,7 @@ use rayon::prelude::*;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 /// Explore un arbre Git et insère les objets dans Lys de manière parallèle.
+
 fn build_vfs_tree_parallel(
     repo: &Mutex<Repository>,
     target_dir: &Path,
@@ -20,12 +21,11 @@ fn build_vfs_tree_parallel(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let tree_hash_str = tree_oid.to_string();
 
-    // OPTIMISATION: Si ce dossier a déjà été scanné (Merkle), on ne descend pas
     if indexed.contains(&tree_hash_str) {
         return Ok(());
     }
 
-    // 1. Extraction des entrées de l'arbre (Séquentiel sous verrou court)
+    // 1. Extraction des entrées
     let entries: Vec<(Oid, String, ObjectType, i32)> = {
         let repo_guard = repo.lock().unwrap();
         let tree = repo_guard.find_tree(tree_oid)?;
@@ -41,35 +41,51 @@ fn build_vfs_tree_parallel(
             .collect()
     };
 
-    // 2. Traitement des Blobs en parallèle
-    entries.par_iter().for_each(|(oid, _name, kind, _)| {
-        if let ObjectType::Blob = kind {
-            let h = oid.to_string();
-            if !indexed.contains(&h) {
-                // Lecture du contenu (Verrou repo)
+    // --- NOUVEAU : On crée un mapping pour récupérer les hashes Blake3 calculés en parallèle ---
+    let blob_hashes = Arc::new(dashmap::DashMap::new());
+    let blob_hashes_ptr = Arc::clone(&blob_hashes);
+
+    // 2. Traitement des Blobs en parallèle (Correction de la syntaxe de déstructuration)
+    entries
+        .par_iter()
+        .for_each(|&(oid, ref _name, kind, _mode)| {
+            if let ObjectType::Blob = kind {
                 let content = {
                     let repo_guard = repo.lock().unwrap();
-                    repo_guard
-                        .find_blob(*oid)
-                        .map(|b| b.content().to_vec())
-                        .ok()
+                    repo_guard.find_blob(oid).map(|b| b.content().to_vec()).ok()
                 };
 
                 if let Some(data) = content {
-                    // Insertion en base (Verrou store)
-                    let store_guard = store_conn.lock().unwrap();
-                    let _ = db::insert_blob_with_conn(&store_guard, &h, &data);
-                    indexed.insert(h);
+                    // CALCUL DU HASH SOUVERAIN (Blake3)
+                    let lys_hash = blake3::hash(&data).to_hex().to_string();
+
+                    if !indexed.contains(&lys_hash) {
+                        let store_guard = store_conn.lock().unwrap();
+                        // On insère avec le hash LYS
+                        let _ = db::insert_blob_with_conn(&store_guard, &lys_hash, &data);
+                        indexed.insert(lys_hash.clone());
+                    }
+                    // On garde une trace du mapping Git OID -> Lys Hash pour le Step 3
+                    blob_hashes_ptr.insert(oid, lys_hash);
                 }
             }
-        }
-    });
+        });
 
-    // 3. Traitement récursif des répertoires (Séquentiel)
+    // 3. Traitement récursif et insertion (Séquentiel)
     for (oid, name, kind, mode) in entries {
-        let entry_hash = oid.to_string();
+        // On utilise le hash Blake3 si c'est un blob, sinon on garde l'OID Git pour le dossier
+        let entry_hash = if kind == ObjectType::Blob {
+            blob_hashes
+                .get(&oid)
+                .map(|h| h.clone())
+                .unwrap_or_else(|| oid.to_string())
+        } else {
+            oid.to_string()
+        };
+
         pb.set_message(format!("Indexing {}", &entry_hash[..7]));
 
+        // Insertion dans tree_nodes avec le hash Blake3 !
         db::insert_tree_node(conn, parent_hash, &name, &entry_hash, mode as i64, None)?;
 
         if let ObjectType::Tree = kind {

@@ -38,6 +38,16 @@ fn cli() -> Command {
         .subcommand(Command::new("doctor").about("Check system health and permissions for lys"))
         .subcommand(Command::new("init").about("Initialize current directory"))
         .subcommand(Command::new("new").about("Create a new lys project"))
+        .subcommand(
+            Command::new("verify")
+                .about("Check repository integrity and missing blobs")
+                .arg(
+                    Arg::new("deep")
+                        .long("deep")
+                        .action(ArgAction::SetTrue)
+                        .help("Recalculate Blake3 checksums for every blob (Slower but safer)"),
+                ),
+        )
         .subcommand(Command::new("summary").about("Show working directory infos"))
         .subcommand(Command::new("status").about("Show changes in working directory"))
         .subcommand(Command::new("push").about("Push local commits to a remote architect"))
@@ -362,6 +372,13 @@ fn main() -> Result<(), Error> {
     let app = args.clone().get_matches();
     match app.subcommand() {
         Some(("new", _)) => new_project(),
+        Some(("verify", args)) => {
+            let deep = args.get_flag("deep"); // On récupère le flag
+            let current_dir = std::env::current_dir()?;
+            let conn = connect_lys(&current_dir).map_err(|e| Error::other(e.to_string()))?;
+            db::verify(&conn, deep).map_err(|e| Error::other(e.to_string()))?;
+            Ok(())
+        }
         Some(("summary", _)) => summary(),
         Some(("prune", _)) => {
             let conn = db::connect_lys(Path::new(".")).expect("faield to connect to the database");
