@@ -96,7 +96,6 @@ pub fn import_from_git(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let m = MultiProgress::new();
 
-    // --- BARRE 1 : CLONAGE GIT ---
     let pb_git = m.add(ProgressBar::new(0));
     pb_git.set_style(
         ProgressStyle::default_bar()
@@ -105,11 +104,19 @@ pub fn import_from_git(
     );
 
     let mut callbacks = RemoteCallbacks::new();
-    callbacks.transfer_progress(|stats| {
-        pb_git.set_length(stats.total_objects() as u64);
-        pb_git.set_position(stats.received_objects() as u64);
-        pb_git.set_message("Downloading...");
-        true
+
+    // On clone la progress bar pour l'utiliser dans le closure
+    let pb_clone = pb_git.clone();
+    callbacks.transfer_progress(move |stats| {
+        if stats.total_objects() > 0 {
+            pb_clone.set_length(stats.total_objects() as u64);
+            pb_clone.set_position(stats.received_objects() as u64);
+            pb_clone.set_message(format!(
+                "{:.1} MB",
+                stats.received_bytes() as f64 / 1_048_576.0
+            ));
+        }
+        true // Continuer le transfert
     });
 
     let mut fetch_options = FetchOptions::new();
@@ -117,11 +124,9 @@ pub fn import_from_git(
     if let Some(d) = depth {
         fetch_options.depth(d);
     }
+    let mut repo_builder = RepoBuilder::new();
+    repo_builder.fetch_options(fetch_options);
 
-    let temp_path = target_dir.join("temp_git_import");
-    if temp_path.exists() {
-        std::fs::remove_dir_all(&temp_path)?;
-    }
     pb_git.set_message("Cloning git repository...");
 
     let temp_path = target_dir.join("temp_git_import");
@@ -130,7 +135,7 @@ pub fn import_from_git(
     }
 
     // Clonage et mise en Mutex immédiate
-    let repo_raw = RepoBuilder::new().clone(git_url, &temp_path)?;
+    let repo_raw = repo_builder.clone(git_url, &temp_path)?;
     let repo = Mutex::new(repo_raw);
     pb_git.finish_with_message("Git clone complete");
 
