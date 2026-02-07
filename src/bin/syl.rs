@@ -1,10 +1,11 @@
-use crossterm::event::{Event, KeyCode, KeyEventKind};
-use ratatui::Frame;
-use ratatui::layout::Alignment;
+use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use ratatui::layout::{Alignment, Constraint, Layout};
+use ratatui::prelude::CrosstermBackend;
+use ratatui::prelude::Terminal;
 use ratatui::style::Stylize;
 use ratatui::text::{Line, Text};
 use ratatui::widgets::{Block, Borders, Paragraph};
-use std::io::Result;
+use std::io::{Result, Stdout};
 
 pub struct App {
     pub should_quit: bool,
@@ -21,7 +22,7 @@ pub struct App {
     pub health_mode: bool,
 }
 
-fn help(f: &mut Frame) {
+fn help(t: &mut Terminal<CrosstermBackend<Stdout>>) {
     let text = Text::from(vec![
         Line::from("F1   => Show help".white()),
         Line::from("F2   => Launch editor".white()),
@@ -36,141 +37,176 @@ fn help(f: &mut Frame) {
         Line::from("F11  => Shell".white()),
         Line::from("F12  => Check the code's health".white()),
     ]);
-    f.render_widget(
-        Paragraph::new(text).block(
-            Block::default()
-                .title_top(" Help ")
-                .title_alignment(Alignment::Center)
-                .borders(Borders::all()),
-        ),
-        f.area(),
+    assert!(
+        t.draw(|f| {
+            f.render_widget(
+                Paragraph::new(text).block(
+                    Block::default()
+                        .title_top(" Help ")
+                        .title_alignment(Alignment::Center)
+                        .borders(Borders::all()),
+                ),
+                f.area(),
+            );
+        })
+        .is_ok()
+    );
+}
+fn editor(t: &mut Terminal<CrosstermBackend<Stdout>>) {
+    loop {
+        assert!(
+            t.draw(|f| {
+                let l = Layout::default()
+                    .constraints([Constraint::Length(3)])
+                    .direction(ratatui::layout::Direction::Horizontal)
+                    .split(f.area());
+                f.render_widget(Paragraph::new("Search"), l[0]);
+            })
+            .is_ok()
+        );
+
+        match event::read().expect("failed to read keyboard") {
+            Event::Key(key_event) if key_event.kind == KeyEventKind::Press => {
+                match key_event.code {
+                    KeyCode::Esc => break,
+                    _ => continue,
+                }
+            }
+            _ => {}
+        };
+    }
+}
+
+fn web(t: &mut Terminal<CrosstermBackend<Stdout>>) {
+    assert!(
+        t.draw(|f| {
+            f.render_widget(
+                Block::default()
+                    .title_top(" Web ")
+                    .title_alignment(Alignment::Center)
+                    .borders(Borders::all()),
+                f.area(),
+            );
+        })
+        .is_ok()
     );
 }
 
-fn editor(f: &mut Frame) {
-    f.render_widget(
-        Paragraph::default().block(
-            Block::default()
-                .title_top(" Editor ")
-                .title_alignment(Alignment::Center)
-                .borders(Borders::all()),
-        ),
-        f.area(),
+fn commit(t: &mut Terminal<CrosstermBackend<Stdout>>) {
+    assert!(
+        t.draw(|f| {
+            f.render_widget(
+                Block::default()
+                    .title_top(" Commit ")
+                    .title_alignment(Alignment::Center)
+                    .borders(Borders::all()),
+                f.area(),
+            );
+        })
+        .is_ok()
     );
 }
 
-fn web(f: &mut Frame) {
-    f.render_widget(
-        Paragraph::default().block(
-            Block::default()
-                .title_top(" Web ")
-                .title_alignment(Alignment::Center)
-                .borders(Borders::all()),
-        ),
-        f.area(),
+fn tree(t: &mut Terminal<CrosstermBackend<Stdout>>) {
+    assert!(
+        t.draw(|f| {
+            f.render_widget(
+                Block::default()
+                    .title_top(" Tree ")
+                    .title_alignment(Alignment::Center)
+                    .borders(Borders::all()),
+                f.area(),
+            );
+        })
+        .is_ok()
     );
 }
 
-fn commit(f: &mut Frame) {
-    f.render_widget(
-        Paragraph::default().block(
-            Block::default()
-                .title_top(" Commit ")
-                .title_alignment(Alignment::Center)
-                .borders(Borders::all()),
-        ),
-        f.area(),
+fn todos(t: &mut Terminal<CrosstermBackend<Stdout>>) {
+    assert!(
+        t.draw(|f| {
+            f.render_widget(
+                Block::default()
+                    .title_top(" Todos ")
+                    .title_alignment(Alignment::Center)
+                    .borders(Borders::all()),
+                f.area(),
+            );
+        })
+        .is_ok()
     );
 }
 
-fn tree(f: &mut Frame) {
-    f.render_widget(
-        Paragraph::default().block(
-            Block::default()
-                .title_top(" Tree ")
-                .title_alignment(Alignment::Center)
-                .borders(Borders::all()),
-        ),
-        f.area(),
+fn timeline(t: &mut Terminal<CrosstermBackend<Stdout>>) {
+    assert!(
+        t.draw(|f| {
+            f.render_widget(
+                Block::default()
+                    .title_top(" Timeline ")
+                    .title_alignment(Alignment::Center)
+                    .borders(Borders::all()),
+                f.area(),
+            );
+        })
+        .is_ok()
     );
 }
 
-fn todos(f: &mut Frame) {
-    f.render_widget(
-        Paragraph::default().block(
-            Block::default()
-                .title_top(" Todos ")
-                .title_alignment(Alignment::Center)
-                .borders(Borders::all()),
-        ),
-        f.area(),
+fn shell(t: &mut Terminal<CrosstermBackend<Stdout>>) {
+    assert!(
+        t.draw(|f| {
+            f.render_widget(
+                Block::default()
+                    .title_top(" Shell ")
+                    .title_alignment(Alignment::Center)
+                    .borders(Borders::all()),
+                f.area(),
+            );
+        })
+        .is_ok()
     );
 }
 
-fn timeline(f: &mut Frame) {
-    f.render_widget(
-        Paragraph::default().block(
-            Block::default()
-                .title_top(" Timeline ")
-                .title_alignment(Alignment::Center)
-                .borders(Borders::all()),
-        ),
-        f.area(),
+fn logs(t: &mut Terminal<CrosstermBackend<Stdout>>) {
+    assert!(
+        t.draw(|f| {
+            f.render_widget(
+                Block::default()
+                    .title_top(" Logs ")
+                    .title_alignment(Alignment::Center)
+                    .borders(Borders::all()),
+                f.area(),
+            );
+        })
+        .is_ok()
     );
 }
-
-fn health(f: &mut Frame) {
-    f.render_widget(
-        Paragraph::default().block(
-            Block::default()
-                .title_top(" Health ")
-                .title_alignment(Alignment::Center)
-                .borders(Borders::all()),
-        ),
-        f.area(),
+fn ui(t: &mut Terminal<CrosstermBackend<Stdout>>) {
+    assert!(
+        t.draw(|f| {
+            f.render_widget(
+                Block::default()
+                    .title_top(" Syl ")
+                    .title_alignment(Alignment::Center)
+                    .borders(Borders::all()),
+                f.area(),
+            );
+        })
+        .is_ok()
     );
 }
-
-fn logs(f: &mut Frame) {
-    f.render_widget(
-        Paragraph::default().block(
-            Block::default()
-                .title_top(" Logs ")
-                .title_alignment(Alignment::Center)
-                .borders(Borders::all()),
-        ),
-        f.area(),
-    );
-}
-
-fn shell(f: &mut Frame) {
-    f.render_widget(
-        Paragraph::default().block(
-            Block::default()
-                .title_top(" Shell ")
-                .title_alignment(Alignment::Center)
-                .borders(Borders::all()),
-        ),
-        f.area(),
-    );
-}
-
-fn chat(f: &mut Frame) {
-    f.render_widget(
-        Paragraph::default().block(
-            Block::default()
-                .title_top(" Chat ")
-                .title_alignment(Alignment::Center)
-                .borders(Borders::all()),
-        ),
-        f.area(),
-    );
-}
-
-fn ui(f: &mut Frame) {
-    f.render_widget(
-        Paragraph::default().block(Block::default().borders(Borders::all())),
-        f.area(),
+fn chat(t: &mut Terminal<CrosstermBackend<Stdout>>) {
+    assert!(
+        t.draw(|f| {
+            f.render_widget(
+                Block::default()
+                    .title_top(" Chat ")
+                    .title_alignment(Alignment::Center)
+                    .borders(Borders::all()),
+                f.area(),
+            );
+        })
+        .is_ok()
     );
 }
 
@@ -194,38 +230,32 @@ fn main() -> Result<()> {
     loop {
         if app.should_quit {
             break;
+        } else if app.help_mode {
+            help(&mut terminal);
+        } else if app.editor_mode {
+            editor(&mut terminal);
+        } else if app.web_mode {
+            web(&mut terminal);
+        } else if app.commit_mode {
+            commit(&mut terminal);
+        } else if app.timeline_mode {
+            timeline(&mut terminal);
+        } else if app.todo_mode {
+            todos(&mut terminal);
+        } else if app.chat_mode {
+            chat(&mut terminal);
+        } else if app.shell_mode {
+            shell(&mut terminal);
+        } else if app.files_mode {
+            tree(&mut terminal);
+        } else if app.logs_mode {
+            logs(&mut terminal);
+        } else if app.health_mode {
+            ui(&mut terminal);
+        } else {
+            ui(&mut terminal);
         }
-        assert!(
-            terminal
-                .draw(|f| {
-                    if app.help_mode {
-                        help(f);
-                    } else if app.editor_mode {
-                        editor(f);
-                    } else if app.web_mode {
-                        web(f);
-                    } else if app.commit_mode {
-                        commit(f);
-                    } else if app.todo_mode {
-                        todos(f);
-                    } else if app.timeline_mode {
-                        timeline(f);
-                    } else if app.health_mode {
-                        health(f);
-                    } else if app.chat_mode {
-                        chat(f);
-                    } else if app.files_mode {
-                        tree(f);
-                    } else if app.shell_mode {
-                        shell(f);
-                    } else if app.logs_mode {
-                        logs(f);
-                    } else {
-                        ui(f);
-                    }
-                })
-                .is_ok()
-        );
+
         match crossterm::event::read()? {
             Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
                 KeyCode::F(1) => {
