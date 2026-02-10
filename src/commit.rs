@@ -4,6 +4,7 @@ use inquire::error::InquireResult;
 use inquire::{Confirm, Editor, InquireError, Text};
 use nix::sys::utsname::uname;
 use nix::unistd::User;
+use std::collections::BTreeMap;
 use std::env::consts::ARCH;
 use std::fmt::{Display, Formatter};
 use std::io::Error;
@@ -18,14 +19,69 @@ pub struct Log {
     pub message: String,
     pub at: String,
     pub signature: String,
+    pub files: Vec<String>,
 }
 
 impl Display for Log {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "\n{} at {} ({})\n", self.author, self.at, self.signature)?;
         writeln!(f, "{}\n", self.message)?;
+
+        if !self.files.is_empty() {
+            let mut root = Tree::default();
+            for file in &self.files {
+                let parts: Vec<&str> = file.split('/').filter(|s| !s.is_empty()).collect();
+                insert_into_tree(&mut root, &parts);
+            }
+            print_tree(f, &root, "", true)?; // print from root
+            writeln!(f)?;
+        }
         Ok(())
     }
+}
+
+#[derive(Default)]
+struct Tree {
+    children: BTreeMap<String, Tree>,
+    is_file: bool,
+}
+
+fn insert_into_tree(node: &mut Tree, parts: &[&str]) {
+    if parts.is_empty() {
+        return;
+    }
+    let first = parts[0];
+    let child = node
+        .children
+        .entry(first.to_string())
+        .or_insert_with(Tree::default);
+    if parts.len() == 1 {
+        child.is_file = true;
+    } else {
+        insert_into_tree(child, &parts[1..]);
+    }
+}
+
+fn print_tree(f: &mut Formatter<'_>, node: &Tree, prefix: &str, is_root: bool) -> std::fmt::Result {
+    // For root, we don't print a name, only its children
+    let len = node.children.len();
+    let mut i = 0usize;
+    for (name, child) in &node.children {
+        i += 1;
+        let is_last = i == len;
+        let connector = if is_last { "└──" } else { "├──" };
+        writeln!(f, "{}{} {}", prefix, connector, name)?;
+        let new_prefix = if is_last {
+            format!("{}    ", prefix)
+        } else {
+            format!("{}│   ", prefix)
+        };
+        print_tree(f, child, &new_prefix, false)?;
+    }
+    if is_root && len == 0 {
+        // nothing to print
+    }
+    Ok(())
 }
 fn commit_justify(text: &str, width: usize) -> String {
     let words: Vec<&str> = text.split_whitespace().collect();

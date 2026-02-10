@@ -1020,9 +1020,9 @@ pub fn log(conn: &Connection, page: usize, per_page: usize) -> Result<(), sqlite
     // Calcul de l'offset (Page 1 = Offset 0)
     let offset = (page - 1) * per_page;
 
-    // Requête avec LIMIT et OFFSET
+    // Requête avec LIMIT et OFFSET (inclut tree_hash pour construire l'arborescence)
     let query = "
-        SELECT hash, author, message, timestamp 
+        SELECT hash, author, message, timestamp, tree_hash 
         FROM commits 
         ORDER BY timestamp DESC 
         LIMIT ? OFFSET ?";
@@ -1031,7 +1031,7 @@ pub fn log(conn: &Connection, page: usize, per_page: usize) -> Result<(), sqlite
     stmt.bind((1, per_page as i64))?;
     stmt.bind((2, offset as i64))?;
 
-    let mut logs = Vec::new();
+    let mut rendered = Vec::new();
     while let Ok(State::Row) = stmt.next() {
         // On tronque le hash pour l'affichage (7 premiers chars)
         let full_hash: String = stmt.read(0)?;
@@ -1041,26 +1041,35 @@ pub fn log(conn: &Connection, page: usize, per_page: usize) -> Result<(), sqlite
             full_hash
         };
 
-        logs.push(
-            Log {
-                author: stmt.read(1)?,
-                at: stmt.read(3)?,
-                message: stmt.read(2)?,
-                signature: short_hash,
-            }
-            .to_string(),
-        );
+        let tree_hash: String = stmt.read(4)?;
+        // Construit la liste des fichiers à partir du tree
+        let mut state: HashMap<PathBuf, (String, i64)> = HashMap::new();
+        flatten_tree(conn, &tree_hash, PathBuf::new(), &mut state)?;
+        let mut files: Vec<String> = state
+            .keys()
+            .map(|p| p.to_string_lossy().to_string())
+            .collect();
+        files.sort();
+
+        let log = Log {
+            author: stmt.read(1)?,
+            at: stmt.read(3)?,
+            message: stmt.read(2)?,
+            signature: short_hash,
+            files,
+        };
+        rendered.push(log.to_string());
     }
 
-    if logs.is_empty() {
+    if rendered.is_empty() {
         if page == 1 {
             ok("please commit first");
         } else {
             ok(format!("No commits on {page} page.").as_str());
         }
     } else {
-        let x = logs.len();
-        println!("{}", logs.join("\n"));
+        let x = rendered.len();
+        println!("{}", rendered.join("\n"));
         if x >= 120 {
             ok(format!(
                 "\nPage {page} ({x}/{per_page} commits). Use --page {} for see the suite.",
