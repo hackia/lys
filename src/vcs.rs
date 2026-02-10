@@ -6,27 +6,27 @@ use crate::utils::ok;
 use crate::utils::ok_merkle_hash;
 use crate::utils::ok_status;
 use crate::utils::ok_tag;
-use glob::GlobError;
+use anyhow::Error;
 use glob::glob;
+use glob::GlobError;
 use ignore::DirEntry;
 use indicatif::{ProgressBar, ProgressStyle};
 use miniz_oxide::inflate;
 #[cfg(target_os = "linux")]
 use nix::mount::umount;
 use nix::sys::wait::waitpid;
-use nix::unistd::{ForkResult, execvp, fork};
+use nix::unistd::{execvp, fork, ForkResult};
 use similar::{ChangeTag, TextDiff};
 use sqlite::Connection;
-use sqlite::Error;
 use sqlite::State;
 use std::collections::BTreeMap;
 use std::collections::{HashMap, HashSet};
 use std::ffi::CString;
 use std::fmt::Debug;
-use std::fs::File;
 use std::fs::copy;
 use std::fs::create_dir_all;
 use std::fs::remove_dir_all;
+use std::fs::File;
 use std::io::Error as IoError;
 use std::io::Write;
 use std::io::{Read, Result as IoResult};
@@ -34,7 +34,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug)]
-enum Node {
+pub enum Node {
     File { hash: String, mode: u32 },
     Directory { children: BTreeMap<String, Node> },
 }
@@ -48,7 +48,7 @@ pub enum FileStatus {
 }
 
 pub fn push_atoms(
-    conn: &sqlite::Connection,
+    conn: &Connection,
     remote_url: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // 1. Lister les hashes que tu possèdes
@@ -57,12 +57,12 @@ pub fn push_atoms(
     // 2. Préparer une requête (ex: avec reqwest) pour envoyer chaque blob
     let client = reqwest::blocking::Client::new();
 
-    while let Ok(sqlite::State::Row) = stmt.next() {
+    while let Ok(State::Row) = stmt.next() {
         let hash: String = stmt.read(0)?;
 
         // On récupère le contenu brut (déjà compressé en zlib dans ta DB)
         // fetch_blob utilise déjà le chemin vers .lys/db/store.db
-        let content = fetch_blob(std::path::Path::new("."), &hash)?;
+        let content = fetch_blob(Path::new("."), &hash)?;
 
         // 3. Le transfert : On envoie le hash et le binaire
         let res = client
@@ -113,13 +113,13 @@ pub fn sync(destination_path: &str) -> Result<(), IoError> {
 
 // Dans src/vcs.rs - Version optimisée
 pub fn fetch_blob_with_conn(
-    conn: &sqlite::Connection,
+    conn: &Connection,
     hash: &str,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let mut stmt = conn.prepare("SELECT content FROM blobs WHERE hash = ?")?;
     stmt.bind((1, hash))?;
 
-    if let Ok(sqlite::State::Row) = stmt.next() {
+    if let Ok(State::Row) = stmt.next() {
         let compressed: Vec<u8> = stmt.read(0)?;
         let decompressed = inflate::decompress_to_vec_zlib(&compressed)
             .map_err(|e| format!("Erreur de décompression pour {hash}: {e:?}"))?;
@@ -139,7 +139,7 @@ pub fn fetch_blob(repo_root: &Path, hash: &str) -> Result<Vec<u8>, Box<dyn std::
     }
 
     // On ouvre la connexion avec le chemin blindé
-    let conn = sqlite::open(&db_path)?;
+    let conn =sqlite::open(&db_path)?;
 
     conn.execute("PRAGMA busy_timeout = 5000;")?;
     // Petite optimisation pour la lecture seule
@@ -148,10 +148,10 @@ pub fn fetch_blob(repo_root: &Path, hash: &str) -> Result<Vec<u8>, Box<dyn std::
     let mut stmt = conn.prepare("SELECT content FROM blobs WHERE hash = ?")?;
     stmt.bind((1, hash))?;
 
-    if let Ok(sqlite::State::Row) = stmt.next() {
+    if let Ok(State::Row) = stmt.next() {
         let compressed: Vec<u8> = stmt.read(0)?;
         let decompressed = inflate::decompress_to_vec_zlib(&compressed)
-            .map_err(|e| format!("Erreur de décompression pour {hash}: {e:?}"))?;
+            .map_err(|e| format!("{hash}: {e:?}"))?;
 
         return Ok(decompressed);
     }
@@ -160,7 +160,7 @@ pub fn fetch_blob(repo_root: &Path, hash: &str) -> Result<Vec<u8>, Box<dyn std::
 }
 
 fn restore_tree(
-    conn: &sqlite::Connection,
+    conn: &Connection,
     tree_hash: &str,
     current_path: &Path,
     repo_root: &Path,
@@ -171,7 +171,7 @@ fn restore_tree(
     stmt.bind((1, tree_hash))?;
 
     let mut nodes = Vec::new();
-    while let Ok(sqlite::State::Row) = stmt.next() {
+    while let Ok(State::Row) = stmt.next() {
         nodes.push((
             stmt.read::<String, _>(0)?,
             stmt.read::<String, _>(1)?,
@@ -257,7 +257,7 @@ pub fn doctor() -> Result<(), String> {
     Ok(())
 }
 
-pub fn ls_tree(conn: &Connection, tree_hash: &str, prefix: &str) -> Result<(), sqlite::Error> {
+pub fn ls_tree(conn: &Connection, tree_hash: &str, prefix: &str) -> Result<(), Error> {
     // On récupère tous les enfants directs de ce hash de dossier
     let query =
         "SELECT name, hash, mode FROM tree_nodes WHERE parent_tree_hash = ? ORDER BY name ASC";
@@ -323,15 +323,14 @@ fn get_manifest_map(
     if let Some(id) = commit_id {
         // On récupère le tree_hash du commit spécifique
         let query = "SELECT tree_hash FROM commits WHERE id = ?";
-        let mut stmt = conn.prepare(query).expect("failed");
-        stmt.bind((1, id)).unwrap();
+        let mut stmt = conn.prepare(query)?;
+        stmt.bind((1, id))?;
 
         if let Ok(State::Row) = stmt.next() {
-            let tree_hash: String = stmt.read(0).unwrap();
+            let tree_hash: String = stmt.read(0)?;
             let mut path_map = HashMap::new();
             // On utilise ton flatten_tree pour obtenir l'état complet
-            flatten_tree(conn, &tree_hash, PathBuf::new(), &mut path_map).expect("failed");
-
+            flatten_tree(conn, &tree_hash, PathBuf::new(), &mut path_map)?;
             // Conversion PathBuf -> String pour rester compatible avec la logique de checkout
             for (p, (h, a)) in path_map {
                 map.insert(p.to_string_lossy().to_string(), (h, a));
@@ -368,7 +367,7 @@ fn get_file_content_from_head(
     }
 }
 // Helper pour savoir si un hash est un dossier (présent en tant que parent)
-fn is_directory(conn: &Connection, hash: &str) -> Result<bool, sqlite::Error> {
+fn is_directory(conn: &Connection, hash: &str) -> Result<bool, Error> {
     let query = "SELECT 1 FROM tree_nodes WHERE parent_tree_hash = ? LIMIT 1";
     let mut stmt = conn.prepare(query)?;
     stmt.bind((1, hash))?;
@@ -384,7 +383,7 @@ fn format_mode(mode: i64) -> String {
 }
 
 #[cfg(target_os = "freebsd")]
-use nix::mount::{MntFlags, unmount};
+use nix::mount::{unmount, MntFlags};
 
 #[cfg(target_os = "freebsd")]
 pub fn umount(path: &str) -> Result<(), String> {
@@ -394,17 +393,17 @@ pub fn umount(path: &str) -> Result<(), String> {
     // Sur FreeBSD, on utilise unmount avec MntFlags
     unmount(p, MntFlags::empty()).map_err(|e| format!("umount of the path {path} failed : {e}"))?;
 
-    ok(&format!("Umounted: {path}"));
+    ok(&format!("Unmounted: {path}"));
     Ok(())
 }
 
-pub fn spawn_lys_shell(conn: &sqlite::Connection, reference: Option<&str>) -> Result<(), String> {
+pub fn spawn_lys_shell(conn: &Connection, reference: Option<&str>) -> Result<(), String> {
     let temp_mount = format!("/tmp/{}", uuid::Uuid::new_v4().simple());
-    let mount_path = std::path::Path::new(&temp_mount);
+    let mount_path = Path::new(&temp_mount);
 
-    std::fs::create_dir_all(mount_path).map_err(|e| e.to_string())?;
+    create_dir_all(mount_path).map_err(|e| e.to_string())?;
     if let Err(e) = mount_version(conn, &temp_mount, reference) {
-        let _ = std::fs::remove_dir_all(mount_path);
+        let _ = remove_dir_all(mount_path);
         return Err(format!("Mount error: {e}"));
     }
 
@@ -437,10 +436,12 @@ pub fn spawn_lys_shell(conn: &sqlite::Connection, reference: Option<&str>) -> Re
         // Dans src/vcs.rs, dans ForkResult::Child
         Ok(ForkResult::Child) => {
             // On récupère le chemin absolu du projet actuel (Base Terre)
-            let project_root = std::env::current_dir().unwrap();
+            let project_root = std::env::current_dir().expect("failed to get current dir");
 
             unsafe {
-                std::env::set_var("LYS_PROJECT_ROOT", project_root.to_str().unwrap());
+                std::env::set_var("LYS_PROJECT_ROOT", project_root.to_str().expect(
+                    "failed to get project root path",
+                ));
             }
 
             let args = [shell.clone()];
@@ -448,7 +449,7 @@ pub fn spawn_lys_shell(conn: &sqlite::Connection, reference: Option<&str>) -> Re
             std::env::set_current_dir(mount_path).ok();
             execvp(&shell, &args).map_err(|e| e.to_string())?;
         }
-        Err(e) => return Err(format!("Fork failed: {e}")),
+        Err(e) => return Err(anyhow::anyhow!("Fork failed: {e}").to_string()),
     }
 
     Ok(())
@@ -458,7 +459,7 @@ pub fn mount_version(
     conn: &Connection,
     target_path: &str,
     reference: Option<&str>,
-) -> Result<(), sqlite::Error> {
+) -> Result<(), Error> {
     let tree_hash = if let Some(r) = reference {
         // Recherche par hash partiel de commit
         let query = "SELECT tree_hash FROM commits WHERE hash LIKE ? || '%' LIMIT 1";
@@ -467,24 +468,18 @@ pub fn mount_version(
         if let Ok(State::Row) = stmt.next() {
             stmt.read::<String, _>(0)?
         } else {
-            return Err(sqlite::Error {
-                code: None,
-                message: Some("Commit not founded".into()),
-            });
+            return Err(anyhow::anyhow!("Commit not founded"));
         }
     } else {
         // Sinon HEAD de la branche actuelle
-        let branch = crate::db::get_current_branch(conn)?;
+        let branch = get_current_branch(conn)?;
         let query = "SELECT c.tree_hash FROM branches b JOIN commits c ON b.head_commit_id = c.id WHERE b.name = ?";
-        let mut stmt = conn.prepare(query)?;
+       let mut stmt = conn.prepare(query)?;
         stmt.bind((1, branch.as_str()))?;
         if let Ok(State::Row) = stmt.next() {
             stmt.read::<String, _>(0)?
         } else {
-            return Err(sqlite::Error {
-                code: None,
-                message: Some("Branch empty".into()),
-            });
+            return Err(anyhow::anyhow!("Branch empty"));
         }
     };
 
@@ -500,7 +495,7 @@ pub fn mount_version(
     // 3. Appel au noyau (Linux/FreeBSD)
     #[cfg(target_os = "linux")]
     {
-        use nix::mount::{MsFlags as MountFlags, mount};
+        use nix::mount::{mount, MsFlags as MountFlags};
         // Code spécifique à Linux
         mount(
             Some(cache_path),
@@ -719,8 +714,6 @@ pub fn tag_list(conn: &Connection) -> Result<(), IoError> {
     Ok(())
 }
 
-// --- GESTION GIT FLOW (OPTIMISÉE) ---
-
 pub fn hotfix_start(conn: &Connection, name: &str) -> Result<(), Error> {
     let branch_name = format!("hotfix/{name}");
     let source_branch = "main"; // CONTRAINTE : Un hotfix part toujours de la prod
@@ -728,10 +721,7 @@ pub fn hotfix_start(conn: &Connection, name: &str) -> Result<(), Error> {
     // 1. On vérifie qu'on part bien de 'main' pour avoir la base saine
     let (main_id, _) = get_branch_head_info(conn, source_branch)?;
     if main_id.is_none() {
-        return Err(Error {
-            code: Some(1),
-            message: Some(String::from("No main branches has been founded")),
-        });
+        return Err(anyhow::anyhow!("No main branches has been founded").into());
     }
 
     // 2. On crée la branche manuellement (sans utiliser create_branch qui utilise HEAD)
@@ -741,22 +731,19 @@ pub fn hotfix_start(conn: &Connection, name: &str) -> Result<(), Error> {
     stmt.bind((2, main_id.unwrap()))?;
 
     match stmt.next() {
-        Ok(_) => {} // Création OK
+        Ok(_) => {
+            // 3. On bascule dessus
+            checkout(conn, &branch_name)?;
+
+            ok(&format!(
+                "Hotfix started: Switched to '{branch_name}' from 'main'"
+            ));
+            Ok(())
+        } // Création OK
         Err(_) => {
-            return Err(Error {
-                code: Some(1),
-                message: Some(String::from("hotfix already exist")),
-            });
+            Err(anyhow::anyhow!("hotfix already exist"))
         }
     }
-
-    // 3. On bascule dessus
-    checkout(conn, &branch_name)?;
-
-    ok(&format!(
-        "Hotfix started: Switched to '{branch_name}' from 'main'"
-    ));
-    Ok(())
 }
 
 pub fn hotfix_finish(conn: &Connection, name: &str) -> Result<(), Error> {
@@ -766,12 +753,8 @@ pub fn hotfix_finish(conn: &Connection, name: &str) -> Result<(), Error> {
 
     let (hf_head_id, _) = get_branch_head_info(conn, &hotfix_branch)?;
     if hf_head_id.is_none() {
-        return Err(Error {
-            code: Some(1),
-            message: Some(String::from("hotfix not exist")),
-        });
+        return Err(anyhow::anyhow!("hotfix not exist"));
     }
-
     ok(format!("Switching to '{target_branch}' to apply hotfix...").as_str());
     checkout(conn, target_branch)?;
 
@@ -813,10 +796,7 @@ pub fn feature_finish(conn: &Connection, name: &str) -> Result<(), Error> {
     // 1. Sécurité : On vérifie que la branche feature existe
     let (feat_head_id, _) = get_branch_head_info(conn, &feat_branch)?;
     if feat_head_id.is_none() {
-        return Err(Error {
-            code: Some(1),
-            message: Some(String::from("main branch not exist")),
-        });
+        return Err(anyhow::anyhow!("main branch not exist"));
     }
 
     // 2. On bascule sur 'main' pour préparer la fusion
@@ -866,7 +846,7 @@ pub fn create_branch(conn: &Connection, new_branch_name: &str) -> Result<(), Err
 
 pub fn checkout(conn: &Connection, target_ref: &str) -> Result<(), Error> {
     // 1. VÉRIFICATION DE SÉCURITÉ
-    let current_dir = std::env::current_dir().unwrap();
+    let current_dir = std::env::current_dir().expect("failed to get current dir");
     let current_branch = get_current_branch(conn).unwrap_or("DETACHED".to_string());
 
     // Si on est déjà dessus (et que ce n'est pas un checkout forcé sur un hash), on skip
@@ -897,12 +877,9 @@ pub fn checkout(conn: &Connection, target_ref: &str) -> Result<(), Error> {
 
     // Si introuvable ni en branche, ni en commit
     if target_head_id.is_none() {
-        return Err(Error {
-            code: Some(1),
-            message: Some(format!(
-                "Reference '{target_ref}' (branch or commit) not found."
-            )),
-        });
+        return Err(anyhow::anyhow!(
+            "Reference '{target_ref}' (branch or commit) not found."
+        ));
     }
     // On charge les deux manifestes en mémoire pour comparer
     let current_files = get_manifest_map(conn, current_head_id)?;
@@ -923,7 +900,7 @@ pub fn checkout(conn: &Connection, target_ref: &str) -> Result<(), Error> {
             if let Some(content) = get_blob_bytes_by_hash(conn, target_hash)?
                 && let Some(parent) = Path::new(path).parent()
             {
-                std::fs::create_dir_all(parent).expect("failed to create directory");
+                create_dir_all(parent).expect("failed to create directory");
                 std::fs::write(path, content).expect("failed to write content");
             }
         }
@@ -986,7 +963,7 @@ pub fn restore(conn: &Connection, path_str: &str) -> Result<(), Error> {
 }
 
 pub fn diff(conn: &Connection) -> Result<(), Error> {
-    let current_dir = std::env::current_dir().unwrap();
+    let current_dir = std::env::current_dir().expect("failed to get current dir");
     let current_dir_str = current_dir.to_str().unwrap();
     let branch = get_current_branch(conn).expect("failed to get current branch");
     // 1. On récupère les changements (on réutilise ta logique de status)
@@ -1142,7 +1119,7 @@ fn insert_into_tree(root: &mut Node, path: &Path, hash: String, mode: u32) {
 }
 
 fn store_tree_recursive(
-    conn: &sqlite::Connection,
+    conn: &Connection,
     _name: &str,
     node: &Node,
 ) -> Result<String, sqlite::Error> {
@@ -1209,8 +1186,8 @@ pub fn commit(conn: &Connection, message: &str, author: &str) -> Result<(), Erro
         }
 
         let relative = path.strip_prefix("./").unwrap_or(path);
-        let content_hash = calculate_hash(path).unwrap();
-        let metadata = std::fs::metadata(path).unwrap();
+        let content_hash = calculate_hash(path).expect("failed to calculate hash");
+        let metadata = std::fs::metadata(path).expect("failed to get metadata");
 
         // Insertion du fichier dans notre structure d'arbre en mémoire
         insert_into_tree(
@@ -1254,7 +1231,7 @@ pub fn commit(conn: &Connection, message: &str, author: &str) -> Result<(), Erro
     let commit_id: i64 = stmt_id.read(0)?;
 
     // On récupère la branche actuelle et on met à jour son pointeur HEAD
-    let branch = crate::db::get_current_branch(conn)?;
+    let branch = get_current_branch(conn)?;
     let update_branch = "INSERT INTO branches (name, head_commit_id) VALUES (?, ?) 
                          ON CONFLICT(name) DO UPDATE SET head_commit_id = excluded.head_commit_id";
     let mut stmt_br = conn.prepare(update_branch)?;
@@ -1424,7 +1401,7 @@ fn get_commit_id_by_hash(conn: &Connection, partial_hash: &str) -> Result<Option
     stmt.bind((1, partial_hash))?;
 
     if let Ok(State::Row) = stmt.next() {
-        stmt.read("id")
+        Ok(stmt.read("id")?)
     } else {
         Ok(None)
     }

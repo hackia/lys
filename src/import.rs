@@ -27,8 +27,8 @@ fn build_vfs_tree_parallel(
 
     // 1. Extraction des entrées
     let entries: Vec<(Oid, String, ObjectType, i32)> = {
-        let repo_guard = repo.lock().unwrap();
-        let tree = repo_guard.find_tree(tree_oid)?;
+        let repo_guard = repo.lock().expect("Failed to lock repo");
+        let tree = repo_guard.find_tree(tree_oid).expect("Failed to find tree");
         tree.iter()
             .map(|e| {
                 (
@@ -165,13 +165,13 @@ pub fn import_from_git(
 
     conn.execute("PRAGMA synchronous = OFF;")?; // Vitesse sans sacrifier le mode WAL
     {
-        let s = store_conn.lock().unwrap();
+        let s = store_conn.lock().expect("Failed to lock store_conn");
         s.execute("PRAGMA busy_timeout = 5000;")?; // Sécurité
         s.execute("PRAGMA synchronous = OFF;")?;
     }
     // Analyse de l'historique
     let (commits_oids, pb_lys) = {
-        let repo_guard = repo.lock().unwrap();
+        let repo_guard = repo.lock().expect("Failed to lock repo");
         let mut revwalk = repo_guard.revwalk()?;
         revwalk.push_head()?;
         revwalk.set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::REVERSE)?;
@@ -186,7 +186,7 @@ pub fn import_from_git(
         pb.set_style(
             ProgressStyle::default_bar()
                 .template("{spinner:.green} Lys [{bar:40.white}] {pos}/{len} {msg}")
-                .unwrap()
+                .expect("Failed to set progress bar style")
                 .progress_chars("=>-"),
         );
         (oids, pb)
@@ -195,8 +195,8 @@ pub fn import_from_git(
     conn.execute("BEGIN TRANSACTION;")?;
     let indexed_cache = Arc::new(DashSet::new());
     for oid in commits_oids {
-        let (tree_oid, author, message, time) = {
-            let repo_guard = repo.lock().unwrap();
+        let (tree_oid, author, message, time): (Oid, String, String, i64) = {
+            let repo_guard = repo.lock().expect("Failed to lock repo");
             let commit = repo_guard.find_commit(oid)?;
             (
                 commit.tree_id(),
@@ -235,8 +235,8 @@ pub fn import_from_git(
     conn.execute("COMMIT;")?;
     conn.execute("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;")?;
     {
-        let s = store_conn.lock().unwrap();
-        s.execute("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;")?;
+        let s = store_conn.lock().expect("Failed to lock store_conn");
+        s.execute("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;").expect("Failed to execute PRAGMA");
     }
     pb_lys.finish_with_message("import complete");
 
@@ -304,19 +304,19 @@ pub fn import_from_git_and_purge(
 
     let store_conn_raw = sqlite::open(store_db_path.to_path_buf())?;
     // Ajoute le timeout ici aussi
-    store_conn_raw.execute("PRAGMA busy_timeout = 5000;")?;
+    store_conn_raw.execute("PRAGMA busy_timeout = 5000;").expect("Failed to set busy timeout");
     let store_conn = Mutex::new(store_conn_raw);
 
     // Remplace le bloc d'optimisation par celui-ci :
-    conn.execute("PRAGMA synchronous = OFF;")?; // Vitesse sans sacrifier le mode WAL
+    conn.execute("PRAGMA synchronous = OFF;").expect("Failed to set synchronous mode"); // Vitesse sans sacrifier le mode WAL
     {
-        let s = store_conn.lock().unwrap();
-        s.execute("PRAGMA busy_timeout = 5000;")?; // Sécurité
-        s.execute("PRAGMA synchronous = OFF;")?;
+        let s = store_conn.lock().expect("Failed to lock store_conn");
+        s.execute("PRAGMA busy_timeout = 5000;").expect("Failed to set busy timeout"); // Sécurité
+        s.execute("PRAGMA synchronous = OFF;").expect("Failed to set synchronous mode");
     }
 
     let (commits_oids, pb_lys) = {
-        let repo_guard = repo.lock().unwrap();
+        let repo_guard = repo.lock().expect("Failed to lock repo");
         let mut revwalk = repo_guard.revwalk()?;
         revwalk.push_head()?;
         revwalk.set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::REVERSE)?;
@@ -324,8 +324,8 @@ pub fn import_from_git_and_purge(
         // On ne garde que les commits dont le timestamp >= cutoff
         let oids: Vec<Oid> = revwalk
             .filter_map(|id| {
-                let oid = id.ok()?;
-                let commit = repo_guard.find_commit(oid).ok()?;
+                let oid = id.ok().expect("Failed to get OID");
+                let commit = repo_guard.find_commit(oid).ok().expect("Failed to find commit");
                 if commit.time().seconds() >= cutoff_timestamp {
                     Some(oid)
                 } else {
@@ -338,7 +338,7 @@ pub fn import_from_git_and_purge(
         pb.set_style(
             ProgressStyle::default_bar()
                 .template("{spinner:.green} Lys [{bar:40.white}] {pos}/{len} {msg}")
-                .unwrap()
+                .expect("Failed to set progress bar template")
                 .progress_chars("=>-"),
         );
         (oids, pb)
@@ -347,7 +347,7 @@ pub fn import_from_git_and_purge(
     let indexed_cache = Arc::new(DashSet::new());
     for oid in commits_oids {
         let (tree_oid, author, message, time) = {
-            let repo_guard = repo.lock().unwrap();
+            let repo_guard = repo.lock().expect("Failed to lock repo");
             let commit = repo_guard.find_commit(oid)?;
             (
                 commit.tree_id(),
@@ -376,9 +376,9 @@ pub fn import_from_git_and_purge(
     let last_commit_query = "SELECT id FROM commits ORDER BY id DESC LIMIT 1";
     let mut stmt = conn.prepare(last_commit_query)?;
     if let Ok(sqlite::State::Row) = stmt.next() {
-        let last_id: i64 = stmt.read(0)?;
+        let last_id: i64 = stmt.read(0).expect("Failed to read last commit ID");
         let mut br_stmt = conn
-            .prepare("INSERT OR REPLACE INTO branches (name, head_commit_id) VALUES ('main', ?)")?;
+            .prepare("INSERT OR REPLACE INTO branches (name, head_commit_id) VALUES ('main', ?)").expect("Failed to prepare branch statement");
         br_stmt.bind((1, last_id))?;
         br_stmt.next()?;
     }
@@ -386,7 +386,7 @@ pub fn import_from_git_and_purge(
     conn.execute("COMMIT;")?;
     conn.execute("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;")?;
     {
-        let s = store_conn.lock().unwrap();
+        let s = store_conn.lock().expect("Failed to lock store_conn");
         s.execute("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;")?;
     }
     pb_lys.finish_with_message("import complete");

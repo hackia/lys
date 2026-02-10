@@ -99,13 +99,13 @@ pub const LYS_INIT: &str = "CREATE TABLE IF NOT EXISTS tree_nodes (
 ";
 
 pub fn insert_tree_node(
-    conn: &sqlite::Connection,
+    conn: &Connection,
     parent_hash: &str,
     name: &str,
     child_hash: &str,
     mode: i64,
     size: Option<i64>, // Utilise size ici
-) -> Result<(), sqlite::Error> {
+) -> Result<(), Error> {
     let query = "INSERT OR IGNORE INTO tree_nodes (parent_tree_hash, name, hash, mode, size) VALUES (?, ?, ?, ?, ?)";
     let mut stmt = conn.prepare(query)?;
     stmt.bind((1, parent_hash))?;
@@ -121,7 +121,7 @@ pub fn get_or_insert_blob_parallel(
     repo_root: &Path,
     hash: &str, // On ajoute le paramètre hash
     content: &[u8],
-) -> Result<(), sqlite::Error> {
+) -> Result<(), Error> {
     let db_path = repo_root.join(".lys/db/store.db");
     let conn = sqlite::open(db_path)?;
     conn.execute("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;")?;
@@ -206,7 +206,7 @@ impl Display for Season {
 
 // Dans src/db.rs
 
-pub fn verify(conn: &sqlite::Connection, deep: bool) -> Result<(), Box<dyn std::error::Error>> {
+pub fn verify(conn: &Connection, deep: bool) -> Result<(), Box<dyn std::error::Error>> {
     ok("Starting repository integrity verification...");
     if deep {
         ok("Deep mode enabled: Recalculating all checksums...");
@@ -268,12 +268,12 @@ pub fn verify(conn: &sqlite::Connection, deep: bool) -> Result<(), Box<dyn std::
     }
     Ok(())
 }
-pub fn connect_lys(root_path: &Path) -> Result<Connection, sqlite::Error> {
+pub fn connect_lys(root_path: &Path) -> Result<Connection, Error> {
     let db_dir = root_path.join(".lys/db");
     let store_path = db_dir.join("store.db");
 
     let s = Season::current();
-    let current_year = chrono::Local::now().year();
+    let current_year = Local::now().year();
     let history_dir = db_dir.join(format!("{current_year}/{s}"));
     let db_full_path = history_dir.join(format!("{s}.db"));
 
@@ -403,12 +403,12 @@ pub fn get_or_insert_blob(conn: &Connection, content: &[u8]) -> Result<i64, Erro
     stmt_id.read(0)
 }
 
-pub fn get_unique_contributors(conn: &sqlite::Connection) -> Result<Vec<String>, sqlite::Error> {
+pub fn get_unique_contributors(conn: &Connection) -> Result<Vec<String>, Error> {
     let query = "SELECT DISTINCT author FROM commits ORDER BY author ASC";
     let mut stmt = conn.prepare(query)?;
 
     let mut contributors = Vec::new();
-    while let Ok(sqlite::State::Row) = stmt.next() {
+    while let Ok(State::Row) = stmt.next() {
         contributors.push(stmt.read::<String, _>(0)?);
     }
     Ok(contributors)
@@ -416,10 +416,10 @@ pub fn get_unique_contributors(conn: &sqlite::Connection) -> Result<Vec<String>,
 
 // Dans src/db.rs
 pub fn insert_blob_with_conn(
-    conn: &sqlite::Connection,
+    conn: &Connection,
     hash: &str,
     content: &[u8],
-) -> Result<(), sqlite::Error> {
+) -> Result<(), Error> {
     let compressed = compress(content); // Ta fonction de compression existante
     let mut stmt =
         conn.prepare("INSERT OR IGNORE INTO blobs (hash, content, size) VALUES (?, ?, ?)")?;
@@ -431,7 +431,7 @@ pub fn insert_blob_with_conn(
 }
 
 // À ajouter dans src/db.rs
-pub fn prune_orphans(conn: &sqlite::Connection) -> Result<usize, sqlite::Error> {
+pub fn prune_orphans(conn: &Connection) -> Result<usize, Error> {
     conn.execute("PRAGMA busy_timeout = 5000;")?;
     // 1. On compte combien on va supprimer pour informer l'utilisateur
     let count_query =
@@ -455,7 +455,7 @@ pub fn prune_orphans(conn: &sqlite::Connection) -> Result<usize, sqlite::Error> 
     Ok(count as usize)
 }
 
-pub fn prune(conn: &sqlite::Connection) -> Result<(), Box<dyn std::error::Error>> {
+pub fn prune(conn: &Connection) -> Result<(), Box<dyn std::error::Error>> {
     ok("Starting prune");
 
     conn.execute("BEGIN TRANSACTION;")?;

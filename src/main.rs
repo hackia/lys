@@ -29,6 +29,7 @@ pub mod tree;
 pub mod utils;
 pub mod vcs;
 pub mod web;
+mod mount;
 
 fn cli() -> Command {
     Command::new(env!("CARGO_PKG_NAME"))
@@ -89,7 +90,7 @@ fn cli() -> Command {
                     .help("colorize tree or not")
                     .required(false)
                     .default_value("false")
-                    .value_parser(clap::value_parser!(String)),
+                    .value_parser(value_parser!(String)),
             ),
         )
         .subcommand(
@@ -125,7 +126,7 @@ fn cli() -> Command {
                     Arg::new("page")
                         .short('p')
                         .long("page")
-                        .value_parser(clap::value_parser!(usize))
+                        .value_parser(value_parser!(usize))
                         .default_value("1")
                         .help("Page number (default: 1)"),
                 )
@@ -133,7 +134,7 @@ fn cli() -> Command {
                     Arg::new("limit")
                         .short('n')
                         .long("limit")
-                        .value_parser(clap::value_parser!(usize))
+                        .value_parser(value_parser!(usize))
                         .default_value("120") // Ta demande spécifique
                         .help("Number of commits per page"),
                 ),
@@ -158,7 +159,7 @@ fn cli() -> Command {
                     Arg::new("depth")
                         .long("depth")
                         .short('d')
-                        .value_parser(clap::value_parser!(i32))
+                        .value_parser(value_parser!(i32))
                         .help("Truncate history to the specified number of commits"),
                 ),
         )
@@ -189,7 +190,7 @@ fn cli() -> Command {
                     Command::new("close").arg(
                         Arg::new("id")
                             .required(true)
-                            .value_parser(clap::value_parser!(i64)),
+                            .value_parser(value_parser!(i64)),
                     ),
                 ),
         )
@@ -292,7 +293,7 @@ fn cli() -> Command {
 }
 
 fn perform_commit() -> Result<(), Error> {
-    let current_dir = std::env::current_dir()?;
+    let current_dir = current_dir()?;
     let current_dir_str = current_dir.to_str().unwrap();
 
     if !Path::new(".lys").exists() {
@@ -314,7 +315,7 @@ fn perform_commit() -> Result<(), Error> {
     Ok(())
 }
 pub fn check_status() -> Result<(), Error> {
-    let current_dir = std::env::current_dir()?;
+    let current_dir = current_dir()?;
     let current_dir_str = current_dir.to_str().unwrap();
     if !Path::new(&format!("{MAIN_SEPARATOR_STR}.lys")).exists() && !Path::new(".lys").exists() {
         return Err(Error::other("Not a lys repository."));
@@ -341,7 +342,7 @@ fn new_project() -> Result<(), Error> {
             .prompt()
             .expect("failed to get name")
             .to_string();
-        if (Path::new(project.as_str())).is_dir() {
+        if Path::new(project.as_str()).is_dir() {
             ko("project already exist");
             project.clear();
         }
@@ -380,14 +381,14 @@ fn main() -> Result<(), Error> {
         Some(("new", _)) => new_project(),
         Some(("verify", args)) => {
             let deep = args.get_flag("deep"); // On récupère le flag
-            let current_dir = std::env::current_dir()?;
+            let current_dir = current_dir()?;
             let conn = connect_lys(&current_dir).map_err(|e| Error::other(e.to_string()))?;
             db::verify(&conn, deep).map_err(|e| Error::other(e.to_string()))?;
             Ok(())
         }
         Some(("summary", _)) => summary(),
         Some(("prune", _)) => {
-            let conn = db::connect_lys(Path::new(".")).expect("faield to connect to the database");
+            let conn = connect_lys(Path::new(".")).expect("faield to connect to the database");
             let ans = inquire::Confirm::new("Are you sure you want to prune the repository?")
         .with_help_message("This action will PERMANENTLY delete all commits older than 2 years and reclaim disk space.")
         .with_default(false)
@@ -410,15 +411,15 @@ fn main() -> Result<(), Error> {
                 .unwrap_or(3000);
             let rt = tokio::runtime::Runtime::new()?;
             // On lance le serveur sur le répertoire actuel
-            rt.block_on(crate::web::start_server(".", port));
+            rt.block_on(web::start_server(".", port));
             Ok(())
         }
         Some(("import", sub_m)) => {
             let url = sub_m.get_one::<String>("url").unwrap();
             let depth = sub_m.get_one::<i32>("depth").copied();
             let only_recent = sub_m.get_flag("recent"); // Récupère le flag --recent
-            let repo_name = import::extract_repo_name(url);
-            let target_dir = std::env::current_dir()?.join(&repo_name);
+            let repo_name = extract_repo_name(url);
+            let target_dir = current_dir()?.join(&repo_name);
             // On passe le nouveau paramètre à ta fonction
             import::import_from_git(url, &target_dir, depth, only_recent).expect("failed");
             ok("ready");
@@ -427,21 +428,20 @@ fn main() -> Result<(), Error> {
         Some(("mount", sub_args)) => {
             let target = sub_args.get_one::<String>("target").unwrap();
             let reference = sub_args.get_one::<String>("ref");
-            let current_dir = std::env::current_dir()?;
+            let current_dir = current_dir()?;
             let conn = connect_lys(&current_dir).map_err(|e| Error::other(e.to_string()))?;
             vcs::mount_version(&conn, target, reference.map(|s| s.as_str()))
                 .map_err(|e| Error::other(e.to_string()))
         }
         Some(("shell", sub_args)) => {
             let reference = sub_args.get_one::<String>("ref").map(|s| s.as_str());
-            let current_dir = std::env::current_dir()?;
+            let current_dir = current_dir()?;
             let conn = connect_lys(&current_dir).map_err(|e| Error::other(e.to_string()))?;
             vcs::spawn_lys_shell(&conn, reference).map_err(|e| Error::other(e.to_string()))
         }
         Some(("init", _)) => {
-            let current_dir = std::env::current_dir()?;
+            let current_dir = current_dir()?;
             let path_str = current_dir.to_str().unwrap();
-            // Logique d'initialisation directe ici (copiée de new_project sans le prompt)
             if connect_lys(Path::new(path_str))
                 .expect("fail")
                 .execute(LYS_INIT)
@@ -466,7 +466,7 @@ fn main() -> Result<(), Error> {
                 extract_repo_name(url)
             };
 
-            let target_path = std::env::current_dir()?.join(&dir_name);
+            let target_path = current_dir()?.join(&dir_name);
 
             // 2. Vérifier si ça existe déjà pour ne pas écraser
             if target_path.exists() {
@@ -483,7 +483,7 @@ fn main() -> Result<(), Error> {
             Ok(())
         }
         Some(("tree", _)) => {
-            let current_dir = std::env::current_dir()?;
+            let current_dir = current_dir()?;
             let conn = connect_lys(&current_dir).map_err(|e| Error::other(e.to_string()))?;
 
             // 1. On récupère la branche actuelle
@@ -506,7 +506,7 @@ fn main() -> Result<(), Error> {
             Ok(())
         }
         Some(("keygen", _)) => {
-            let current_dir = std::env::current_dir()?;
+            let current_dir = current_dir()?;
             crypto::generate_keypair(&current_dir).expect("failed to create keys");
             ok("keys generated successfully");
             Ok(())
@@ -581,13 +581,13 @@ fn main() -> Result<(), Error> {
             Ok(())
         }
         Some(("diff", _)) => {
-            let current_dir = std::env::current_dir()?;
+            let current_dir = current_dir()?;
             let conn =
                 connect_lys(current_dir.as_path()).map_err(|e| Error::other(e.to_string()))?;
             vcs::diff(&conn).map_err(|e| Error::other(e.to_string()))
         }
         Some(("restore", sub_matches)) => {
-            let current_dir = std::env::current_dir()?;
+            let current_dir = current_dir()?;
             let conn =
                 connect_lys(current_dir.as_path()).map_err(|e| Error::other(e.to_string()))?;
 
@@ -595,25 +595,24 @@ fn main() -> Result<(), Error> {
             vcs::restore(&conn, path).map_err(|e| Error::other(e.to_string()))
         }
         Some(("branch", sub_matches)) => {
-            let current_dir = std::env::current_dir()?;
+            let current_dir = current_dir()?;
             let conn =
                 connect_lys(current_dir.as_path()).map_err(|e| Error::other(e.to_string()))?;
             let name = sub_matches.get_one::<String>("name").unwrap();
             vcs::create_branch(&conn, name).map_err(|e| Error::other(e.to_string()))
         }
         Some(("checkout", sub_matches)) => {
-            let current_dir = std::env::current_dir()?;
+            let current_dir = current_dir()?;
             let conn =
                 connect_lys(current_dir.as_path()).map_err(|e| Error::other(e.to_string()))?;
             let name = sub_matches.get_one::<String>("name").unwrap();
             vcs::checkout(&conn, name).map_err(|e| Error::other(e.to_string()))
         }
         Some(("feat", sub_matches)) => {
-            let current_dir = std::env::current_dir()?;
+            let current_dir = current_dir()?;
             let conn =
                 connect_lys(current_dir.as_path()).map_err(|e| Error::other(e.to_string()))?;
 
-            // On regarde la SOUS-commande (start ou finish)
             match sub_matches.subcommand() {
                 Some(("start", args)) => {
                     let name = args.get_one::<String>("name").unwrap();
@@ -630,7 +629,7 @@ fn main() -> Result<(), Error> {
             }
         }
         Some(("hotfix", sub_matches)) => {
-            let current_dir = std::env::current_dir()?;
+            let current_dir = current_dir()?;
             let conn =
                 connect_lys(current_dir.as_path()).map_err(|e| Error::other(e.to_string()))?;
 
@@ -650,7 +649,7 @@ fn main() -> Result<(), Error> {
             }
         }
         Some(("tag", sub_matches)) => {
-            let current_dir = std::env::current_dir()?;
+            let current_dir = current_dir()?;
             let conn =
                 connect_lys(current_dir.as_path()).map_err(|e| Error::other(e.to_string()))?;
 
@@ -668,14 +667,14 @@ fn main() -> Result<(), Error> {
             }
         }
         Some(("sync", args)) => {
-            let current_dir = std::env::current_dir()?;
+            let current_dir = current_dir()?;
             let _conn =
                 connect_lys(current_dir.as_path()).map_err(|e| Error::other(e.to_string()))?;
             let path = args.get_one::<String>("path").unwrap();
             vcs::sync(path)
         }
         Some(("web", args)) => {
-            let current_dir = std::env::current_dir()?;
+            let current_dir = current_dir()?;
             let current_dir_str = current_dir.to_str().unwrap();
             if !Path::new(".lys").exists() {
                 return Err(Error::other("Not a lys repository."));
@@ -686,16 +685,19 @@ fn main() -> Result<(), Error> {
                 .parse()
                 .unwrap_or(3000);
             let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(crate::web::start_server(current_dir_str, port));
+            rt.block_on(web::start_server(current_dir_str, port));
             Ok(())
         }
         Some(("todo", sub)) => {
-            let current_dir = std::env::current_dir()?;
+            let current_dir = current_dir()?;
             let conn =
                 connect_lys(current_dir.as_path()).expect("failed to connect to the database");
             match sub.subcommand() {
                 Some(("add", args)) => {
-                    let title = args.get_one::<String>("title").unwrap();
+                    let title = match args.get_one::<String>("title") {
+                        Some(x) => x,
+                        None => todo!(),
+                    };
                     let user = args.get_one::<String>("user").map(|s| s.as_str());
                     let due = args.get_one::<String>("due").map(|s| s.as_str());
                     todo::add_todo(&conn, title, user, due).expect("failed to add todo");

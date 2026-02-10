@@ -39,7 +39,7 @@ pub async fn start_server(repo_path: &str, port: u16) {
 
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
 
-    ok(format!("Server running at http://{addr}").as_str());
+    ok(format!("Server running at https://{addr}").as_str());
     ok("Press Ctrl+C to stop.");
 
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();

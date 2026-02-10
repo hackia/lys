@@ -169,9 +169,3 @@ pub fn ko_audit_commit(hash: &str) {
         Print(" ]\n".white().bold()),
     );
 }
-
-pub fn hooks(c: fn()) {
-    if breathes::hooks::run_hooks().is_ok() {
-        c();
-    }
-}
