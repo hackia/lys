@@ -19,7 +19,7 @@ pub struct Log {
     pub message: String,
     pub at: String,
     pub signature: String,
-    pub files: Vec<String>,
+    pub changes: Vec<(String, FileChange)>,
 }
 
 impl Display for Log {
@@ -27,11 +27,11 @@ impl Display for Log {
         writeln!(f, "\n{} at {} ({})\n", self.author, self.at, self.signature)?;
         writeln!(f, "{}\n", self.message)?;
 
-        if !self.files.is_empty() {
+        if !self.changes.is_empty() {
             let mut root = Tree::default();
-            for file in &self.files {
-                let parts: Vec<&str> = file.split('/').filter(|s| !s.is_empty()).collect();
-                insert_into_tree(&mut root, &parts);
+            for (path, change) in &self.changes {
+                let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+                insert_into_tree(&mut root, &parts, change.clone());
             }
             print_tree(f, &root, "", true)?; // print from root
             writeln!(f)?;
@@ -44,9 +44,10 @@ impl Display for Log {
 struct Tree {
     children: BTreeMap<String, Tree>,
     is_file: bool,
+    change: Option<FileChange>,
 }
 
-fn insert_into_tree(node: &mut Tree, parts: &[&str]) {
+fn insert_into_tree(node: &mut Tree, parts: &[&str], change: FileChange) {
     if parts.is_empty() {
         return;
     }
@@ -57,8 +58,9 @@ fn insert_into_tree(node: &mut Tree, parts: &[&str]) {
         .or_insert_with(Tree::default);
     if parts.len() == 1 {
         child.is_file = true;
+        child.change = Some(change);
     } else {
-        insert_into_tree(child, &parts[1..]);
+        insert_into_tree(child, &parts[1..], change);
     }
 }
 
@@ -70,7 +72,18 @@ fn print_tree(f: &mut Formatter<'_>, node: &Tree, prefix: &str, is_root: bool) -
         i += 1;
         let is_last = i == len;
         let connector = if is_last { "└──" } else { "├──" };
-        writeln!(f, "{}{} {}", prefix, connector, name)?;
+        if child.is_file {
+            // Affiche le marqueur et les compteurs
+            let marker = match &child.change {
+                Some(FileChange::Added { added }) => format!("+ {added}"),
+                Some(FileChange::Deleted { deleted }) => format!("- {deleted}"),
+                Some(FileChange::Modified { added, deleted }) => format!("~ +{added} -{deleted}"),
+                _ => String::new(),
+            };
+            writeln!(f, "{prefix}{connector} {marker} {name}")?;
+        } else {
+            writeln!(f, "{prefix}{connector} {name}")?;
+        }
         let new_prefix = if is_last {
             format!("{}    ", prefix)
         } else {
@@ -83,6 +96,13 @@ fn print_tree(f: &mut Formatter<'_>, node: &Tree, prefix: &str, is_root: bool) -
     }
     Ok(())
 }
+#[derive(Debug, Clone)]
+pub enum FileChange {
+    Added { added: usize },
+    Deleted { deleted: usize },
+    Modified { added: usize, deleted: usize },
+}
+
 fn commit_justify(text: &str, width: usize) -> String {
     let words: Vec<&str> = text.split_whitespace().collect();
     let mut lines = Vec::new();

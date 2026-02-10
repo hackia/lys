@@ -106,7 +106,7 @@ fn print_node(
             } else {
                 file_name.to_string()
             }
-        } else if file_name == "syl" || file_name == ".silex" {
+        } else if file_name == "syl" || file_name == ".lys" {
             if color.is_some() && color.expect("a") {
                 file_name.yellow().to_string()
             } else {
@@ -135,12 +135,12 @@ fn print_node(
             .entry
             .as_ref()
             .map(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
-            .unwrap_or(false);
+            .unwrap_or_else(|| !a.children.is_empty());
         let b_is_dir = b
             .entry
             .as_ref()
             .map(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
-            .unwrap_or(false);
+            .unwrap_or_else(|| !b.children.is_empty());
         if a_is_dir == b_is_dir {
             a.path.cmp(&b.path)
         } else {
@@ -240,7 +240,7 @@ fn extract_metadata(
 
     match meta {
         Some(m) => {
-            if color.is_some() && color.expect("faield to get color option") {
+            if color.is_some() && color.expect("failed to get color option") {
                 let mode_str = format!(
                     "{} {}",
                     type_char.cyan(),

@@ -1,4 +1,4 @@
-use crate::commit::Log;
+use crate::commit::{Log, FileChange};
 use crate::db::get_current_branch;
 use crate::utils::commit_created;
 use crate::utils::ko;
@@ -1016,6 +1016,29 @@ pub fn diff(conn: &Connection) -> Result<(), Error> {
     Ok(())
 }
 
+fn count_lines(content: &[u8]) -> usize {
+    match String::from_utf8(content.to_vec()) {
+        Ok(s) => s.lines().count(),
+        Err(_) => 0,
+    }
+}
+
+fn count_line_changes(old: &[u8], new: &[u8]) -> (usize, usize) {
+    let old_s = String::from_utf8(old.to_vec()).unwrap_or_default();
+    let new_s = String::from_utf8(new.to_vec()).unwrap_or_default();
+    let diff = TextDiff::from_lines(&old_s, &new_s);
+    let mut added = 0usize;
+    let mut deleted = 0usize;
+    for change in diff.iter_all_changes() {
+        match change.tag() {
+            ChangeTag::Insert => added += 1,
+            ChangeTag::Delete => deleted += 1,
+            _ => {}
+        }
+    }
+    (added, deleted)
+}
+
 pub fn log(conn: &Connection, page: usize, per_page: usize) -> Result<(), sqlite::Error> {
     // Calcul de l'offset (Page 1 = Offset 0)
     let offset = (page - 1) * per_page;
@@ -1032,6 +1055,7 @@ pub fn log(conn: &Connection, page: usize, per_page: usize) -> Result<(), sqlite
     stmt.bind((2, offset as i64))?;
 
     let mut rendered = Vec::new();
+    let mut idx_in_page = 0usize;
     while let Ok(State::Row) = stmt.next() {
         // On tronque le hash pour l'affichage (7 premiers chars)
         let full_hash: String = stmt.read(0)?;
@@ -1042,23 +1066,64 @@ pub fn log(conn: &Connection, page: usize, per_page: usize) -> Result<(), sqlite
         };
 
         let tree_hash: String = stmt.read(4)?;
-        // Construit la liste des fichiers à partir du tree
-        let mut state: HashMap<PathBuf, (String, i64)> = HashMap::new();
-        flatten_tree(conn, &tree_hash, PathBuf::new(), &mut state)?;
-        let mut files: Vec<String> = state
-            .keys()
-            .map(|p| p.to_string_lossy().to_string())
-            .collect();
-        files.sort();
+        // Construit la liste des fichiers à partir du tree courant
+        let mut new_state: HashMap<PathBuf, (String, i64)> = HashMap::new();
+        flatten_tree(conn, &tree_hash, PathBuf::new(), &mut new_state)?;
+
+        // Récupère le tree du parent (commit suivant dans l'ordre DESC par timestamp)
+        let global_offset = offset + idx_in_page + 1; // +1 pour le parent suivant
+        let mut parent_tree: Option<String> = None;
+        if let Ok(mut parent_stmt) = conn.prepare(
+            "SELECT tree_hash FROM commits ORDER BY timestamp DESC LIMIT 1 OFFSET ?",
+        ) {
+            parent_stmt.bind((1, global_offset as i64))?;
+            if let Ok(State::Row) = parent_stmt.next() {
+                parent_tree = Some(parent_stmt.read(0)?);
+            }
+        }
+        let mut old_state: HashMap<PathBuf, (String, i64)> = HashMap::new();
+        if let Some(pth) = parent_tree.as_deref() {
+            flatten_tree(conn, pth, PathBuf::new(), &mut old_state)?;
+        }
+
+        // Calcule les changements
+        let mut changes: Vec<(String, FileChange)> = Vec::new();
+
+        // Ajouts et modifications
+        for (path, (new_hash, _)) in &new_state {
+            if let Some((old_hash, _)) = old_state.get(path) {
+                if old_hash != new_hash {
+                    // Modified
+                    let old_bytes = get_blob_bytes_by_hash(conn, old_hash).ok().flatten().unwrap_or_default();
+                    let new_bytes = get_blob_bytes_by_hash(conn, new_hash).ok().flatten().unwrap_or_default();
+                    let (a, d) = count_line_changes(&old_bytes, &new_bytes);
+                    changes.push((path.to_string_lossy().to_string(), FileChange::Modified { added: a, deleted: d }));
+                } // else unchanged -> ignore
+            } else {
+                // Added
+                let nb = if let Some(bytes) = get_blob_bytes_by_hash(conn, new_hash).ok().flatten() { count_lines(&bytes) } else { 0 };
+                changes.push((path.to_string_lossy().to_string(), FileChange::Added { added: nb }));
+            }
+        }
+        // Suppressions
+        for (path, (old_hash, _)) in &old_state {
+            if !new_state.contains_key(path) {
+                let nb = if let Some(bytes) = get_blob_bytes_by_hash(conn, old_hash).ok().flatten() { count_lines(&bytes) } else { 0 };
+                changes.push((path.to_string_lossy().to_string(), FileChange::Deleted { deleted: nb }));
+            }
+        }
+        // Trie pour affichage stable
+        changes.sort_by(|a, b| a.0.cmp(&b.0));
 
         let log = Log {
             author: stmt.read(1)?,
             at: stmt.read(3)?,
             message: stmt.read(2)?,
             signature: short_hash,
-            files,
+            changes,
         };
         rendered.push(log.to_string());
+        idx_in_page += 1;
     }
 
     if rendered.is_empty() {
@@ -1319,7 +1384,7 @@ fn flatten_tree(
 
     for (name, hash, mode) in entries {
         let path = current_path.join(name);
-        if mode == 0o755 {
+        if mode == 0o755 || mode == 0o040000 || mode == 16384 {
             // C'est un répertoire
             flatten_tree(conn, &hash, path, state)?;
         } else {
