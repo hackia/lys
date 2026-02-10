@@ -72,8 +72,8 @@ fn editor(t: &mut Terminal<CrosstermBackend<Stdout>>) {
                     _ => continue,
                 }
             }
-            _ => {}
-        };
+            _ => continue,
+        }
     }
 }
 

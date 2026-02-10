@@ -24,12 +24,12 @@ pub mod commit;
 pub mod crypto;
 pub mod db;
 pub mod import;
+mod mount;
 pub mod todo;
 pub mod tree;
 pub mod utils;
 pub mod vcs;
 pub mod web;
-mod mount;
 
 fn cli() -> Command {
     Command::new(env!("CARGO_PKG_NAME"))

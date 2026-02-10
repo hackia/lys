@@ -7,15 +7,15 @@ use crate::utils::ok_merkle_hash;
 use crate::utils::ok_status;
 use crate::utils::ok_tag;
 use anyhow::Error;
-use glob::glob;
 use glob::GlobError;
+use glob::glob;
 use ignore::DirEntry;
 use indicatif::{ProgressBar, ProgressStyle};
 use miniz_oxide::inflate;
 #[cfg(target_os = "linux")]
 use nix::mount::umount;
 use nix::sys::wait::waitpid;
-use nix::unistd::{execvp, fork, ForkResult};
+use nix::unistd::{ForkResult, execvp, fork};
 use similar::{ChangeTag, TextDiff};
 use sqlite::Connection;
 use sqlite::State;
@@ -23,10 +23,10 @@ use std::collections::BTreeMap;
 use std::collections::{HashMap, HashSet};
 use std::ffi::CString;
 use std::fmt::Debug;
+use std::fs::File;
 use std::fs::copy;
 use std::fs::create_dir_all;
 use std::fs::remove_dir_all;
-use std::fs::File;
 use std::io::Error as IoError;
 use std::io::Write;
 use std::io::{Read, Result as IoResult};
@@ -47,10 +47,7 @@ pub enum FileStatus {
     Unchanged,
 }
 
-pub fn push_atoms(
-    conn: &Connection,
-    remote_url: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub fn push_atoms(conn: &Connection, remote_url: &str) -> Result<(), Box<dyn std::error::Error>> {
     // 1. Lister les hashes que tu possèdes
     let mut stmt = conn.prepare("SELECT hash FROM blobs")?;
 
@@ -139,7 +136,7 @@ pub fn fetch_blob(repo_root: &Path, hash: &str) -> Result<Vec<u8>, Box<dyn std::
     }
 
     // On ouvre la connexion avec le chemin blindé
-    let conn =sqlite::open(&db_path)?;
+    let conn = sqlite::open(&db_path)?;
 
     conn.execute("PRAGMA busy_timeout = 5000;")?;
     // Petite optimisation pour la lecture seule
@@ -150,8 +147,8 @@ pub fn fetch_blob(repo_root: &Path, hash: &str) -> Result<Vec<u8>, Box<dyn std::
 
     if let Ok(State::Row) = stmt.next() {
         let compressed: Vec<u8> = stmt.read(0)?;
-        let decompressed = inflate::decompress_to_vec_zlib(&compressed)
-            .map_err(|e| format!("{hash}: {e:?}"))?;
+        let decompressed =
+            inflate::decompress_to_vec_zlib(&compressed).map_err(|e| format!("{hash}: {e:?}"))?;
 
         return Ok(decompressed);
     }
@@ -383,7 +380,7 @@ fn format_mode(mode: i64) -> String {
 }
 
 #[cfg(target_os = "freebsd")]
-use nix::mount::{unmount, MntFlags};
+use nix::mount::{MntFlags, unmount};
 
 #[cfg(target_os = "freebsd")]
 pub fn umount(path: &str) -> Result<(), String> {
@@ -439,9 +436,12 @@ pub fn spawn_lys_shell(conn: &Connection, reference: Option<&str>) -> Result<(),
             let project_root = std::env::current_dir().expect("failed to get current dir");
 
             unsafe {
-                std::env::set_var("LYS_PROJECT_ROOT", project_root.to_str().expect(
-                    "failed to get project root path",
-                ));
+                std::env::set_var(
+                    "LYS_PROJECT_ROOT",
+                    project_root
+                        .to_str()
+                        .expect("failed to get project root path"),
+                );
             }
 
             let args = [shell.clone()];
@@ -474,7 +474,7 @@ pub fn mount_version(
         // Sinon HEAD de la branche actuelle
         let branch = get_current_branch(conn)?;
         let query = "SELECT c.tree_hash FROM branches b JOIN commits c ON b.head_commit_id = c.id WHERE b.name = ?";
-       let mut stmt = conn.prepare(query)?;
+        let mut stmt = conn.prepare(query)?;
         stmt.bind((1, branch.as_str()))?;
         if let Ok(State::Row) = stmt.next() {
             stmt.read::<String, _>(0)?
@@ -495,7 +495,7 @@ pub fn mount_version(
     // 3. Appel au noyau (Linux/FreeBSD)
     #[cfg(target_os = "linux")]
     {
-        use nix::mount::{mount, MsFlags as MountFlags};
+        use nix::mount::{MsFlags as MountFlags, mount};
         // Code spécifique à Linux
         mount(
             Some(cache_path),
@@ -740,9 +740,7 @@ pub fn hotfix_start(conn: &Connection, name: &str) -> Result<(), Error> {
             ));
             Ok(())
         } // Création OK
-        Err(_) => {
-            Err(anyhow::anyhow!("hotfix already exist"))
-        }
+        Err(_) => Err(anyhow::anyhow!("hotfix already exist")),
     }
 }
 

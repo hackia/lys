@@ -236,7 +236,8 @@ pub fn import_from_git(
     conn.execute("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;")?;
     {
         let s = store_conn.lock().expect("Failed to lock store_conn");
-        s.execute("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;").expect("Failed to execute PRAGMA");
+        s.execute("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;")
+            .expect("Failed to execute PRAGMA");
     }
     pb_lys.finish_with_message("import complete");
 
@@ -304,15 +305,20 @@ pub fn import_from_git_and_purge(
 
     let store_conn_raw = sqlite::open(store_db_path.to_path_buf())?;
     // Ajoute le timeout ici aussi
-    store_conn_raw.execute("PRAGMA busy_timeout = 5000;").expect("Failed to set busy timeout");
+    store_conn_raw
+        .execute("PRAGMA busy_timeout = 5000;")
+        .expect("Failed to set busy timeout");
     let store_conn = Mutex::new(store_conn_raw);
 
     // Remplace le bloc d'optimisation par celui-ci :
-    conn.execute("PRAGMA synchronous = OFF;").expect("Failed to set synchronous mode"); // Vitesse sans sacrifier le mode WAL
+    conn.execute("PRAGMA synchronous = OFF;")
+        .expect("Failed to set synchronous mode"); // Vitesse sans sacrifier le mode WAL
     {
         let s = store_conn.lock().expect("Failed to lock store_conn");
-        s.execute("PRAGMA busy_timeout = 5000;").expect("Failed to set busy timeout"); // Sécurité
-        s.execute("PRAGMA synchronous = OFF;").expect("Failed to set synchronous mode");
+        s.execute("PRAGMA busy_timeout = 5000;")
+            .expect("Failed to set busy timeout"); // Sécurité
+        s.execute("PRAGMA synchronous = OFF;")
+            .expect("Failed to set synchronous mode");
     }
 
     let (commits_oids, pb_lys) = {
@@ -325,7 +331,10 @@ pub fn import_from_git_and_purge(
         let oids: Vec<Oid> = revwalk
             .filter_map(|id| {
                 let oid = id.ok().expect("Failed to get OID");
-                let commit = repo_guard.find_commit(oid).ok().expect("Failed to find commit");
+                let commit = repo_guard
+                    .find_commit(oid)
+                    .ok()
+                    .expect("Failed to find commit");
                 if commit.time().seconds() >= cutoff_timestamp {
                     Some(oid)
                 } else {
@@ -378,7 +387,8 @@ pub fn import_from_git_and_purge(
     if let Ok(sqlite::State::Row) = stmt.next() {
         let last_id: i64 = stmt.read(0).expect("Failed to read last commit ID");
         let mut br_stmt = conn
-            .prepare("INSERT OR REPLACE INTO branches (name, head_commit_id) VALUES ('main', ?)").expect("Failed to prepare branch statement");
+            .prepare("INSERT OR REPLACE INTO branches (name, head_commit_id) VALUES ('main', ?)")
+            .expect("Failed to prepare branch statement");
         br_stmt.bind((1, last_id))?;
         br_stmt.next()?;
     }
