@@ -1,3 +1,4 @@
+use crate::Language::{C, CSharp, Cpp, D, Haskell, Js, Php, Python, Rust, Typescript};
 use crate::chat::list_messages;
 use crate::chat::send_message;
 use crate::commit::author;
@@ -10,14 +11,16 @@ use crate::utils::ok_merkle_hash;
 use breathes::hooks::run_hooks;
 use clap::value_parser;
 use clap::{Arg, ArgAction, Command};
-use inquire::Text;
+use inquire::{Select, Text};
 use sqlite::State;
 use std::env::current_dir;
+use std::fmt::Display;
 use std::fs::File;
 use std::fs::read_to_string;
-use std::io::Error;
+use std::io::{Error, Write};
 use std::path::MAIN_SEPARATOR_STR;
 use std::path::Path;
+use std::process::{Command as Cmd, Stdio};
 
 pub mod chat;
 pub mod commit;
@@ -334,11 +337,53 @@ pub fn check_status() -> Result<(), Error> {
     Ok(())
 }
 
+#[derive(Clone, Ord, Eq, PartialEq, PartialOrd, Debug)]
+enum Language {
+    Rust,
+    Python,
+    Haskell,
+    CSharp,
+    C,
+    D,
+    Cpp,
+    Php,
+    Js,
+    Typescript,
+}
+impl Language {
+    fn all() -> Vec<Language> {
+        let mut x = vec![
+            Rust, Python, Haskell, CSharp, C, D, Cpp, Php, Js, Typescript,
+        ];
+        x.sort_unstable();
+        x
+    }
+    fn get_language_name(&self) -> &'static str {
+        match self {
+            Rust => "Rust",
+            Python => "Python",
+            Haskell => "Haskell",
+            CSharp => "CSharp",
+            C => "C",
+            D => "D",
+            Cpp => "Cpp",
+            Php => "Php",
+            Js => "JavaScript",
+            Typescript => "TypeScript",
+        }
+    }
+}
+impl Display for Language {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.get_language_name())
+    }
+}
 fn new_project() -> Result<(), Error> {
     let mut project = String::new();
+    let supported_languages = Language::all();
     while project.is_empty() {
         project.clear();
-        project = Text::new("Name:")
+        project = Text::new("Project name:")
             .prompt()
             .expect("failed to get name")
             .to_string();
@@ -356,18 +401,246 @@ fn new_project() -> Result<(), Error> {
             .expect("failed to create file");
         ok("syl file created successfully");
         crypto::generate_keypair(Path::new(project.as_str())).expect("failed to generate keys");
-        ok("project keys has been generated successsfully");
-        ok("project created successsfully");
+        ok("project keys has been generated successfully");
+        File::create_new(format!("{project}{MAIN_SEPARATOR_STR}README.md").as_str())
+            .expect("failed to create readme file");
+        ok("README.md created successfully");
+
+        let main_language = Select::new("Select the main language:", supported_languages)
+            .prompt()
+            .expect("Failed to select language");
+        match main_language {
+            D => {
+                Cmd::new("dub")
+                    .arg("init")
+                    .current_dir(project.as_str())
+                    .spawn()
+                    .expect("Failed to create dub project")
+                    .wait()
+                    .expect("Failed to wait for dub init");
+                let mut syl = File::create(format!("{project}{MAIN_SEPARATOR_STR}syl").as_str())
+                    .expect("failed to open syl file");
+                syl.write_all(b"target\n").expect("Failed to ignore target");
+                syl.write_all(b"breathes\n")
+                    .expect("Failed to ignore target");
+                syl.sync_all().expect("Failed to sync");
+                ok("syl file updated successfully");
+                ok("dub project created successfully");
+            }
+            Rust => {
+                let p = Select::new("create a bin or a lib :", vec!["bin", "lib"])
+                    .prompt()
+                    .expect("Failed to select project type");
+                ok(format!("creating a {} project", p.to_lowercase().replace(" ", "")).as_str());
+                if p == "bin" {
+                    Cmd::new("cargo")
+                        .arg("init")
+                        .arg("--vcs")
+                        .arg("none")
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .current_dir(project.as_str())
+                        .spawn()
+                        .expect("failed to init cargo project");
+                } else {
+                    Cmd::new("cargo")
+                        .arg("init")
+                        .arg("--lib")
+                        .arg("--vcs")
+                        .arg("none")
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .current_dir(project.as_str())
+                        .spawn()
+                        .expect("Failed to init cargo project");
+                }
+                ok("Cargo project created successfully");
+                let mut syl = File::create(format!("{project}{MAIN_SEPARATOR_STR}syl").as_str())
+                    .expect("failed to open syl file");
+                syl.write_all(b"target\n").expect("Failed to ignore target");
+                syl.write_all(b"breathes\n")
+                    .expect("Failed to ignore target");
+                syl.sync_all().expect("Failed to sync");
+                ok("syl file updated successfully");
+            }
+            Python => {
+                Cmd::new("python3")
+                    .arg("-m")
+                    .arg("venv")
+                    .arg(format!("{project}{MAIN_SEPARATOR_STR}.venv"))
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .current_dir(project.as_str())
+                    .spawn()
+                    .expect("Failed to create .venv")
+                    .wait()
+                    .expect("Failed to wait for venv creation");
+                ok("venv created successfully");
+                File::create(format!("{project}{MAIN_SEPARATOR_STR}main.py").as_str())
+                    .expect("Failed to create main.py file");
+                ok("main.py file created successfully");
+                File::create(format!("{project}{MAIN_SEPARATOR_STR}requirements.txt").as_str())
+                    .expect("Failed to create requirements file");
+                ok("requirements.txt file created successfully");
+                File::create(format!("{project}{MAIN_SEPARATOR_STR}README.md").as_str())
+                    .expect("Failed to create README.md file");
+                ok("README.md file created successfully");
+                let mut syl = File::create(format!("{project}{MAIN_SEPARATOR_STR}syl").as_str())
+                    .expect("failed to open syl file");
+                syl.write_all(b"breathes\n")
+                    .expect("Failed to ignore target");
+                syl.write_all(b"__pycache__/\n")
+                    .expect("Failed to ignore target");
+                syl.write_all(b".venv\n").expect("Failed to ignore target");
+                syl.write_all(b"*.pyc\n").expect("Failed to ignore target");
+                syl.write_all(b"node_modules/\n")
+                    .expect("Failed to ignore target");
+                syl.sync_all().expect("Failed to sync");
+                ok("syl file updated successfully");
+            }
+            Haskell => {
+                Cmd::new("cabal")
+                    .arg("init")
+                    .current_dir(project.as_str())
+                    .spawn()
+                    .expect("Failed to create cabal project");
+                ok("cabal project created successfully");
+                File::create(format!("{project}{MAIN_SEPARATOR_STR}README.md").as_str())
+                    .expect("Failed to create README.md file");
+                ok("README.md file created successfully");
+            }
+            CSharp => {
+                let x = Select::new(
+                    "select the project type :",
+                    vec!["console", "blazor", "blazor", "wpf", "classlib", "mstest"],
+                )
+                .prompt()
+                .expect("Failed to select project type");
+                Cmd::new("dotnet")
+                    .arg("new")
+                    .arg(x.to_lowercase().replace(" ", ""))
+                    .arg("--output")
+                    .arg(project.as_str())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn()
+                    .expect("Failed to create dotnet project");
+                ok("dotnet project created successfully");
+                File::create(format!("{project}{MAIN_SEPARATOR_STR}README.md").as_str())
+                    .expect("Failed to create README.md file");
+            }
+            C | Cpp => {
+                File::create(format!("{project}{MAIN_SEPARATOR_STR}README.md").as_str())
+                    .expect("Failed to create README.md file");
+                ok("README.md file created successfully");
+                File::create(format!("{project}{MAIN_SEPARATOR_STR}CMakeLists.txt").as_str())
+                    .expect("Failed to create CMakeLists.txt file");
+                ok("CMakeLists.txt file created successfully");
+                let mut syl = File::create(format!("{project}{MAIN_SEPARATOR_STR}syl").as_str())
+                    .expect("failed to open syl file");
+                syl.write_all(b"breathes\n")
+                    .expect("Failed to ignore target");
+                syl.write_all(b"build\n").expect("Failed to ignore target");
+                syl.write_all(b"*.o\n").expect("Failed to ignore target");
+                syl.write_all(b"*.a\n").expect("Failed to ignore target");
+                syl.write_all(b"*.dll\n").expect("Failed to ignore target");
+                syl.write_all(b"*.dll\n").expect("Failed to ignore target");
+                syl.write_all(b".cmake/\n")
+                    .expect("Failed to ignore target");
+                syl.write_all(b"CMakeFiles/\n")
+                    .expect("Failed to ignore target");
+                syl.write_all(b"cmake_install.cmake\n")
+                    .expect("Failed to ignore target");
+                syl.write_all(b"CMakefiles\n")
+                    .expect("Failed to ignore target");
+                syl.write_all(b"Makefile\n")
+                    .expect("Failed to ignore target");
+                syl.write_all(b"*.so\n").expect("Failed to ignore target");
+                syl.write_all(b"cmake-build-debug")
+                    .expect("Failed to ignore target");
+                syl.write_all(b"install_manifest.txt\n")
+                    .expect("Failed to ignore target");
+                syl.write_all(b"*_include.cmake\n")
+                    .expect("Failed to ignore target");
+                syl.write_all(b"*.pdb\n").expect("Failed to ignore target");
+                syl.sync_all().expect("Failed to sync");
+                ok("syl file updated successfully");
+            }
+            Php => {
+                Cmd::new("composer")
+                    .arg("init")
+                    .current_dir(project.as_str())
+                    .spawn()
+                    .expect("Failed to create laravel project")
+                    .wait()
+                    .expect("Failed to wait for composer init");
+                ok("composer.json created successfully");
+                let mut syl = File::create(format!("{project}{MAIN_SEPARATOR_STR}syl").as_str())
+                    .expect("failed to open syl file");
+                syl.write_all(b"breathes\n")
+                    .expect("Failed to ignore target");
+                syl.write_all(b"vendor\n").expect("Failed to ignore target");
+                syl.write_all(b"node_modules/\n")
+                    .expect("Failed to ignore target");
+                syl.sync_all().expect("Failed to sync");
+                ok("syl file updated successfully");
+            }
+            Js => {
+                Cmd::new("npm")
+                    .arg("init")
+                    .current_dir(project.as_str())
+                    .spawn()
+                    .expect("Failed to create npm project")
+                    .wait()
+                    .expect("Failed to wait for npm init");
+                ok("package.json created successfully");
+                let mut syl = File::create(format!("{project}{MAIN_SEPARATOR_STR}syl").as_str())
+                    .expect("failed to open syl file");
+                syl.write_all(b"breathes\n")
+                    .expect("Failed to ignore target");
+                syl.write_all(b"build\n").expect("Failed to ignore target");
+                syl.write_all(b"node_modules/\n")
+                    .expect("Failed to ignore target");
+                syl.sync_all().expect("Failed to sync");
+                ok("syl file updated successfully");
+            }
+            Typescript => {
+                Cmd::new("npm")
+                    .arg("init")
+                    .current_dir(project.as_str())
+                    .spawn()
+                    .expect("Failed to create npm project")
+                    .wait()
+                    .expect("Failed to wait for npm init");
+                ok("package.json created successfully");
+                Cmd::new("tsc")
+                    .arg("--init")
+                    .current_dir(project.as_str())
+                    .spawn()
+                    .expect("Failed to init typescript");
+                ok("tsconfig.json created successfully");
+                let mut syl = File::create(format!("{project}{MAIN_SEPARATOR_STR}syl").as_str())
+                    .expect("failed to open syl file");
+                syl.write_all(b"breathes\n")
+                    .expect("Failed to ignore target");
+                syl.write_all(b"build\n").expect("Failed to ignore target");
+                syl.write_all(b"node_modules/\n")
+                    .expect("Failed to ignore target");
+                syl.sync_all().expect("Failed to sync");
+                ok("syl file updated successfully");
+            }
+        }
+        ok("Project created successfully");
         Ok(())
     } else {
-        Err(Error::other("failed to create the sqlite database"))
+        Err(Error::other("Failed to create the sqlite database"))
     }
 }
 
 fn summary() -> Result<(), Error> {
-    let root_path = current_dir().expect("fail");
-    let conn = connect_lys(root_path.as_path()).expect("failed");
-    let contributors = db::get_unique_contributors(&conn).expect("aa");
+    let root_path = current_dir().expect("Failed to get current directory");
+    let conn = connect_lys(root_path.as_path()).expect("Failed to connect to database");
+    let contributors = db::get_unique_contributors(&conn).expect("Failed to get contributors");
 
     for contributor in &contributors {
         ok(contributor.as_str());
@@ -388,11 +661,11 @@ fn main() -> Result<(), Error> {
         }
         Some(("summary", _)) => summary(),
         Some(("prune", _)) => {
-            let conn = connect_lys(Path::new(".")).expect("faield to connect to the database");
+            let conn = connect_lys(Path::new(".")).expect("failed to connect to the database");
             let ans = inquire::Confirm::new("Are you sure you want to prune the repository?")
-        .with_help_message("This action will PERMANENTLY delete all commits older than 2 years and reclaim disk space.")
-        .with_default(false)
-        .prompt();
+                .with_help_message("This action will PERMANENTLY delete all commits older than 2 years and reclaim disk space.")
+                .with_default(false)
+                .prompt();
             match ans {
                 Ok(true) => {
                     // Lancement de la fonction de nettoyage que nous avons codée
@@ -576,7 +849,6 @@ fn main() -> Result<(), Error> {
             let page = *args.get_one::<usize>("page").unwrap();
             let limit = *args.get_one::<usize>("limit").unwrap();
             let conn = connect_lys(Path::new(".")).expect("failed to connect to the database");
-            // On appelle la nouvelle signature
             vcs::log(&conn, page, limit).expect("failed to parse log");
             Ok(())
         }

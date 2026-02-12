@@ -7,7 +7,7 @@ description = "A secure local first vcs"
 [dependencies]
 axum = "0.8.8"
 blake3 = "1.8.3"
-breathes = "0.1.1"
+breathes = "0.1.2"
 chrono = { version = "0.4.43", features = ["serde"] }
 clap = "4.5.55"
 crossterm = "0.29.0"

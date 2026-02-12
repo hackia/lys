@@ -75,9 +75,22 @@ fn print_tree(f: &mut Formatter<'_>, node: &Tree, prefix: &str, is_root: bool) -
         if child.is_file {
             // Affiche le marqueur et les compteurs
             let marker = match &child.change {
-                Some(FileChange::Added { added }) => format!("+ {added}"),
-                Some(FileChange::Deleted { deleted }) => format!("- {deleted}"),
-                Some(FileChange::Modified { added, deleted }) => format!("~ +{added} -{deleted}"),
+                Some(FileChange::Added { added, mode }) => {
+                    let m = mode.map(|v| crate::vcs::format_mode(v)).unwrap_or_default();
+                    format!("{m} + {added}")
+                }
+                Some(FileChange::Deleted { deleted, mode }) => {
+                    let m = mode.map(|v| crate::vcs::format_mode(v)).unwrap_or_default();
+                    format!("{m} - {deleted}")
+                }
+                Some(FileChange::Modified {
+                    added,
+                    deleted,
+                    mode,
+                }) => {
+                    let m = mode.map(|v| crate::vcs::format_mode(v)).unwrap_or_default();
+                    format!("{m} ~ +{added} -{deleted}")
+                }
                 _ => String::new(),
             };
             writeln!(f, "{prefix}{connector} {marker} {name}")?;
@@ -98,9 +111,19 @@ fn print_tree(f: &mut Formatter<'_>, node: &Tree, prefix: &str, is_root: bool) -
 }
 #[derive(Debug, Clone)]
 pub enum FileChange {
-    Added { added: usize },
-    Deleted { deleted: usize },
-    Modified { added: usize, deleted: usize },
+    Added {
+        added: usize,
+        mode: Option<i64>,
+    },
+    Deleted {
+        deleted: usize,
+        mode: Option<i64>,
+    },
+    Modified {
+        added: usize,
+        deleted: usize,
+        mode: Option<i64>,
+    },
 }
 
 fn commit_justify(text: &str, width: usize) -> String {

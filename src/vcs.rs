@@ -1,4 +1,4 @@
-use crate::commit::{Log, FileChange};
+use crate::commit::{FileChange, Log};
 use crate::db::get_current_branch;
 use crate::utils::commit_created;
 use crate::utils::ko;
@@ -371,7 +371,7 @@ fn is_directory(conn: &Connection, hash: &str) -> Result<bool, Error> {
     Ok(matches!(stmt.next(), Ok(State::Row)))
 }
 
-fn format_mode(mode: i64) -> String {
+pub fn format_mode(mode: i64) -> String {
     if mode == 16384 || mode == 0o040000 {
         "d".to_string()
     } else {
@@ -1018,7 +1018,13 @@ pub fn diff(conn: &Connection) -> Result<(), Error> {
 
 fn count_lines(content: &[u8]) -> usize {
     match String::from_utf8(content.to_vec()) {
-        Ok(s) => s.lines().count(),
+        Ok(s) => {
+            if s.is_empty() {
+                0
+            } else {
+                s.lines().count()
+            }
+        }
         Err(_) => 0,
     }
 }
@@ -1042,6 +1048,15 @@ fn count_line_changes(old: &[u8], new: &[u8]) -> (usize, usize) {
 pub fn log(conn: &Connection, page: usize, per_page: usize) -> Result<(), sqlite::Error> {
     // Calcul de l'offset (Page 1 = Offset 0)
     let offset = (page - 1) * per_page;
+
+    // Get total number of commits
+    let mut count_stmt = conn.prepare("SELECT COUNT(*) FROM commits")?;
+    let total_commits: i64 = if let Ok(State::Row) = count_stmt.next() {
+        count_stmt.read(0)?
+    } else {
+        0
+    };
+    let total_pages = (total_commits as f64 / per_page as f64).ceil() as usize;
 
     // Requête avec LIMIT et OFFSET (inclut tree_hash pour construire l'arborescence)
     let query = "
@@ -1073,9 +1088,9 @@ pub fn log(conn: &Connection, page: usize, per_page: usize) -> Result<(), sqlite
         // Récupère le tree du parent (commit suivant dans l'ordre DESC par timestamp)
         let global_offset = offset + idx_in_page + 1; // +1 pour le parent suivant
         let mut parent_tree: Option<String> = None;
-        if let Ok(mut parent_stmt) = conn.prepare(
-            "SELECT tree_hash FROM commits ORDER BY timestamp DESC LIMIT 1 OFFSET ?",
-        ) {
+        if let Ok(mut parent_stmt) =
+            conn.prepare("SELECT tree_hash FROM commits ORDER BY timestamp DESC LIMIT 1 OFFSET ?")
+        {
             parent_stmt.bind((1, global_offset as i64))?;
             if let Ok(State::Row) = parent_stmt.next() {
                 parent_tree = Some(parent_stmt.read(0)?);
@@ -1090,26 +1105,61 @@ pub fn log(conn: &Connection, page: usize, per_page: usize) -> Result<(), sqlite
         let mut changes: Vec<(String, FileChange)> = Vec::new();
 
         // Ajouts et modifications
-        for (path, (new_hash, _)) in &new_state {
+        for (path, (new_hash, new_mode)) in &new_state {
             if let Some((old_hash, _)) = old_state.get(path) {
                 if old_hash != new_hash {
                     // Modified
-                    let old_bytes = get_blob_bytes_by_hash(conn, old_hash).ok().flatten().unwrap_or_default();
-                    let new_bytes = get_blob_bytes_by_hash(conn, new_hash).ok().flatten().unwrap_or_default();
+                    let old_bytes = get_blob_bytes_by_hash(conn, old_hash)
+                        .ok()
+                        .flatten()
+                        .unwrap_or_default();
+                    let new_bytes = get_blob_bytes_by_hash(conn, new_hash)
+                        .ok()
+                        .flatten()
+                        .unwrap_or_default();
                     let (a, d) = count_line_changes(&old_bytes, &new_bytes);
-                    changes.push((path.to_string_lossy().to_string(), FileChange::Modified { added: a, deleted: d }));
+                    changes.push((
+                        path.to_string_lossy().to_string(),
+                        FileChange::Modified {
+                            added: a,
+                            deleted: d,
+                            mode: Some(*new_mode),
+                        },
+                    ));
                 } // else unchanged -> ignore
             } else {
                 // Added
-                let nb = if let Some(bytes) = get_blob_bytes_by_hash(conn, new_hash).ok().flatten() { count_lines(&bytes) } else { 0 };
-                changes.push((path.to_string_lossy().to_string(), FileChange::Added { added: nb }));
+                let nb = if let Some(bytes) = get_blob_bytes_by_hash(conn, new_hash).ok().flatten()
+                {
+                    count_lines(&bytes)
+                } else {
+                    0
+                };
+                changes.push((
+                    path.to_string_lossy().to_string(),
+                    FileChange::Added {
+                        added: nb,
+                        mode: Some(*new_mode),
+                    },
+                ));
             }
         }
         // Suppressions
-        for (path, (old_hash, _)) in &old_state {
+        for (path, (old_hash, old_mode)) in &old_state {
             if !new_state.contains_key(path) {
-                let nb = if let Some(bytes) = get_blob_bytes_by_hash(conn, old_hash).ok().flatten() { count_lines(&bytes) } else { 0 };
-                changes.push((path.to_string_lossy().to_string(), FileChange::Deleted { deleted: nb }));
+                let nb = if let Some(bytes) = get_blob_bytes_by_hash(conn, old_hash).ok().flatten()
+                {
+                    count_lines(&bytes)
+                } else {
+                    0
+                };
+                changes.push((
+                    path.to_string_lossy().to_string(),
+                    FileChange::Deleted {
+                        deleted: nb,
+                        mode: Some(*old_mode),
+                    },
+                ));
             }
         }
         // Trie pour affichage stable
@@ -1133,15 +1183,34 @@ pub fn log(conn: &Connection, page: usize, per_page: usize) -> Result<(), sqlite
             ok(format!("No commits on {page} page.").as_str());
         }
     } else {
-        let x = rendered.len();
-        println!("{}", rendered.join("\n"));
-        if x >= 120 {
-            ok(format!(
-                "\nPage {page} ({x}/{per_page} commits). Use --page {} for see the suite.",
-                page + 1
-            )
-            .as_str());
+        if let Some(mut child) = start_pager() {
+            if let Some(mut stdin) = child.stdin.take() {
+                let output = rendered.join("\n");
+                let _ = stdin.write_all(output.as_bytes());
+                // Drop stdin to close it, so pager knows we're done
+                drop(stdin);
+                let _ = child.wait();
+            } else {
+                println!("{}", rendered.join("\n"));
+            }
+        } else {
+            println!("{}", rendered.join("\n"));
         }
+
+        let x = rendered.len();
+        println!();
+        let mut footer = format!("Page {page}/{total_pages} ({x}/{per_page} commits).");
+        if page < total_pages {
+            footer.push_str(&format!(" Next: --page {}", page + 1));
+        }
+        if page > 1 {
+            footer.push_str(" Prev: --page 1");
+        }
+        if total_pages > 1 && page != total_pages {
+            footer.push_str(&format!(" Last: --page {total_pages}"));
+        }
+        ok(footer.as_str());
+        println!("\n");
     }
     Ok(())
 }
@@ -1258,8 +1327,13 @@ pub fn commit(conn: &Connection, message: &str, author: &str) -> Result<(), Erro
         }
 
         let relative = path.strip_prefix("./").unwrap_or(path);
-        let content_hash = calculate_hash(path).expect("failed to calculate hash");
+        let content = std::fs::read(path).expect("failed to read file");
+        let content_hash = blake3::hash(&content).to_hex().to_string();
         let metadata = std::fs::metadata(path).expect("failed to get metadata");
+
+        // On insère le blob dans la base de données
+        crate::db::insert_blob_with_conn(conn, &content_hash, &content)
+            .expect("failed to insert blob");
 
         // Insertion du fichier dans notre structure d'arbre en mémoire
         insert_into_tree(
@@ -1388,8 +1462,8 @@ fn flatten_tree(
             // C'est un répertoire
             flatten_tree(conn, &hash, path, state)?;
         } else {
-            // On stocke le fichier (Asset ID à 0 car on utilise maintenant les hashes)
-            state.insert(path, (hash, 0));
+            // On stocke le fichier avec son hash et son mode
+            state.insert(path, (hash, mode));
         }
     }
     Ok(())
@@ -1464,6 +1538,21 @@ pub fn calculate_hash(path: &Path) -> IoResult<String> {
         hasher.update(&buffer[..count]);
     }
     Ok(hex::encode(hasher.finalize().as_bytes()))
+}
+
+fn start_pager() -> Option<std::process::Child> {
+    if !std::io::IsTerminal::is_terminal(&std::io::stdout()) {
+        return None;
+    }
+
+    let pager_cmd = std::env::var("PAGER").unwrap_or_else(|_| "less".to_string());
+    let mut cmd = std::process::Command::new(&pager_cmd);
+
+    if pager_cmd == "less" {
+        cmd.arg("-F").arg("-X").arg("-R");
+    }
+
+    cmd.stdin(std::process::Stdio::piped()).spawn().ok()
 }
 
 fn get_commit_id_by_hash(conn: &Connection, partial_hash: &str) -> Result<Option<i64>, Error> {
