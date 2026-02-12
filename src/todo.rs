@@ -41,7 +41,7 @@ pub fn add_todo(conn: &Connection, title: &str, assigned_to: Option<&str>, due_d
 
 pub fn list_todos(conn: &Connection) -> Result<(), Error> {
     // On récupère les colonnes, en gérant les NULL potentiels avec des valeurs par défaut
-    let query = "SELECT id, title, status, IF NULL(assigned_to, 'None'), IF NULL(due_date, 'No limit') FROM todos WHERE status != 'DONE' ORDER BY created_at DESC";
+    let query = "SELECT id, title, status, IFNULL(assigned_to, 'None'), IFNULL(due_date, 'No limit') FROM todos WHERE status != 'DONE' ORDER BY created_at DESC";
     let mut stmt = conn.prepare(query)?;
     let mut todos = Vec::new();
 
