@@ -68,7 +68,7 @@ pub fn push_atoms(conn: &Connection, remote_url: &str) -> Result<(), Box<dyn std
             .send()?;
 
         if res.status().is_success() {
-            ok(format!("Atom {} transfered", &hash[0..7]).as_str());
+            ok(format!("Atom {} sent", &hash[0..7]).as_str());
         }
     }
     Ok(())
@@ -383,7 +383,7 @@ fn is_directory(conn: &Connection, hash: &str) -> Result<bool, Error> {
 }
 
 pub fn format_mode(mode: i64) -> String {
-    if mode == 16384 || mode == 0o040000 {
+    if mode == 16384 || mode == 0o040000 || mode == 0o755 {
         "d".to_string()
     } else {
         "f".to_string()
@@ -1027,7 +1027,7 @@ pub fn diff(conn: &Connection) -> Result<(), Error> {
     Ok(())
 }
 
-fn count_lines(content: &[u8]) -> usize {
+pub fn count_lines(content: &[u8]) -> usize {
     match String::from_utf8(content.to_vec()) {
         Ok(s) => {
             if s.is_empty() {
@@ -1040,7 +1040,7 @@ fn count_lines(content: &[u8]) -> usize {
     }
 }
 
-fn count_line_changes(old: &[u8], new: &[u8]) -> (usize, usize) {
+pub fn count_line_changes(old: &[u8], new: &[u8]) -> (usize, usize) {
     let old_s = String::from_utf8(old.to_vec()).unwrap_or_default();
     let new_s = String::from_utf8(new.to_vec()).unwrap_or_default();
     let diff = TextDiff::from_lines(&old_s, &new_s);
@@ -1448,7 +1448,7 @@ fn get_branch_head_info(conn: &Connection, branch: &str) -> Result<(Option<i64>,
     Ok((None, String::new()))
 }
 
-fn flatten_tree(
+pub fn flatten_tree(
     conn: &Connection,
     tree_hash: &str,
     current_path: PathBuf,
@@ -1566,7 +1566,16 @@ pub fn start_pager() -> Option<std::process::Child> {
     cmd.stdin(std::process::Stdio::piped()).spawn().ok()
 }
 
-fn get_commit_id_by_hash(conn: &Connection, partial_hash: &str) -> Result<Option<i64>, Error> {
+pub fn is_file_in_state(path: &Path, tree_hash: &str, conn: &Connection) -> bool {
+    let mut state = HashMap::new();
+    if flatten_tree(conn, tree_hash, PathBuf::new(), &mut state).is_ok() {
+        state.contains_key(path)
+    } else {
+        false
+    }
+}
+
+pub fn get_commit_id_by_hash(conn: &Connection, partial_hash: &str) -> Result<Option<i64>, Error> {
     // On cherche un hash qui COMMENCE par la chaîne donnée (LIKE 'abc%')
     let query = "SELECT id FROM commits WHERE hash LIKE ? || '%' LIMIT 1";
     let mut stmt = conn.prepare(query)?;

@@ -21,6 +21,7 @@ pub const LYS_INIT: &str = "CREATE TABLE IF NOT EXISTS tree_nodes (
         nix_env_hash TEXT,
         PRIMARY KEY (parent_tree_hash, name)
     ) WITHOUT ROWID;
+    CREATE INDEX IF NOT EXISTS idx_tree_nodes_parent ON tree_nodes(parent_tree_hash);
  CREATE TABLE IF NOT EXISTS todos (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     title TEXT NOT NULL,
@@ -65,6 +66,8 @@ pub const LYS_INIT: &str = "CREATE TABLE IF NOT EXISTS tree_nodes (
         signature TEXT,
         nix_env_hash TEXT                -- Reproductibilité totale
     );
+    CREATE INDEX IF NOT EXISTS idx_commits_timestamp ON commits(timestamp);
+    CREATE INDEX IF NOT EXISTS idx_commits_hash ON commits(hash);
 
     -- Journal d'opérations (Style Jujutsu) pour le Undo/Redo
     CREATE TABLE IF NOT EXISTS operations_log (
