@@ -772,7 +772,21 @@ fn main() -> Result<(), Error> {
             if let Ok(State::Row) = stmt.next() {
                 let root_hash: String = stmt.read(0).unwrap();
                 ok_merkle_hash(root_hash.as_str());
-                vcs::ls_tree(&conn, &root_hash, "").map_err(|e| Error::other(e.to_string()))?;
+                let lines =
+                    vcs::ls_tree(&conn, &root_hash, "").map_err(|e| Error::other(e.to_string()))?;
+
+                if let Some(mut child) = vcs::start_pager() {
+                    if let Some(mut stdin) = child.stdin.take() {
+                        let output = lines.join("\n");
+                        let _ = stdin.write_all(output.as_bytes());
+                        drop(stdin);
+                        let _ = child.wait();
+                    } else {
+                        println!("{}", lines.join("\n"));
+                    }
+                } else {
+                    println!("{}", lines.join("\n"));
+                }
             } else {
                 ok("repository empty. Commit something first!");
             }

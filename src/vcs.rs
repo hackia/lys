@@ -254,7 +254,18 @@ pub fn doctor() -> Result<(), String> {
     Ok(())
 }
 
-pub fn ls_tree(conn: &Connection, tree_hash: &str, prefix: &str) -> Result<(), Error> {
+pub fn ls_tree(conn: &Connection, tree_hash: &str, prefix: &str) -> Result<Vec<String>, Error> {
+    let mut lines = Vec::new();
+    ls_tree_recursive(conn, tree_hash, prefix, &mut lines)?;
+    Ok(lines)
+}
+
+fn ls_tree_recursive(
+    conn: &Connection,
+    tree_hash: &str,
+    prefix: &str,
+    lines: &mut Vec<String>,
+) -> Result<(), Error> {
     // On récupère tous les enfants directs de ce hash de dossier
     let query =
         "SELECT name, hash, mode FROM tree_nodes WHERE parent_tree_hash = ? ORDER BY name ASC";
@@ -276,13 +287,13 @@ pub fn ls_tree(conn: &Connection, tree_hash: &str, prefix: &str) -> Result<(), E
         let is_last = i == count - 1;
         let connector = if is_last { "└── " } else { "├── " };
 
-        println!(
-            "{} [ {} ] {}{:<20}\x1b[0m",
+        lines.push(format!(
+            "{} [ {} ] {}{}",
             format_mode(mode),
             &hash[0..7],
             prefix,
             connector.to_string() + &name,
-        );
+        ));
 
         // Si le hash possède lui-même des enfants dans tree_nodes, c'est un dossier
         if is_directory(conn, &hash)? {
@@ -291,7 +302,7 @@ pub fn ls_tree(conn: &Connection, tree_hash: &str, prefix: &str) -> Result<(), E
             } else {
                 format!("{}│   ", prefix)
             };
-            ls_tree(conn, &hash, &new_prefix)?;
+            ls_tree_recursive(conn, &hash, &new_prefix, lines)?;
         }
     }
     Ok(())
@@ -1540,7 +1551,7 @@ pub fn calculate_hash(path: &Path) -> IoResult<String> {
     Ok(hex::encode(hasher.finalize().as_bytes()))
 }
 
-fn start_pager() -> Option<std::process::Child> {
+pub fn start_pager() -> Option<std::process::Child> {
     if !std::io::IsTerminal::is_terminal(&std::io::stdout()) {
         return None;
     }
