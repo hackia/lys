@@ -67,6 +67,11 @@ struct EditorForm {
 }
 
 #[derive(Deserialize)]
+struct NewFileForm {
+    path: String,
+}
+
+#[derive(Deserialize)]
 struct TodoForm {
     title: String,
     assigned_to: Option<String>,
@@ -620,6 +625,7 @@ pub async fn start_server(repo_path: &str, port: u16) {
         .route("/commit/{id}/tree", get(show_commit_tree))
         .route("/commit/{id}/tree/{*path}", get(show_commit_tree))
         .route("/editor", get(editor_list))
+        .route("/editor/new", post(editor_new))
         .route("/editor/{*path}", get(editor_edit).post(editor_save))
         .route("/todo", get(todo_list))
         .route("/todo/add", post(todo_add))
@@ -2857,10 +2863,11 @@ async fn editor_list() -> impl IntoResponse {
 
     let mut body = String::from("
         <h3>Editor - Select a file</h3>
-        <div style='margin-bottom: 20px;'>
-            <form action='/editor/new' method='post' style='display: flex; gap: 8px;'>
-                <input type='text' name='path' placeholder='new_file.txt' style='padding: 6px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--fg); flex: 1;'>
-                <button type='submit' class='btn btn-active'>Create New File</button>
+        <div style='margin-bottom: 20px; padding: 15px; border: 1px solid var(--border); border-radius: 4px; background: var(--header-bg);'>
+            <form action='/editor/new' method='post' style='display: flex; gap: 8px; align-items: center;'>
+                <label for='path' style='font-weight: bold; font-size: 0.9em;'>New File:</label>
+                <input type='text' id='path' name='path' placeholder='folder/file.txt' required style='padding: 6px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--fg); flex: 1;'>
+                <button type='submit' class='btn btn-active' style='margin-right: 0;'>Create</button>
             </form>
         </div>
         <ul>");
@@ -2874,6 +2881,49 @@ async fn editor_list() -> impl IntoResponse {
     body.push_str("</ul>");
 
     page("Editor", "", &body).into_response()
+}
+
+async fn editor_new(
+    axum::extract::Form(form): axum::extract::Form<NewFileForm>,
+) -> impl IntoResponse {
+    let path = form.path.trim().trim_start_matches('/');
+    if path.is_empty() {
+        return http_error(StatusCode::BAD_REQUEST, "Path cannot be empty");
+    }
+
+    let full_path = Path::new(".").join(path);
+    if full_path.exists() {
+        // Redirect to editor if file already exists
+        return Response::builder()
+            .status(StatusCode::SEE_OTHER)
+            .header("Location", format!("/editor/{}", path))
+            .body(axum::body::Body::empty())
+            .unwrap();
+    }
+
+    // Create parent directories if they don't exist
+    if let Some(parent) = full_path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            return http_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("Failed to create directories: {}", e),
+            );
+        }
+    }
+
+    // Create an empty file
+    if let Err(e) = std::fs::write(&full_path, "") {
+        return http_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &format!("Failed to create file: {}", e),
+        );
+    }
+
+    Response::builder()
+        .status(StatusCode::SEE_OTHER)
+        .header("Location", format!("/editor/{}", path))
+        .body(axum::body::Body::empty())
+        .unwrap()
 }
 
 async fn editor_edit(UrlPath(path): UrlPath<String>) -> impl IntoResponse {
