@@ -2,6 +2,8 @@
 
 [![Rust](https://github.com/hackia/lys/actions/workflows/rust.yml/badge.svg)](https://github.com/hackia/lys/actions/workflows/rust.yml)
 
+![lys](https://github.com/hackia/lys/lys.png)
+
 Lys is a **secure, local-first Version Control System (VCS)** designed for privacy, performance, and modern developer workflows. Written in Rust, it combines robust versioning with integrated tools for team collaboration.
 
 ## Key Features

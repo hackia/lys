@@ -174,7 +174,7 @@ fn cli() -> Command {
                 .about("Manage project tasks")
                 .subcommand(
                     Command::new("add")
-                        .arg(Arg::new("title").required(true))
+                        .arg(Arg::new("title"))
                         .arg(Arg::new("user").short('u').help("Assign to user"))
                         .arg(
                             Arg::new("due")
@@ -1188,10 +1188,39 @@ pub fn execute_matches(app: clap::ArgMatches) -> Result<(), Error> {
                 connect_lys(current_dir.as_path()).expect("failed to connect to the database");
             match sub.subcommand() {
                 Some(("add", args)) => {
-                    let title = args.get_one::<String>("title").unwrap();
-                    let user = args.get_one::<String>("user").map(|s| s.as_str());
-                    let due = args.get_one::<String>("due").map(|s| s.as_str());
-                    todo::add_todo(&conn, title, user, due).expect("failed to add todo");
+                    let title = args.get_one::<String>("title").cloned();
+                    let user = args.get_one::<String>("user").cloned();
+                    let due = args.get_one::<String>("due").cloned();
+
+                    let title = match title {
+                        Some(t) => t,
+                        None => Text::new("Title:").prompt().unwrap(),
+                    };
+                    let user = match user {
+                        Some(u) => Some(u),
+                        None => {
+                            let u = Text::new("Assigned to (default: Me):").prompt().unwrap();
+                            if u.trim().is_empty() {
+                                None
+                            } else {
+                                Some(u)
+                            }
+                        }
+                    };
+                    let due = match due {
+                        Some(d) => Some(d),
+                        None => {
+                            use inquire::DateSelect;
+                            let date = DateSelect::new("Due date:")
+                                .with_help_message("Press Enter to select, Esc to skip")
+                                .prompt_skippable()
+                                .unwrap();
+                            date.map(|d| d.format("%Y-%m-%d").to_string())
+                        }
+                    };
+
+                    todo::add_todo(&conn, &title, user.as_deref(), due.as_deref())
+                        .expect("failed to add todo");
                     Ok(())
                 }
                 Some(("start", args)) => {

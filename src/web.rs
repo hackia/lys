@@ -3192,7 +3192,7 @@ async fn todo_list(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         "<h3>Todo List</h3>\
          <div style='margin-bottom: 30px; background: var(--menu-bg); padding: 20px; border: 1px solid var(--border); border-radius: 8px;'>\
            <h4>Add New Task</h4>\
-           <form action='/todo/add' method='post' style='display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap;'>\
+           <form action='/todo/add' method='post' style='display: flex; gap: 20px; align-items: flex-end; flex-wrap: wrap;'>\
              <div style='flex: 1; min-width: 200px;'>\
                <label style='display:block; font-size:0.8em; margin-bottom:5px;'>Title</label>\
                <input type='text' name='title' required style='width:100%; padding:8px; border:1px solid var(--border); border-radius:4px; background: var(--bg); color: var(--fg);'>\
@@ -3203,7 +3203,7 @@ async fn todo_list(State(state): State<Arc<AppState>>) -> impl IntoResponse {
              </div>\
              <div>\
                <label style='display:block; font-size:0.8em; margin-bottom:5px;'>Due Date</label>\
-               <input type='text' name='due_date' placeholder='YYYY-MM-DD' style='padding:8px; border:1px solid var(--border); border-radius:4px; background: var(--bg); color: var(--fg);'>\
+               <input type='date' name='due_date' style='padding:8px; border:1px solid var(--border); border-radius:4px; background: var(--bg); color: var(--fg);'>\
              </div>\
              <button type='submit' class='btn btn-active' style='height:38px;'>Add Todo</button>\
            </form>\
