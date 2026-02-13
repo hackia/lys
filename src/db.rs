@@ -88,10 +88,7 @@ pub const LYS_INIT: &str = "CREATE TABLE IF NOT EXISTS tree_nodes (
         commit_id INTEGER NOT NULL,
         asset_id INTEGER NOT NULL,
         blob_id INTEGER NOT NULL,
-        file_path TEXT NOT NULL,
-        FOREIGN KEY (commit_id) REFERENCES commits(id),
-        FOREIGN KEY (asset_id) REFERENCES assets(id),
-        FOREIGN KEY (blob_id) REFERENCES blobs(id)
+        file_path TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_manifest_commit ON manifest(commit_id);
     CREATE INDEX IF NOT EXISTS idx_manifest_path ON manifest(file_path);

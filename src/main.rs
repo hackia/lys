@@ -835,17 +835,18 @@ pub fn execute_matches(app: clap::ArgMatches) -> Result<(), Error> {
             let branch = get_current_branch(&conn).expect("failed to get branch");
 
             // 2. On récupère le tree_hash associé au HEAD de cette branche
-            let query = "SELECT c.tree_hash FROM branches b JOIN commits c ON b.head_commit_id = c.id WHERE b.name = ?";
+            let query = "SELECT c.id, c.tree_hash FROM branches b JOIN commits c ON b.head_commit_id = c.id WHERE b.name = ?";
             let mut stmt = conn
                 .prepare(query)
                 .map_err(|e| Error::other(e.to_string()))?;
             stmt.bind((1, branch.as_str())).unwrap();
 
             if let Ok(State::Row) = stmt.next() {
-                let root_hash: String = stmt.read(0).unwrap();
+                let head_commit_id: i64 = stmt.read(0).unwrap();
+                let root_hash: String = stmt.read(1).unwrap();
                 ok_merkle_hash(root_hash.as_str());
-                let lines =
-                    vcs::ls_tree(&conn, &root_hash, "").map_err(|e| Error::other(e.to_string()))?;
+                let lines = vcs::ls_tree(&conn, &root_hash, "", head_commit_id)
+                    .map_err(|e| Error::other(e.to_string()))?;
 
                 if let Some(mut child) = vcs::start_pager() {
                     if let Some(mut stdin) = child.stdin.take() {

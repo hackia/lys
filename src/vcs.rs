@@ -254,10 +254,15 @@ pub fn doctor() -> Result<(), String> {
     Ok(())
 }
 
-pub fn ls_tree(conn: &Connection, tree_hash: &str, prefix: &str) -> Result<Vec<String>, Error> {
+pub fn ls_tree(
+    conn: &Connection,
+    tree_hash: &str,
+    prefix: &str,
+    until_commit_id: i64,
+) -> Result<Vec<String>, Error> {
     let mut lines = Vec::new();
     // On démarre à la racine avec un chemin relatif vide
-    ls_tree_recursive(conn, tree_hash, prefix, "", &mut lines)?;
+    ls_tree_recursive(conn, tree_hash, prefix, "", until_commit_id, &mut lines)?;
     Ok(lines)
 }
 
@@ -288,14 +293,15 @@ fn last_commit_for_path_cli(
     conn: &Connection,
     full_path: &str,
     is_dir: bool,
+    until_commit_id: i64,
 ) -> Option<(String, String, String)> {
     // Retourne (hash, timestamp, message)
     let sql = if is_dir {
         "SELECT c.hash, c.timestamp, c.message FROM manifest m JOIN commits c ON c.id = m.commit_id \
-         WHERE m.file_path = ?1 OR m.file_path LIKE (?1 || '/%') ORDER BY c.timestamp DESC LIMIT 1"
+         WHERE (m.file_path = ?1 OR m.file_path LIKE (?1 || '/%')) AND c.id <= ?2 ORDER BY c.timestamp DESC LIMIT 1"
     } else {
         "SELECT c.hash, c.timestamp, c.message FROM manifest m JOIN commits c ON c.id = m.commit_id \
-         WHERE m.file_path = ?1 ORDER BY c.timestamp DESC LIMIT 1"
+         WHERE m.file_path = ?1 AND c.id <= ?2 ORDER BY c.timestamp DESC LIMIT 1"
     };
     let mut stmt = match conn.prepare(sql) {
         Ok(s) => s,
@@ -304,11 +310,16 @@ fn last_commit_for_path_cli(
     if stmt.bind((1, full_path)).is_err() {
         return None;
     }
+    if stmt.bind((2, until_commit_id)).is_err() {
+        return None;
+    }
     if let Ok(State::Row) = stmt.next() {
         let h = stmt.read::<String, _>(0).ok()?;
         let ts = stmt.read::<String, _>(1).ok()?;
         let msg = stmt.read::<String, _>(2).ok()?;
-        Some((h, ts, msg))
+        // Ne garder que la première ligne du message
+        let first_line = msg.lines().next().unwrap_or("").to_string();
+        Some((h, ts, first_line))
     } else {
         None
     }
@@ -319,6 +330,7 @@ fn ls_tree_recursive(
     tree_hash: &str,
     prefix: &str,
     current_path: &str,
+    until_commit_id: i64,
     lines: &mut Vec<String>,
 ) -> Result<(), Error> {
     // On récupère tous les enfants directs de ce hash de dossier
@@ -347,30 +359,33 @@ fn ls_tree_recursive(
             format!("{}/{}", current_path, name)
         };
 
-        let mut suffix = String::new();
-        if let Some((h, ts, msg)) =
-            last_commit_for_path_cli(conn, &full_path, is_directory(conn, &hash)?)
-        {
+        let mut commit_info = String::new();
+        let mut commit_hash_str = "       ".to_string(); // 7 spaces placeholder
+        if let Some((h, ts, msg)) = last_commit_for_path_cli(
+            conn,
+            &full_path,
+            is_directory(conn, &hash)?,
+            until_commit_id,
+        ) {
+            commit_hash_str = h[0..7].to_string();
             let age = time_ago_cli(&ts);
-            let truncated_msg = if msg.len() > 30 {
-                format!("{}...", &msg[..27])
+            let truncated_msg = if msg.len() > 50 {
+                format!("{}...", &msg[..47])
             } else {
                 msg.clone()
             };
-            suffix = if age.is_empty() {
-                format!(" — {} [{}]", &h[0..7], truncated_msg)
-            } else {
-                format!(" — {} ({}) [{}]", &h[0..7], age, truncated_msg)
-            };
+            commit_info = format!(" — {} {}", truncated_msg, age);
         }
 
         lines.push(format!(
-            "{} [ {} ] {}{}{}",
+            "{} [ {} ] [ {} ] {}{}{}{}",
             format_mode(mode),
             &hash[0..7],
+            commit_hash_str,
             prefix,
-            connector.to_string() + &name,
-            suffix,
+            connector,
+            name,
+            commit_info,
         ));
 
         // Si le hash possède lui-même des enfants dans tree_nodes, c'est un dossier
@@ -380,7 +395,14 @@ fn ls_tree_recursive(
             } else {
                 format!("{}│   ", prefix)
             };
-            ls_tree_recursive(conn, &hash, &new_prefix, &full_path, lines)?;
+            ls_tree_recursive(
+                conn,
+                &hash,
+                &new_prefix,
+                &full_path,
+                until_commit_id,
+                lines,
+            )?;
         }
     }
     Ok(())
@@ -1459,31 +1481,39 @@ pub fn commit(conn: &Connection, message: &str, author: &str) -> Result<(), Erro
     stmt_id.next()?;
     let commit_id: i64 = stmt_id.read(0)?;
 
-    // 5. Remplissage du manifest pour la vue tree
+    // 5. Remplissage du manifest pour la vue tree (seulement si modifié)
     let mut state_map = HashMap::new();
     flatten_tree(conn, &root_hash, PathBuf::new(), &mut state_map)?;
+
+    // On récupère l'état du parent pour comparer
+    let branch = get_current_branch(conn)?;
+    let parent_state = get_head_state(conn, &branch).unwrap_or_default();
+
     for (path, (blob_hash, _)) in state_map {
-        let mut stmt_blob = conn.prepare("SELECT id FROM store.blobs WHERE hash = ?")?;
-        stmt_blob.bind((1, blob_hash.as_str()))?;
-        if let Ok(State::Row) = stmt_blob.next() {
-            let blob_id: i64 = stmt_blob.read(0)?;
-            // Pour l'instant on met asset_id à 0 ou on en crée un si on veut être propre
-            // Mais la table manifest demande asset_id.
-            // On va essayer d'insérer avec asset_id = 0 pour voir si ça suffit à la vue tree.
-            // La vue tree fait JOIN manifest m JOIN commits c ON c.id = m.commit_id WHERE m.file_path = ?
-            // Elle n'utilise pas asset_id ni blob_id pour l'affichage du dernier commit.
-            let query_manifest = "INSERT INTO manifest (commit_id, asset_id, blob_id, file_path) VALUES (?, ?, ?, ?)";
-            let mut stmt_m = conn.prepare(query_manifest)?;
-            stmt_m.bind((1, commit_id))?;
-            stmt_m.bind((2, 0))?; // dummy asset_id
-            stmt_m.bind((3, blob_id))?;
-            stmt_m.bind((4, path.to_string_lossy().as_ref()))?;
-            stmt_m.next()?;
+        // On n'insère dans le manifest QUE si le fichier a changé
+        let should_insert = match parent_state.get(&path) {
+            Some((old_hash, _)) => old_hash != &blob_hash,
+            None => true, // Nouveau fichier
+        };
+
+        if should_insert {
+            let mut stmt_blob = conn.prepare("SELECT id FROM store.blobs WHERE hash = ?")?;
+            stmt_blob.bind((1, blob_hash.as_str()))?;
+            if let Ok(State::Row) = stmt_blob.next() {
+                let blob_id: i64 = stmt_blob.read(0)?;
+                let query_manifest =
+                    "INSERT INTO manifest (commit_id, asset_id, blob_id, file_path) VALUES (?, ?, ?, ?)";
+                let mut stmt_m = conn.prepare(query_manifest)?;
+                stmt_m.bind((1, commit_id))?;
+                stmt_m.bind((2, 0))?; // dummy asset_id
+                stmt_m.bind((3, blob_id))?;
+                stmt_m.bind((4, path.to_string_lossy().as_ref()))?;
+                stmt_m.next()?;
+            }
         }
     }
 
     // On récupère la branche actuelle et on met à jour son pointeur HEAD
-    let branch = get_current_branch(conn)?;
     let update_branch = "INSERT INTO branches (name, head_commit_id) VALUES (?, ?) 
                          ON CONFLICT(name) DO UPDATE SET head_commit_id = excluded.head_commit_id";
     let mut stmt_br = conn.prepare(update_branch)?;
