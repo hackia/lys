@@ -3117,6 +3117,8 @@ async fn todo_list(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         Err(_) => return http_error(StatusCode::INTERNAL_SERVER_ERROR, "DB lock poisoned"),
     };
 
+    let _ = crate::todo::check_and_reset_todos(&conn);
+
     let query = "SELECT id, title, status, IFNULL(assigned_to, 'Me'), IFNULL(due_date, 'No limit') FROM todos ORDER BY CASE WHEN status = 'DONE' THEN 1 ELSE 0 END, created_at DESC";
     let mut stmt = match conn.prepare(query) {
         Ok(s) => s,

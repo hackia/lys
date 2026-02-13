@@ -307,6 +307,8 @@ pub fn connect_lys(root_path: &Path) -> Result<Connection, Error> {
     if conn.execute("SELECT 1 FROM tree_nodes LIMIT 1;").is_err() {
         conn.execute(LYS_INIT)?;
     }
+    // 2.5 RESET DES TODOS
+    let _ = crate::todo::check_and_reset_todos(&conn);
     // 3. RECONSOLIDATION DYNAMIQUE
     if let Some(prev_db) = find_latest_db(&db_dir, &db_full_path) {
         let attach_query = format!("ATTACH DATABASE '{}' AS old;", prev_db.display());

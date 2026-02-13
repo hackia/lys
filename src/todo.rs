@@ -1,4 +1,5 @@
 use crate::utils::ok;
+use chrono::{Datelike, Local};
 use sqlite::{Connection, Error, State};
 use tabled::{Table, Tabled};
 
@@ -14,6 +15,37 @@ pub struct TodoItem {
     pub assigned_to: String,
     #[tabled(rename = "Due date")]
     pub due_date: String,
+}
+
+pub fn check_and_reset_todos(conn: &Connection) -> Result<(), Error> {
+    let now = Local::now();
+    // 1 est Lundi (Monday) dans chrono::Datelike (1..=7)
+    if now.weekday().number_from_monday() == 1 {
+        let monday_str = now.format("%Y-%m-%d").to_string();
+
+        // On vérifie si on a déjà fait le reset aujourd'hui
+        let mut stmt = conn.prepare("SELECT value FROM config WHERE key = 'last_todo_reset'")?;
+        let already_reset = if let Ok(State::Row) = stmt.next() {
+            let last_reset: String = stmt.read(0)?;
+            last_reset == monday_str
+        } else {
+            false
+        };
+
+        if !already_reset {
+            // Reset : On supprime les todos terminés ou on vide tout ?
+            // L'utilisateur dit "que les todo list se reinit", généralement ça veut dire vider
+            conn.execute("DELETE FROM todos")?;
+            
+            // Mettre à jour la date du dernier reset
+            let mut stmt = conn.prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('last_todo_reset', ?)")?;
+            stmt.bind((1, monday_str.as_str()))?;
+            stmt.next()?;
+            
+            ok("Weekly todo list reset performed.");
+        }
+    }
+    Ok(())
 }
 
 pub fn start_todo(conn: &Connection, id: i64) -> Result<(), Error> {
