@@ -2863,22 +2863,43 @@ async fn editor_list() -> impl IntoResponse {
 
     let mut body = String::from("
         <h3>Editor - Select a file</h3>
-        <div style='margin-bottom: 20px; padding: 15px; border: 1px solid var(--border); border-radius: 4px; background: var(--header-bg);'>
+        <div style='margin-bottom: 20px; padding: 15px; border: 1px solid var(--border); border-radius: 4px; background: var(--header-bg); display: flex; flex-direction: column; gap: 15px;'>
             <form action='/editor/new' method='post' style='display: flex; gap: 8px; align-items: center;'>
-                <label for='path' style='font-weight: bold; font-size: 0.9em;'>New File:</label>
+                <label for='path' style='font-weight: bold; font-size: 0.9em; min-width: 80px;'>New File:</label>
                 <input type='text' id='path' name='path' placeholder='folder/file.txt' required style='padding: 6px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--fg); flex: 1;'>
                 <button type='submit' class='btn btn-active' style='margin-right: 0;'>Create</button>
             </form>
+            <div style='display: flex; gap: 8px; align-items: center; border-top: 1px solid var(--border); padding-top: 15px;'>
+                <label for='search' style='font-weight: bold; font-size: 0.9em; min-width: 80px;'>Search:</label>
+                <input type='text' id='search' placeholder='Filter files...' style='padding: 6px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--fg); flex: 1;'>
+            </div>
         </div>
-        <ul>");
+        <ul id='file-list'>");
     for f in files {
         body.push_str(&format!(
-            "<li><a href='/editor/{}'>{}</a></li>",
+            "<li class='file-item'><a href='/editor/{}'>{}</a></li>",
             html_escape(&f),
             html_escape(&f)
         ));
     }
-    body.push_str("</ul>");
+    body.push_str("</ul>
+        <script>
+            const searchInput = document.getElementById('search');
+            const fileList = document.getElementById('file-list');
+            const fileItems = fileList.getElementsByClassName('file-item');
+
+            searchInput.addEventListener('input', function() {
+                const query = searchInput.value.toLowerCase();
+                for (let item of fileItems) {
+                    const text = item.textContent.toLowerCase();
+                    if (text.includes(query)) {
+                        item.style.display = '';
+                    } else {
+                        item.style.display = 'none';
+                    }
+                }
+            });
+        </script>");
 
     page("Editor", "", &body).into_response()
 }
