@@ -2,24 +2,29 @@
 
 [![Rust](https://github.com/hackia/lys/actions/workflows/rust.yml/badge.svg)](https://github.com/hackia/lys/actions/workflows/rust.yml)
 
-![lys](https://github.com/hackia/lys/blob/main/lys.png)
 
-Lys is a **secure, local-first Version Control System (VCS)** designed for privacy, performance, and modern developer workflows. Written in Rust, it combines robust versioning with integrated tools for team collaboration.
+<img src="https://github.com/hackia/lys/blob/main/lys.svg" alt="Lys Logo" width="250" align="right"/>
+
+Lys is a **secure, local-first Version Control System (VCS)** designed for privacy, performance, and modern developer
+workflows. Written in Rust, it combines robust versioning with integrated tools for team collaboration.
 
 ## Key Features
 
 - **Secure by Design**: Ed25519 identity keys for cryptographically signing every commit.
 - **Git Integration**: Seamlessly `import` or `clone` existing Git repositories into Lys.
 - **Modern Workflow**: Built-in support for `feat`, `hotfix`, and `tag` management.
-- **Integrated Tools**: 
-  - **Interactive Shell**: Type `lys` without arguments to enter an interactive shell with history (`~/.lys-history`).
-  - **Todo Manager**: Track project tasks directly within the VCS.
-  - **Team Chat**: Communicate with your team without leaving your terminal.
-  - **Advanced Web Interface**: 
-    - Visualize your repository, commits, and diffs.
-    - **Integrated Terminal**: A powerful web-based terminal with multi-tab support, window splits (horizontal/vertical), and persistent sessions (tmux/screen style).
-    - **Music Integration**: Personalize your dashboard with your favorite albums from **Spotify** or **YouTube Music**.
-    - **Personalized Banner**: Showcase your project with a **YouTube video** or a **custom image banner** directly on the home page.
+- **Integrated Tools**:
+    - **Interactive Shell**: Type `lys` without arguments to enter an interactive shell with history (`~/.lys-history`).
+    - **Todo Manager**: Track project tasks directly within the VCS.
+    - **Team Chat**: Communicate with your team without leaving your terminal.
+    - **Advanced Web Interface**:
+        - Visualize your repository, commits, and diffs.
+        - **Integrated Terminal**: A powerful web-based terminal with multi-tab support, window splits (
+          horizontal/vertical), and persistent sessions (tmux/screen style).
+        - **Music Integration**: Personalize your dashboard with your favorite albums from **Spotify** or **YouTube
+          Music**.
+        - **Personalized Banner**: Showcase your project with a **YouTube video** or a **custom image banner** directly
+          on the home page.
 - **Mounting**: Mount specific versions or the current HEAD to a directory as a virtual filesystem.
 - **Decentralized**: `push` and `pull` to remote architects, or `sync` to physical destinations like USB drives.
 - **TUI Support**: Includes `syl`, a beautiful terminal user interface for managing your work.

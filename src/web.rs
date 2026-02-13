@@ -134,8 +134,8 @@ fn get_youtube_embed_url(url: &str) -> Option<String> {
     // youtube.com/v/ID
     // youtu.be/ID
 
-    if url.contains("youtu.be/") {
-        let id = url.split("youtu.be/").nth(1)?.split('?').next()?;
+    if url.contains("youtube.com/") {
+        let id = url.split("youtube.com/").nth(1)?.split('?').next()?;
         return Some(format!("https://www.youtube.com/embed/{}", id));
     }
 
@@ -176,6 +176,15 @@ fn time_ago(timestamp: &str) -> String {
 }
 
 pub fn page(title: &str, style: &str, body: &str) -> Html<String> {
+    let favicon_links = "
+        <link rel='icon' type='image/png' href='/favicon-96x96.png' sizes='96x96' />
+        <link rel='icon' type='image/svg+xml' href='/favicon.svg' />
+        <link rel='shortcut icon' href='/favicon.ico' />
+        <link rel='apple-touch-icon' sizes='180x180' href='/apple-touch-icon.png' />
+        <meta name='apple-mobile-web-app-title' content='lys' />
+        <link rel='manifest' href='/site.webmanifest' />
+    ";
+
     const COMMON_STYLE: &str = "
         :root {
             --bg: #ffffff;
@@ -275,8 +284,9 @@ pub fn page(title: &str, style: &str, body: &str) -> Html<String> {
     let site_homepage = WEB_HOMEPAGE.get().map(String::as_str).unwrap_or("");
     let site_documentation = WEB_DOCUMENTATION.get().map(String::as_str).unwrap_or("");
 
-    let mut menu_links =
-        String::from("<a href='/'>Summary</a><a href='/'>Log</a><a href='/rss'>RSS</a><a href='/editor'>Editor</a><a href='/commit/new'>Commit</a><a href='/todo'>Todo</a><a href='/chat'>Chat</a>");
+    let mut menu_links = String::from(
+        "<a href='/'>Summary</a><a href='/'>Log</a><a href='/rss'>RSS</a><a href='/editor'>Editor</a><a href='/commit/new'>Commit</a><a href='/todo'>Todo</a><a href='/chat'>Chat</a>",
+    );
     if !site_homepage.is_empty() {
         menu_links.push_str(&format!(
             "<a href='{}' target='_blank'>Homepage</a>",
@@ -308,6 +318,7 @@ pub fn page(title: &str, style: &str, body: &str) -> Html<String> {
              <meta charset='utf-8'>\
              <meta name='viewport' content='width=device-width, initial-scale=1'>\
              <title>{}</title>\
+             {}\
              <link rel='stylesheet' href='https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css' media='(prefers-color-scheme: dark)'>\
              <link rel='stylesheet' href='https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism.min.css' media='(prefers-color-scheme: light)'>\
              <style>{}{}</style>\
@@ -368,6 +379,7 @@ pub fn page(title: &str, style: &str, body: &str) -> Html<String> {
            </body>
          </html>",
         html_escape(title),
+        favicon_links,
         COMMON_STYLE,
         style,
         html_escape(site_title),
@@ -614,6 +626,16 @@ pub async fn start_server(repo_path: &str, port: u16) {
 
     let app = Router::new()
         .route("/", get(idx_commits))
+        .route(
+            "/favicon.ico",
+            get(|| async {
+                const ICON: &[u8] = include_bytes!("../favicon.ico");
+                (
+                    HeaderMap::from_iter([(header::CONTENT_TYPE, "image/x-icon".parse().unwrap())]),
+                    ICON,
+                )
+            }),
+        )
         .route("/rss", get(serve_rss))
         .route("/ws", get(ws_handler))
         .route("/ws/chat", get(ws_chat_upgrade))
@@ -634,6 +656,7 @@ pub async fn start_server(repo_path: &str, port: u16) {
         .route("/raw/{hash}", get(download_raw)) // <-- new: reliable way to view binary / huge files
         .route("/upload/{hash}", post(upload_atom))
         .route("/api/commits", get(api_commits))
+        .fallback_service(tower_http::services::ServeDir::new("src"))
         .with_state(shared_state);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
@@ -2204,13 +2227,18 @@ async fn handle_chat_socket(state: Arc<AppState>, mut socket: WebSocket) {
                 }
                 v
             } else { Vec::new() }
-        } else { Vec::new() }
+        } else {
+            Vec::new()
+        }
     };
     // On renvoie dans l'ordre chronologique
     let mut hist = hist;
     hist.reverse();
     for (s, c, t) in hist {
-        let json = format!("{{\"sender\":{0:?},\"content\":{1:?},\"created_at\":{2:?}}}", s, c, t);
+        let json = format!(
+            "{{\"sender\":{0:?},\"content\":{1:?},\"created_at\":{2:?}}}",
+            s, c, t
+        );
         let _ = socket.send(Message::Text(json.into())).await;
     }
 
@@ -2882,7 +2910,8 @@ async fn editor_list() -> impl IntoResponse {
             html_escape(&f)
         ));
     }
-    body.push_str("</ul>
+    body.push_str(
+        "</ul>
         <script>
             const searchInput = document.getElementById('search');
             const fileList = document.getElementById('file-list');
@@ -2899,7 +2928,8 @@ async fn editor_list() -> impl IntoResponse {
                     }
                 }
             });
-        </script>");
+        </script>",
+    );
 
     page("Editor", "", &body).into_response()
 }
@@ -3033,7 +3063,9 @@ async fn new_commit_form(State(state): State<Arc<AppState>>) -> impl IntoRespons
         Err(_) => Vec::new(),
     };
 
-    let mut status_html = String::from("<div style='margin-bottom: 20px; padding: 10px; background: var(--menu-bg); border: 1px solid var(--border); font-family: monospace; font-size: 0.85em;'>");
+    let mut status_html = String::from(
+        "<div style='margin-bottom: 20px; padding: 10px; background: var(--menu-bg); border: 1px solid var(--border); font-family: monospace; font-size: 0.85em;'>",
+    );
     if status.is_empty() {
         status_html.push_str("No changes to commit.");
     } else {
@@ -3184,7 +3216,13 @@ async fn todo_list(State(state): State<Arc<AppState>>) -> impl IntoResponse {
                 <td>{}</td>\
                 <td style='text-align: right;'>{}</td>\
             </tr>",
-            id, status_class, status, html_escape(&title), html_escape(&assigned), html_escape(&due_date), actions
+            id,
+            status_class,
+            status,
+            html_escape(&title),
+            html_escape(&assigned),
+            html_escape(&due_date),
+            actions
         ));
     }
 

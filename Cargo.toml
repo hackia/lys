@@ -6,6 +6,7 @@ description = "A secure local first vcs"
 
 [dependencies]
 axum = { version = "0.8.8", features = ["ws"] }
+tower-http = { version = "0.6.0", features = ["fs"] }
 blake3 = "1.8.3"
 chrono = { version = "0.4.43", features = ["serde"] }
 clap = "4.5.55"
