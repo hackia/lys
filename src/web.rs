@@ -10,6 +10,7 @@ use axum::{
     routing::{get, post},
 };
 use chrono::{DateTime, Utc};
+use pulldown_cmark::{Options, Parser, html as cmark_html};
 use serde::Deserialize;
 use sqlite::Connection;
 use std::net::SocketAddr;
@@ -163,6 +164,17 @@ pub fn page(title: &str, style: &str, body: &str) -> Html<String> {
             font-weight: bold;
         }
         .btn:hover { background: var(--hover-bg); text-decoration: none; }
+        .tabs { display: flex; border-bottom: 1px solid var(--border); margin-bottom: 20px; }
+        .tab { padding: 8px 20px; cursor: pointer; border: 1px solid transparent; border-bottom: none; margin-bottom: -1px; border-radius: 4px 4px 0 0; font-size: 0.9em; font-weight: bold; }
+        .tab.active { background: var(--bg); border-color: var(--border); color: var(--link); }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+        .markdown-body { font-family: -apple-system, BlinkMacSystemFont, \"Segoe UI\", Helvetica, Arial, sans-serif; font-size: 16px; line-height: 1.5; word-wrap: break-word; }
+        .markdown-body h1, .markdown-body h2, .markdown-body h3 { border-bottom: 1px solid var(--border); padding-bottom: 0.3em; }
+        .markdown-body code { background-color: var(--code-bg); padding: 0.2em 0.4em; border-radius: 6px; font-family: monospace; }
+        .markdown-body pre { padding: 16px; overflow: auto; line-height: 1.45; background-color: var(--code-bg); border-radius: 6px; }
+        .markdown-body blockquote { padding: 0 1em; color: var(--meta); border-left: 0.25em solid var(--border); margin: 0; }
+        .markdown-body ul, .markdown-body ol { padding-left: 2em; }
     ";
 
     Html(format!(
@@ -189,6 +201,18 @@ pub fn page(title: &str, style: &str, body: &str) -> Html<String> {
              <div id='content'>{}</div>\
              <script src='https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-core.min.js'></script>\
              <script src='https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js'></script>\
+             <script>\
+               function copyToClipboard(elementId) {{\
+                 const element = document.getElementById(elementId);\
+                 const text = element.innerText || element.textContent;\
+                 navigator.clipboard.writeText(text).then(() => {{\
+                   const btn = event.target;\
+                   const originalText = btn.innerText;\
+                   btn.innerText = 'Copied!';\
+                   setTimeout(() => btn.innerText = originalText, 2000);\
+                 }});\
+               }}\
+             </script>\
            </body>\
          </html>",
         html_escape(title),
@@ -252,7 +276,10 @@ pub async fn idx_commits(
 
     // Stats
     let total_commits: i64 = {
-        let mut stmt = conn.prepare("SELECT COUNT(*) FROM commits").unwrap();
+        let mut stmt = match conn.prepare("SELECT COUNT(*) FROM commits") {
+            Ok(s) => s,
+            Err(_) => return http_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to prepare count query"),
+        };
         if let Ok(sqlite::State::Row) = stmt.next() {
             stmt.read(0).unwrap_or(0)
         } else {
@@ -288,8 +315,12 @@ pub async fn idx_commits(
         Ok(s) => s,
         Err(_) => return http_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to query commits"),
     };
-    stmt.bind((1, per_page as i64)).unwrap();
-    stmt.bind((2, offset as i64)).unwrap();
+    if let Err(_) = stmt.bind((1, per_page as i64)) {
+        return http_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to bind limit");
+    }
+    if let Err(_) = stmt.bind((2, offset as i64)) {
+        return http_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to bind offset");
+    }
 
     while let Ok(sqlite::State::Row) = stmt.next() {
         let id: i64 = stmt.read("id").unwrap_or(0);
@@ -304,7 +335,7 @@ pub async fn idx_commits(
         rows.push_str(&format!(
             "<tr>\
                 <td colspan='4'>\
-                    <div class='age'>{} ({})</div>\
+                    <div class='age'>{} — {}</div>\
                     <div style='margin: 5px 0;'>{}</div>\
                     <div class='author' style='font-size: 0.85em;'>{} — <a href='/commit/{id}' class='hash'>{}</a></div>\
                 </td>\
@@ -393,6 +424,28 @@ async fn show_commit(
         return http_error(StatusCode::NOT_FOUND, "Commit not found");
     }
 
+    // Search tags for this commit
+    let mut tags = Vec::new();
+    {
+        let mut stmt_t = match conn.prepare("SELECT key FROM config WHERE key LIKE 'tag_%' AND value = ?") {
+            Ok(s) => s,
+            Err(_) => return http_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to prepare tags query"),
+        };
+        if stmt_t.bind((1, hash.as_str())).is_ok() {
+            while let Ok(sqlite::State::Row) = stmt_t.next() {
+                if let Ok(tag_key) = stmt_t.read::<String, _>(0) {
+                    tags.push(tag_key.replace("tag_", ""));
+                }
+            }
+        }
+    }
+    let tags_html = if tags.is_empty() { 
+        String::new() 
+    } else { 
+        format!("<tr><td><b>tags</b></td><td>{}</td></tr>", 
+            tags.iter().map(|t| format!("<span class='btn' style='margin-bottom:5px; background:var(--link); color:white; border:none;'>{}</span>", html_escape(t))).collect::<Vec<_>>().join(" ")) 
+    };
+
     page(
         &format!("Commit {}", short_hash(&hash)),
         ".commit-info td { border: none; padding: 4px 12px; }",
@@ -402,6 +455,7 @@ async fn show_commit(
                <tr><td><b>author</b></td><td>{}</td></tr>
                <tr><td><b>date</b></td><td>{} ({})</td></tr>
                <tr><td><b>commit</b></td><td class='hash'>{}</td></tr>
+               {}
                <tr><td><b>tree</b></td><td class='hash'><a href='/commit/{}/tree'>{}</a></td></tr>
                <tr>
                  <td><b>actions</b></td>
@@ -419,6 +473,7 @@ async fn show_commit(
             html_escape(&date),
             time_ago(&date),
             html_escape(&hash),
+            tags_html,
             commit_id,
             html_escape(&tree_hash),
             commit_id,
@@ -475,14 +530,18 @@ async fn show_commit_tree(
             Ok(s) => s,
             Err(_) => return http_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to query tree nodes"),
         };
-        stmt.bind((1, current_tree_hash.as_str())).unwrap();
-        stmt.bind((2, *comp)).unwrap();
+        if let Err(_) = stmt.bind((1, current_tree_hash.as_str())) {
+            return http_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to bind parent hash");
+        }
+        if let Err(_) = stmt.bind((2, *comp)) {
+            return http_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to bind component name");
+        }
 
         if let Ok(sqlite::State::Row) = stmt.next() {
-            let mode: i64 = stmt.read("mode").unwrap();
+            let mode: i64 = stmt.read("mode").unwrap_or(0);
             let is_dir = mode == 16384 || mode == 0o040000 || mode == 0o755;
             if is_dir {
-                current_tree_hash = stmt.read("hash").unwrap();
+                current_tree_hash = stmt.read("hash").unwrap_or_default();
             } else {
                 return http_error(StatusCode::BAD_REQUEST, "Path is not a directory");
             }
@@ -501,14 +560,106 @@ async fn show_commit_tree(
     }
 
     let mut tree_html = String::new();
-    if let Err(e) = render_tree_html_flat(&conn, commit_id, &path_str, &current_tree_hash, &mut tree_html) {
+    tree_html.push_str("<thead><tr><th style='width: 20px;'></th><th>Name</th><th style='text-align: right;'>Size</th></tr></thead>");
+    let mut summary_html = String::new();
+    if let Err(e) = render_tree_html_flat(&conn, commit_id, &path_str, &current_tree_hash, &mut tree_html, &mut summary_html) {
         return http_error(StatusCode::INTERNAL_SERVER_ERROR, &format!("Failed to render tree: {}", e));
     }
+
+    // Special files detection and rendering
+    let mut special_content = std::collections::BTreeMap::new();
+    let special_files = [
+        ("README", vec!["README.md", "README"]),
+        ("LICENSE", vec!["LICENSE", "LICENSE.md"]),
+        ("CODE_OF_CONDUCT", vec!["CODE_OF_CONDUCT.md"]),
+        ("CONTRIBUTING", vec!["CONTRIBUTING.md"]),
+    ];
+
+    for (label, filenames) in special_files {
+        for sf in filenames {
+            let query = "SELECT hash FROM tree_nodes WHERE parent_tree_hash = ? AND name = ?";
+            let mut stmt = match conn.prepare(query) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            if stmt.bind((1, current_tree_hash.as_str())).is_err() { continue; }
+            if stmt.bind((2, sf)).is_err() { continue; }
+            if let Ok(sqlite::State::Row) = stmt.next() {
+                if let Ok(hash) = stmt.read::<String, _>(0) {
+                    let bytes = get_raw_blob(&conn, &hash);
+                    if let Ok(text) = String::from_utf8(bytes) {
+                        let content_html = if sf.ends_with(".md") {
+                            let mut options = Options::empty();
+                            options.insert(Options::ENABLE_TABLES);
+                            options.insert(Options::ENABLE_FOOTNOTES);
+                            options.insert(Options::ENABLE_STRIKETHROUGH);
+                            options.insert(Options::ENABLE_TASKLISTS);
+                            let parser = Parser::new_ext(&text, options);
+                            let mut html_output = String::new();
+                            cmark_html::push_html(&mut html_output, parser);
+                            format!("<div class='markdown-body'>{}</div>", html_output)
+                        } else {
+                            format!("<pre style='white-space: pre-wrap; font-family: sans-serif;'>{}</pre>", html_escape(&text))
+                        };
+                        special_content.insert(label.to_string(), content_html);
+                        break; // Found one for this category
+                    }
+                }
+            }
+        }
+    }
+
+    let mut tabs_headers = String::new();
+    let mut tabs_bodies = String::new();
+    let active_tab = "FILES";
+
+    // Files tab
+    tabs_headers.push_str(&format!("<div class='tab {}' onclick='openTab(event, \"files-tab\")'>Files</div>", if active_tab == "FILES" { "active" } else { "" }));
+    tabs_bodies.push_str(&format!("<div id='files-tab' class='tab-content {}'>{}<table class='tree-table'>{}</table></div>", if active_tab == "FILES" { "active" } else { "" }, summary_html, tree_html));
+
+    // README tab
+    if let Some(content) = special_content.get("README") {
+        tabs_headers.push_str(&format!("<div class='tab {}' onclick='openTab(event, \"readme-tab\")'>README</div>", if active_tab == "README" { "active" } else { "" }));
+        tabs_bodies.push_str(&format!("<div id='readme-tab' class='tab-content {}'>{}</div>", if active_tab == "README" { "active" } else { "" }, content));
+    }
+
+    // Other special tabs
+    for (label, content) in &special_content {
+        if label == "README" { continue; }
+        let tab_id = format!("{}-tab", label.to_lowercase().replace("_", "-"));
+        tabs_headers.push_str(&format!("<div class='tab' onclick='openTab(event, \"{}\")'>{}</div>", tab_id, label.replace("_", " ")));
+        tabs_bodies.push_str(&format!("<div id='{}' class='tab-content'>{}</div>", tab_id, content));
+    }
+
+    let tabs_html = format!(
+        "<div class='tabs'>{}</div>{}",
+        tabs_headers, tabs_bodies
+    );
+
+    let script = "
+        <script>
+        function openTab(evt, tabName) {
+            var i, tabcontent, tablinks;
+            tabcontent = document.getElementsByClassName('tab-content');
+            for (i = 0; i < tabcontent.length; i++) {
+                tabcontent[i].style.display = 'none';
+                tabcontent[i].classList.remove('active');
+            }
+            tablinks = document.getElementsByClassName('tab');
+            for (i = 0; i < tablinks.length; i++) {
+                tablinks[i].classList.remove('active');
+            }
+            document.getElementById(tabName).style.display = 'block';
+            document.getElementById(tabName).classList.add('active');
+            evt.currentTarget.classList.add('active');
+        }
+        </script>
+    ";
 
     page(
         &format!("Tree - {}", short_hash(&commit_hash)),
         ".tree-table { width: 100%; border-collapse: collapse; font-family: monospace; border: none; }
-         .tree-table td { padding: 8px 12px; border: none; border-bottom: 1px solid var(--border); }
+         .tree-table td, .tree-table th { padding: 8px 12px; border: none; border-bottom: 1px solid var(--border); }
          .tree-table tr:last-child td { border-bottom: none; }
          .tree-table tr:hover { background: var(--hover-bg); }
          .icon { margin-right: 8px; }
@@ -517,9 +668,11 @@ async fn show_commit_tree(
         &format!(
             "<h3>Tree View</h3>\
              <div class='breadcrumbs'>{}</div>\
-             <table class='tree-table'>{}</table>",
+             {}\
+             {}",
             breadcrumbs,
-            tree_html
+            tabs_html,
+            script
         ),
     )
     .into_response()
@@ -531,16 +684,55 @@ fn render_tree_html_flat(
     current_path: &str,
     tree_hash: &str,
     out: &mut String,
+    summary_out: &mut String,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let query = "SELECT name, hash, mode FROM tree_nodes WHERE parent_tree_hash = ? ORDER BY mode DESC, name ASC";
+    let query = "SELECT name, hash, mode, size FROM tree_nodes WHERE parent_tree_hash = ? ORDER BY name ASC";
     let mut stmt = conn.prepare(query)?;
     stmt.bind((1, tree_hash))?;
 
+    let mut entries = Vec::new();
     while let Ok(sqlite::State::Row) = stmt.next() {
-        let name: String = stmt.read("name")?;
-        let hash: String = stmt.read("hash")?;
-        let mode: i64 = stmt.read("mode")?;
-        
+        entries.push((
+            stmt.read::<String, _>("name")?,
+            stmt.read::<String, _>("hash")?,
+            stmt.read::<i64, _>("mode")?,
+            stmt.read::<i64, _>("size")?,
+        ));
+    }
+
+    // Trier : Dossiers d'abord, puis fichiers, par nom
+    entries.sort_by(|a, b| {
+        let a_is_dir = a.2 == 16384 || a.2 == 0o040000 || a.2 == 0o755;
+        let b_is_dir = b.2 == 16384 || b.2 == 0o040000 || b.2 == 0o755;
+        if a_is_dir != b_is_dir {
+            b_is_dir.cmp(&a_is_dir)
+        } else {
+            a.0.cmp(&b.0)
+        }
+    });
+
+    let mut dir_count = 0;
+    let mut file_count = 0;
+    let mut total_size = 0;
+
+    for (_name, _hash, mode, size) in &entries {
+        if *mode == 16384 || *mode == 0o040000 || *mode == 0o755 {
+            dir_count += 1;
+        } else {
+            file_count += 1;
+            total_size += size;
+        }
+    }
+
+    let summary_html = format!(
+        "<div style='margin-bottom: 15px; font-size: 0.85em; color: var(--meta);'>\
+            Summary: {} directories, {} files ({} bytes)\
+         </div>",
+        dir_count, file_count, total_size
+    );
+    summary_out.push_str(&summary_html);
+
+    for (name, hash, mode, size) in entries {
         let is_dir = mode == 16384 || mode == 0o040000 || mode == 0o755;
         let icon = if is_dir { "📁" } else { "📄" };
         
@@ -555,13 +747,21 @@ fn render_tree_html_flat(
             format!("<a href='/file/{}' class='file'>{}</a>", html_escape(&hash), html_escape(&name))
         };
 
+        let size_str = if is_dir {
+            "-".to_string()
+        } else {
+            format!("{} B", size)
+        };
+
         out.push_str(&format!(
             "<tr>\
                 <td style='width: 20px;'><span class='icon'>{}</span></td>\
                 <td>{}</td>\
+                <td style='text-align: right; color: var(--meta); font-size: 0.8em;'>{}</td>\
              </tr>",
             icon,
-            link
+            link,
+            size_str
         ));
     }
     Ok(())
@@ -589,16 +789,20 @@ async fn show_commit_diff(
             Ok(s) => s,
             Err(_) => return http_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to query commit"),
         };
-        stmt.bind((1, commit_id)).unwrap();
+        if let Err(_) = stmt.bind((1, commit_id)) {
+            return http_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to bind commit ID");
+        }
         if let Ok(sqlite::State::Row) = stmt.next() {
-            commit_hash = stmt.read("hash").unwrap();
-            tree_hash = stmt.read("tree_hash").unwrap();
-            let current_db_id: i64 = stmt.read("id").unwrap();
+            commit_hash = stmt.read("hash").unwrap_or_default();
+            tree_hash = stmt.read("tree_hash").unwrap_or_default();
+            let current_db_id: i64 = stmt.read("id").unwrap_or(0);
 
-            let mut stmt_p = conn.prepare("SELECT tree_hash FROM commits WHERE id < ? ORDER BY id DESC LIMIT 1").unwrap();
-            stmt_p.bind((1, current_db_id)).unwrap();
-            if let Ok(sqlite::State::Row) = stmt_p.next() {
-                parent_tree_hash = Some(stmt_p.read(0).unwrap());
+            if let Ok(mut stmt_p) = conn.prepare("SELECT tree_hash FROM commits WHERE id < ? ORDER BY id DESC LIMIT 1") {
+                if stmt_p.bind((1, current_db_id)).is_ok() {
+                    if let Ok(sqlite::State::Row) = stmt_p.next() {
+                        parent_tree_hash = stmt_p.read(0).ok();
+                    }
+                }
             }
         }
     }
@@ -621,28 +825,46 @@ async fn show_commit_diff(
     paths.sort();
     paths.dedup();
 
-    for path in paths {
+    for (i, path) in paths.into_iter().enumerate() {
         let old_info = parent_state.get(path);
         let new_info = current_state.get(path);
+        let diff_id = format!("diff-content-{}", i);
 
         match (old_info, new_info) {
             (Some((old_hash, _)), Some((new_hash, _))) if old_hash != new_hash => {
                 // Modified
                 let old_bytes = get_raw_blob(&conn, old_hash);
                 let new_bytes = get_raw_blob(&conn, new_hash);
-                diff_html.push_str(&format!("<div style='margin-top: 20px;'><strong>Modified: {}</strong></div>", path.display()));
-                diff_html.push_str(&render_diff(&old_bytes, &new_bytes, &mode));
+                diff_html.push_str(&format!(
+                    "<div class='diff-file-header'>\
+                       <button class='btn copy-btn' onclick='copyToClipboard(\"{}\")'>Copy</button>\
+                       <strong>Modified: {}</strong>\
+                     </div>", 
+                    diff_id, path.display()
+                ));
+                diff_html.push_str(&format!("<div id='{}'>{}</div>", diff_id, render_diff(&old_bytes, &new_bytes, &mode)));
             }
             (None, Some((new_hash, _))) => {
                 // Added
                 let new_bytes = get_raw_blob(&conn, new_hash);
-                diff_html.push_str(&format!("<div style='margin-top: 20px;'><strong>Added: {}</strong></div>", path.display()));
-                diff_html.push_str(&render_diff(&[], &new_bytes, &mode));
+                diff_html.push_str(&format!(
+                    "<div class='diff-file-header'>\
+                       <button class='btn copy-btn' onclick='copyToClipboard(\"{}\")'>Copy</button>\
+                       <strong>Added: {}</strong>\
+                     </div>", 
+                    diff_id, path.display()
+                ));
+                diff_html.push_str(&format!("<div id='{}'>{}</div>", diff_id, render_diff(&[], &new_bytes, &mode)));
             }
             (Some((old_hash, _)), None) => {
                 // Deleted
                 let old_bytes = get_raw_blob(&conn, old_hash);
-                diff_html.push_str(&format!("<div style='margin-top: 20px;'><strong>Deleted: {}</strong></div>", path.display()));
+                diff_html.push_str(&format!(
+                    "<div class='diff-file-header'>\
+                       <strong>Deleted: {}</strong>\
+                     </div>", 
+                    path.display()
+                ));
                 diff_html.push_str(&render_diff(&old_bytes, &[], &mode));
             }
             _ => {}
@@ -661,7 +883,10 @@ async fn show_commit_diff(
          .diff-ss-right { width: 50%; }
          .diff-line-num { width: 40px; color: var(--meta); text-align: right; user-select: none; border-right: 1px solid var(--border); }
          .diff-ghost { color: var(--meta); background: var(--hover-bg); }
-         .btn-active { background: var(--link) !important; color: white !important; border-color: var(--link) !important; }",
+         .btn-active { background: var(--link) !important; color: white !important; border-color: var(--link) !important; }
+         .copy-btn { float: right; padding: 2px 8px; font-size: 0.8em; margin-top: -2px; cursor: pointer; }
+         .diff-file-header { background: var(--header-bg); padding: 8px 12px; border: 1px solid var(--border); border-bottom: none; border-radius: 4px 4px 0 0; margin-top: 20px; font-family: monospace; }
+         .diff-container { margin-top: 0 !important; border-top-left-radius: 0 !important; border-top-right-radius: 0 !important; }",
         &format!(
             "<div style='margin-bottom: 20px;'>\
                <a href='/commit/{}'>&larr; Back to Commit</a>\
@@ -686,14 +911,16 @@ async fn show_commit_diff(
 }
 
 fn get_raw_blob(conn: &Connection, hash: &str) -> Vec<u8> {
-    let mut stmt = conn.prepare("SELECT content FROM store.blobs WHERE hash = ?").unwrap();
-    stmt.bind((1, hash)).unwrap();
-    if let Ok(sqlite::State::Row) = stmt.next() {
-        let content: Vec<u8> = stmt.read(0).unwrap();
-        crate::db::decompress(&content)
-    } else {
-        Vec::new()
+    if let Ok(mut stmt) = conn.prepare("SELECT content FROM store.blobs WHERE hash = ?") {
+        if stmt.bind((1, hash)).is_ok() {
+            if let Ok(sqlite::State::Row) = stmt.next() {
+                if let Ok(content) = stmt.read::<Vec<u8>, _>(0) {
+                    return crate::db::decompress(&content);
+                }
+            }
+        }
     }
+    Vec::new()
 }
 
 fn render_diff(old: &[u8], new: &[u8], mode: &str) -> String {
@@ -706,7 +933,7 @@ fn render_diff(old: &[u8], new: &[u8], mode: &str) -> String {
     }
 
     if mode == "raw" {
-        return format!("<div class='diff-container'><pre><code>{}</code></pre></div>", html_escape(&new_s));
+        return format!("<div class='diff-container'><pre style='margin:0;'><code>{}</code></pre></div>", html_escape(&new_s));
     }
 
     let diff = similar::TextDiff::from_lines(&old_s, &new_s);
@@ -839,6 +1066,17 @@ async fn show_file(
         };
         let original_size: i64 = stmt.read("size").unwrap_or(0);
 
+        // On essaie de trouver le nom du fichier pour la coloration syntaxique
+        let mut filename = String::new();
+        let name_query = "SELECT name FROM tree_nodes WHERE hash = ? LIMIT 1";
+        if let Ok(mut name_stmt) = conn.prepare(name_query) {
+            if name_stmt.bind((1, hash.as_str())).is_ok() {
+                if let Ok(sqlite::State::Row) = name_stmt.next() {
+                    filename = name_stmt.read(0).unwrap_or_default();
+                }
+            }
+        }
+
         // Decompress (falls back to raw if it's not zlib-compressed)
         let bytes = decompress(&content);
 
@@ -847,7 +1085,8 @@ async fn show_file(
         let mut body = String::new();
         body.push_str("<div style='margin-bottom: 20px;'><a href='javascript:history.back()'>&larr; Back</a></div>");
         body.push_str(&format!(
-            "<p class='age' style='margin-bottom: 15px;'>hash: <span class='hash'>{}</span> — size: {} bytes — <a href='/raw/{}'>Download raw</a></p>",
+            "<p class='age' style='margin-bottom: 15px;'>file: <strong>{}</strong> — hash: <span class='hash'>{}</span> — size: {} bytes — <a href='/raw/{}'>Download raw</a></p>",
+            html_escape(&filename),
             html_escape(&hash),
             original_size.max(0),
             html_escape(&hash),
@@ -860,7 +1099,56 @@ async fn show_file(
                     text.truncate(MAX_PREVIEW_BYTES);
                     text.push_str("\n\n[... truncated preview ...]");
                 }
-                body.push_str(&format!("<pre class='line-numbers'><code>{}</code></pre>", html_escape(&text)));
+                
+                // Déterminer la classe de langage pour Prism de manière plus générique
+                let extension = Path::new(&filename)
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .unwrap_or("");
+
+                let lang_class = match extension {
+                    "rs" => "language-rust",
+                    "py" => "language-python",
+                    "js" => "language-javascript",
+                    "mjs" => "language-javascript",
+                    "ts" => "language-typescript",
+                    "c" => "language-c",
+                    "cpp" | "cc" | "cxx" | "h" | "hpp" => "language-cpp",
+                    "md" => "language-markdown",
+                    "toml" => "language-toml",
+                    "html" | "htm" => "language-html",
+                    "css" => "language-css",
+                    "sh" | "bash" | "run" | "zsh" => "language-bash",
+                    "pl" | "pm" => "language-perl",
+                    "rb" => "language-ruby",
+                    "go" => "language-go",
+                    "java" => "language-java",
+                    "kt" | "kts" => "language-kotlin",
+                    "php" => "language-php",
+                    "sql" => "language-sql",
+                    "yaml" | "yml" => "language-yaml",
+                    "json" => "language-json",
+                    "xml" => "language-xml",
+                    "diff" => "language-diff",
+                    "dockerfile" | "Dockerfile" => "language-docker",
+                    "am" | "make" | "mak" => "language-makefile",
+                    "lua" => "language-lua",
+                    "swift" => "language-swift",
+                    "dart" => "language-dart",
+                    "elm" => "language-elm",
+                    "ex" | "exs" => "language-elixir",
+                    "erl" | "hrl" => "language-erlang",
+                    "fs" | "fsx" => "language-fsharp",
+                    "groovy" => "language-groovy",
+                    "hs" => "language-haskell",
+                    "nim" => "language-nim",
+                    "scala" | "sc" => "language-scala",
+                    "vim" => "language-vim",
+                    "zig" => "language-zig",
+                    _ => "language-none",
+                };
+
+                body.push_str(&format!("<pre class='line-numbers'><code class='{}'>{}</code></pre>", lang_class, html_escape(&text)));
                 page("File View", "", &body).into_response()
             }
             Err(_) => {
@@ -944,37 +1232,42 @@ async fn serve_rss(
     };
 
     let mut items = String::new();
-    while let Ok(sqlite::State::Row) = stmt.next() {
-        let id: i64 = stmt.read("id").unwrap_or(0);
-        let hash: String = stmt.read("hash").unwrap_or_default();
-        let msg: String = stmt.read("message").unwrap_or_else(|_| String::from("(no message)"));
-        let date_str: String = stmt.read("timestamp").unwrap_or_else(|_| String::from(""));
-        let author: String = stmt.read("author").unwrap_or_else(|_| String::from("Unknown"));
+    loop {
+        match stmt.next() {
+            Ok(sqlite::State::Row) => {
+                let id: i64 = stmt.read("id").unwrap_or(0);
+                let hash: String = stmt.read("hash").unwrap_or_default();
+                let msg: String = stmt.read("message").unwrap_or_else(|_| String::from("(no message)"));
+                let date_str: String = stmt.read("timestamp").unwrap_or_else(|_| String::from(""));
+                let author: String = stmt.read("author").unwrap_or_else(|_| String::from("Unknown"));
 
-        // RSS needs RFC822/2822 dates. Let's try to convert our RFC3339.
-        let pub_date = match DateTime::parse_from_rfc3339(&date_str) {
-            Ok(dt) => dt.to_rfc2822(),
-            Err(_) => date_str.clone(),
-        };
+                // RSS needs RFC822/2822 dates. Let's try to convert our RFC3339.
+                let pub_date = match DateTime::parse_from_rfc3339(&date_str) {
+                    Ok(dt) => dt.to_rfc2822(),
+                    Err(_) => date_str.clone(),
+                };
 
-        let title = msg.lines().next().unwrap_or("Commit");
+                let title = msg.lines().next().unwrap_or("Commit");
 
-        items.push_str(&format!(
-            "<item>\n\
-                <title>{}</title>\n\
-                <link>http://localhost:3000/commit/{}</link>\n\
-                <description>{}</description>\n\
-                <author>{}</author>\n\
-                <pubDate>{}</pubDate>\n\
-                <guid isPermaLink='false'>{}</guid>\n\
-             </item>\n",
-            html_escape(title),
-            id,
-            html_escape(&msg),
-            html_escape(&author),
-            pub_date,
-            hash
-        ));
+                items.push_str(&format!(
+                    "<item>\n\
+                        <title>{}</title>\n\
+                        <link>http://localhost:3000/commit/{}</link>\n\
+                        <description>{}</description>\n\
+                        <author>{}</author>\n\
+                        <pubDate>{}</pubDate>\n\
+                        <guid isPermaLink='false'>{}</guid>\n\
+                     </item>\n",
+                    html_escape(title),
+                    id,
+                    html_escape(&msg),
+                    html_escape(&author),
+                    pub_date,
+                    hash
+                ));
+            }
+            _ => break,
+        }
     }
 
     let rss = format!(
@@ -1035,13 +1328,13 @@ async fn upload_atom(
                 Err(_) => return StatusCode::INTERNAL_SERVER_ERROR,
             };
 
-            if stmt.bind((1, hash.as_str())).is_err() {
+            if let Err(_) = stmt.bind((1, hash.as_str())) {
                 return StatusCode::INTERNAL_SERVER_ERROR;
             }
-            if stmt.bind((2, &body[..])).is_err() {
+            if let Err(_) = stmt.bind((2, &body[..])) {
                 return StatusCode::INTERNAL_SERVER_ERROR;
             }
-            if stmt.bind((3, body.len() as i64)).is_err() {
+            if let Err(_) = stmt.bind((3, body.len() as i64)) {
                 return StatusCode::INTERNAL_SERVER_ERROR;
             }
 
