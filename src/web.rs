@@ -52,6 +52,19 @@ pub struct DiffParams {
 // -----------------------------
 // Small, reusable helpers
 // -----------------------------
+#[derive(Deserialize)]
+struct CommitForm {
+    summary: String,
+    why: String,
+    how: String,
+    outcome: String,
+}
+
+#[derive(Deserialize)]
+struct EditorForm {
+    content: String,
+}
+
 fn short_hash(s: &str) -> &str {
     s.get(..7).unwrap_or(s)
 }
@@ -250,7 +263,7 @@ pub fn page(title: &str, style: &str, body: &str) -> Html<String> {
     let site_documentation = WEB_DOCUMENTATION.get().map(String::as_str).unwrap_or("");
 
     let mut menu_links =
-        String::from("<a href='/'>Summary</a><a href='/'>Log</a><a href='/rss'>RSS</a>");
+        String::from("<a href='/'>Summary</a><a href='/'>Log</a><a href='/rss'>RSS</a><a href='/editor'>Editor</a><a href='/commit/new'>Commit</a>");
     if !site_homepage.is_empty() {
         menu_links.push_str(&format!(
             "<a href='{}' target='_blank'>Homepage</a>",
@@ -588,10 +601,14 @@ pub async fn start_server(repo_path: &str, port: u16) {
         .route("/", get(idx_commits))
         .route("/rss", get(serve_rss))
         .route("/ws", get(ws_handler))
+        .route("/commit/new", get(new_commit_form))
+        .route("/commit/create", post(create_commit))
         .route("/commit/{id}", get(show_commit))
         .route("/commit/{id}/diff", get(show_commit_diff))
         .route("/commit/{id}/tree", get(show_commit_tree))
         .route("/commit/{id}/tree/{*path}", get(show_commit_tree))
+        .route("/editor", get(editor_list))
+        .route("/editor/{*path}", get(editor_edit).post(editor_save))
         .route("/file/{hash}", get(show_file))
         .route("/raw/{hash}", get(download_raw)) // <-- new: reliable way to view binary / huge files
         .route("/upload/{hash}", post(upload_atom))
@@ -2298,30 +2315,34 @@ fn render_diff(old: &[u8], new: &[u8], mode: &str) -> String {
                                     <td class='diff-line-num diff-deleted'>{}</td><td class='diff-ss-left diff-deleted'>{}</td>\
                                     <td class='diff-line-num diff-added'>{}</td><td class='diff-ss-right diff-added'>{}</td>\
                                  </tr>",
-                                old_index + i + 1, html_escape(&old_line.to_string()),
-                                new_index + i + 1, html_escape(&new_line.to_string())
+                                old_index + i + 1,
+                                html_escape(&old_line.to_string()),
+                                new_index + i + 1,
+                                html_escape(&new_line.to_string())
                             ));
                         }
                         if old_len > common {
                             for i in common..old_len {
                                 let old_line = diff.old_slices()[old_index + i];
                                 out.push_str(&format!(
-                                    "<tr class='diff-deleted'>\
-                                        <td class='diff-line-num'>{}</td><td class='diff-ss-left'>{}</td>\
+                                    "<tr>\
+                                        <td class='diff-line-num diff-deleted'>{}</td><td class='diff-ss-left diff-deleted'>{}</td>\
                                         <td class='diff-line-num'></td><td class='diff-ss-right diff-ghost'></td>\
                                      </tr>",
-                                    old_index + i + 1, html_escape(&old_line.to_string())
+                                    old_index + i + 1,
+                                    html_escape(&old_line.to_string())
                                 ));
                             }
                         } else if new_len > common {
                             for i in common..new_len {
                                 let new_line = diff.new_slices()[new_index + i];
                                 out.push_str(&format!(
-                                    "<tr class='diff-added'>\
+                                    "<tr>\
                                         <td class='diff-line-num'></td><td class='diff-ss-left diff-ghost'></td>\
-                                        <td class='diff-line-num'>{}</td><td class='diff-ss-right'>{}</td>\
+                                        <td class='diff-line-num diff-added'>{}</td><td class='diff-ss-right diff-added'>{}</td>\
                                      </tr>",
-                                    new_index + i + 1, html_escape(&new_line.to_string())
+                                    new_index + i + 1,
+                                    html_escape(&new_line.to_string())
                                 ));
                             }
                         }
@@ -2614,6 +2635,226 @@ async fn serve_rss(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     );
 
     (StatusCode::OK, headers, rss).into_response()
+}
+
+// -----------------------------
+// EDITOR & COMMIT HANDLERS
+// -----------------------------
+
+async fn editor_list() -> impl IntoResponse {
+    let mut files = Vec::new();
+    let walk = ignore::WalkBuilder::new(".")
+        .hidden(false)
+        .add_custom_ignore_filename("syl")
+        .standard_filters(true)
+        .build();
+
+    for result in walk {
+        if let Ok(entry) = result {
+            if entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+                let path = entry.path();
+                if path.components().any(|c| c.as_os_str() == ".lys") {
+                    continue;
+                }
+                let rel = path.strip_prefix(".").unwrap_or(path);
+                files.push(rel.to_string_lossy().to_string());
+            }
+        }
+    }
+    files.sort();
+
+    let mut body = String::from("<h3>Editor - Select a file</h3><ul>");
+    for f in files {
+        body.push_str(&format!(
+            "<li><a href='/editor/{}'>{}</a></li>",
+            html_escape(&f),
+            html_escape(&f)
+        ));
+    }
+    body.push_str("</ul>");
+
+    page("Editor", "", &body).into_response()
+}
+
+async fn editor_edit(UrlPath(path): UrlPath<String>) -> impl IntoResponse {
+    let full_path = Path::new(".").join(&path);
+    if !full_path.exists() {
+        return http_error(StatusCode::NOT_FOUND, "File not found");
+    }
+
+    match std::fs::read_to_string(&full_path) {
+        Ok(content) => {
+            let body = format!(
+                "<h3>Editing: {}</h3>\
+                 <div id='editor' style='width: 100%; height: 600px; border: 1px solid var(--border); border-radius: 4px;'>{}</div>\
+                 <form id='editor-form' action='/editor/{}' method='post'>\
+                   <input type='hidden' name='content' id='content-hidden'>\
+                   <div style='margin-top: 20px;'>\
+                     <button type='submit' class='btn btn-active'>Save Changes</button>\
+                     <a href='/editor' class='btn'>Cancel</a>\
+                   </div>\
+                 </form>\
+                 <script src='https://cdnjs.cloudflare.com/ajax/libs/ace/1.32.7/ace.js'></script>\
+                 <script src='https://cdnjs.cloudflare.com/ajax/libs/ace/1.32.7/ext-language_tools.min.js'></script>\
+                 <script src='https://cdnjs.cloudflare.com/ajax/libs/ace/1.32.7/ext-modelist.min.js'></script>\
+                 <script>\
+                   var editor = ace.edit('editor');\
+                   editor.setTheme('ace/theme/tomorrow_night');\
+                   if (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) {{\
+                     editor.setTheme('ace/theme/chrome');\
+                   }}\
+                   var modelist = ace.require('ace/ext/modelist');\
+                   var mode = modelist.getModeForPath('{}').mode;\
+                   editor.session.setMode(mode);\
+                   editor.setOptions({{\
+                     enableBasicAutocompletion: true,\
+                     enableLiveAutocompletion: true,\
+                     enableSnippets: true,\
+                     fontSize: '14px',\
+                     showPrintMargin: false,\
+                     useSoftTabs: true,\
+                     tabSize: 4\
+                   }});\
+                   document.getElementById('editor-form').onsubmit = function() {{\
+                     document.getElementById('content-hidden').value = editor.getValue();\
+                   }};\
+                 </script>",
+                html_escape(&path),
+                html_escape(&content),
+                html_escape(&path),
+                html_escape(&path)
+            );
+            page(&format!("Editing {}", path), "", &body).into_response()
+        }
+        Err(_) => http_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to read file"),
+    }
+}
+
+async fn editor_save(
+    UrlPath(path): UrlPath<String>,
+    axum::extract::Form(form): axum::extract::Form<EditorForm>,
+) -> impl IntoResponse {
+    let full_path = Path::new(".").join(&path);
+    if let Err(e) = std::fs::write(&full_path, form.content) {
+        return http_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &format!("Failed to save file: {}", e),
+        );
+    }
+
+    Response::builder()
+        .status(StatusCode::SEE_OTHER)
+        .header("Location", format!("/editor/{}", path))
+        .body(axum::body::Body::empty())
+        .unwrap()
+}
+
+async fn new_commit_form(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let conn = match state.conn.lock() {
+        Ok(g) => g,
+        Err(_) => return http_error(StatusCode::INTERNAL_SERVER_ERROR, "DB lock poisoned"),
+    };
+
+    // Obtenir le status pour montrer ce qui va être commité
+    let branch = crate::db::get_current_branch(&conn).unwrap_or_else(|_| "main".to_string());
+    let status = match crate::vcs::status(&conn, ".", &branch) {
+        Ok(s) => s,
+        Err(_) => Vec::new(),
+    };
+
+    let mut status_html = String::from("<div style='margin-bottom: 20px; padding: 10px; background: var(--menu-bg); border: 1px solid var(--border); font-family: monospace; font-size: 0.85em;'>");
+    if status.is_empty() {
+        status_html.push_str("No changes to commit.");
+    } else {
+        for s in &status {
+            let (prefix, color, path) = match s {
+                crate::vcs::FileStatus::New(p) => ("+", "#28a745", p),
+                crate::vcs::FileStatus::Modified(p, _) => ("~", "#d4a017", p),
+                crate::vcs::FileStatus::Deleted(p, _) => ("-", "#dc3545", p),
+                _ => continue,
+            };
+            status_html.push_str(&format!(
+                "<div style='color: {}'>{} {}</div>",
+                color,
+                prefix,
+                path.display()
+            ));
+        }
+    }
+    status_html.push_str("</div>");
+
+    let body = format!(
+        "<h3>New Commit</h3>\
+         {}\
+         <form action='/commit/create' method='post' style='display: flex; flex-direction: column; gap: 15px;'>\
+           <div>\
+             <label style='display: block; font-weight: bold; margin-bottom: 5px;'>Summary:</label>\
+             <input type='text' name='summary' required style='width: 100%; padding: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--fg);'>\
+           </div>\
+           <div>\
+             <label style='display: block; font-weight: bold; margin-bottom: 5px;'>Why (Reason for change):</label>\
+             <textarea name='why' required style='width: 100%; height: 80px; padding: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--fg);'></textarea>\
+           </div>\
+           <div>\
+             <label style='display: block; font-weight: bold; margin-bottom: 5px;'>How (Technical details):</label>\
+             <textarea name='how' required style='width: 100%; height: 80px; padding: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--fg);'></textarea>\
+           </div>\
+           <div>\
+             <label style='display: block; font-weight: bold; margin-bottom: 5px;'>Outcome (Result of changes):</label>\
+             <textarea name='outcome' required style='width: 100%; height: 80px; padding: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--fg);'></textarea>\
+           </div>\
+           <div style='margin-top: 10px;'>\
+             <button type='submit' class='btn btn-active' {}>Commit Changes</button>\
+             <a href='/' class='btn'>Cancel</a>\
+           </div>\
+         </form>",
+        status_html,
+        if status.is_empty() { "disabled" } else { "" }
+    );
+
+    page("New Commit", "", &body).into_response()
+}
+
+async fn create_commit(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Form(form): axum::extract::Form<CommitForm>,
+) -> impl IntoResponse {
+    let conn = match state.conn.lock() {
+        Ok(g) => g,
+        Err(_) => return http_error(StatusCode::INTERNAL_SERVER_ERROR, "DB lock poisoned"),
+    };
+
+    // On vérifie qu'il y a bien des changements
+    let branch = crate::db::get_current_branch(&conn).unwrap_or_else(|_| "main".to_string());
+    let status = match crate::vcs::status(&conn, ".", &branch) {
+        Ok(s) => s,
+        Err(_) => Vec::new(),
+    };
+
+    if status.is_empty() {
+        return http_error(StatusCode::BAD_REQUEST, "No changes to commit");
+    }
+
+    // Construction du message formaté (on émule Commit::Display)
+    let message = format!(
+        "{}\n\n{}\n\n{}\n\n{}",
+        form.summary, form.why, form.how, form.outcome
+    );
+
+    let author = crate::commit::author();
+
+    if let Err(e) = crate::vcs::commit(&conn, &message, &author) {
+        return http_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &format!("Commit failed: {}", e),
+        );
+    }
+
+    Response::builder()
+        .status(StatusCode::SEE_OTHER)
+        .header("Location", "/")
+        .body(axum::body::Body::empty())
+        .unwrap()
 }
 
 async fn upload_atom(
