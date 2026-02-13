@@ -288,12 +288,50 @@ fn cli() -> Command {
                 .subcommand(Command::new("list").about("List all tags")),
         )
         .subcommand(
-            Command::new("web").about("Start the web interface").arg(
-                Arg::new("port")
-                    .short('p')
-                    .default_value("3000")
-                    .action(ArgAction::Set),
-            ),
+            Command::new("web")
+                .about("Start the web interface")
+                .arg(
+                    Arg::new("port")
+                        .short('p')
+                        .default_value("3000")
+                        .action(ArgAction::Set),
+                )
+                .arg(
+                    Arg::new("spotify")
+                        .short('s')
+                        .long("spotify")
+                        .help("Music URL (Spotify or YouTube Music) to display on the home page")
+                        .action(ArgAction::Set),
+                )
+                .arg(
+                    Arg::new("video")
+                        .short('v')
+                        .long("video")
+                        .help("YouTube Video URL to display as banner on the home page")
+                        .action(ArgAction::Set),
+                )
+                .arg(
+                    Arg::new("banner")
+                        .short('b')
+                        .long("banner")
+                        .help("Image URL to display as banner on the home page")
+                        .action(ArgAction::Set),
+                ),
+        )
+        .subcommand(
+            Command::new("spotify")
+                .about("Set the Music album/track to display on the home page")
+                .arg(Arg::new("url").required(true).help("Music URL (Spotify or YouTube Music)")),
+        )
+        .subcommand(
+            Command::new("video")
+                .about("Set the YouTube video banner to display on the home page")
+                .arg(Arg::new("url").required(true).help("YouTube Video URL")),
+        )
+        .subcommand(
+            Command::new("banner")
+                .about("Set the image banner to display on the home page")
+                .arg(Arg::new("url").required(true).help("Image URL")),
         )
 }
 
@@ -965,6 +1003,39 @@ pub fn execute_matches(app: clap::ArgMatches) -> Result<(), Error> {
             if !Path::new(".lys").exists() {
                 return Err(Error::other("Not a lys repository."));
             }
+
+            let conn = connect_lys(&current_dir).map_err(|e| Error::other(e.to_string()))?;
+
+            if let Some(spotify_url) = args.get_one::<String>("spotify") {
+                let mut stmt = conn
+                    .prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('spotify_url', ?)")
+                    .map_err(|e| Error::other(e.to_string()))?;
+                stmt.bind((1, spotify_url.as_str()))
+                    .map_err(|e| Error::other(e.to_string()))?;
+                stmt.next().map_err(|e| Error::other(e.to_string()))?;
+                ok("Music URL updated");
+            }
+
+            if let Some(video_url) = args.get_one::<String>("video") {
+                let mut stmt = conn
+                    .prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('video_banner_url', ?)")
+                    .map_err(|e| Error::other(e.to_string()))?;
+                stmt.bind((1, video_url.as_str()))
+                    .map_err(|e| Error::other(e.to_string()))?;
+                stmt.next().map_err(|e| Error::other(e.to_string()))?;
+                ok("Video banner URL updated");
+            }
+
+            if let Some(banner_url) = args.get_one::<String>("banner") {
+                let mut stmt = conn
+                    .prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('banner_url', ?)")
+                    .map_err(|e| Error::other(e.to_string()))?;
+                stmt.bind((1, banner_url.as_str()))
+                    .map_err(|e| Error::other(e.to_string()))?;
+                stmt.next().map_err(|e| Error::other(e.to_string()))?;
+                ok("Image banner URL updated");
+            }
+
             let port: u16 = args
                 .get_one::<String>("port")
                 .unwrap()
@@ -972,6 +1043,45 @@ pub fn execute_matches(app: clap::ArgMatches) -> Result<(), Error> {
                 .unwrap_or(3000);
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(web::start_server(current_dir_str, port));
+            Ok(())
+        }
+        Some(("spotify", args)) => {
+            let url = args.get_one::<String>("url").unwrap();
+            let current_dir = current_dir()?;
+            let conn = connect_lys(&current_dir).map_err(|e| Error::other(e.to_string()))?;
+            let mut stmt = conn
+                .prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('spotify_url', ?)")
+                .map_err(|e| Error::other(e.to_string()))?;
+            stmt.bind((1, url.as_str()))
+                .map_err(|e| Error::other(e.to_string()))?;
+            stmt.next().map_err(|e| Error::other(e.to_string()))?;
+            ok("Music URL updated for web interface");
+            Ok(())
+        }
+        Some(("video", args)) => {
+            let url = args.get_one::<String>("url").unwrap();
+            let current_dir = current_dir()?;
+            let conn = connect_lys(&current_dir).map_err(|e| Error::other(e.to_string()))?;
+            let mut stmt = conn
+                .prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('video_banner_url', ?)")
+                .map_err(|e| Error::other(e.to_string()))?;
+            stmt.bind((1, url.as_str()))
+                .map_err(|e| Error::other(e.to_string()))?;
+            stmt.next().map_err(|e| Error::other(e.to_string()))?;
+            ok("Video banner URL updated for web interface");
+            Ok(())
+        }
+        Some(("banner", args)) => {
+            let url = args.get_one::<String>("url").unwrap();
+            let current_dir = current_dir()?;
+            let conn = connect_lys(&current_dir).map_err(|e| Error::other(e.to_string()))?;
+            let mut stmt = conn
+                .prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('banner_url', ?)")
+                .map_err(|e| Error::other(e.to_string()))?;
+            stmt.bind((1, url.as_str()))
+                .map_err(|e| Error::other(e.to_string()))?;
+            stmt.next().map_err(|e| Error::other(e.to_string()))?;
+            ok("Image banner URL updated for web interface");
             Ok(())
         }
         Some(("todo", sub)) => {

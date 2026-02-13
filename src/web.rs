@@ -4,7 +4,7 @@ use crate::utils::ok;
 use axum::{
     Router,
     body::Bytes,
-    extract::{Path as UrlPath, Query, State},
+    extract::{Path as UrlPath, Query, State, ws::{WebSocketUpgrade, WebSocket, Message}},
     http::{HeaderMap, StatusCode, header},
     response::{Html, IntoResponse, Response},
     routing::{get, post},
@@ -16,12 +16,18 @@ use sqlite::Connection;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::path::PathBuf;
+use dashmap::DashMap;
 use std::sync::{Arc, Mutex};
+use tokio::sync::broadcast;
 
-// On a besoin de partager la connexion BDD entre les threads du serveur
-// SQLite n'est pas "Thread Safe" par défaut, on le met dans un Mutex
+pub struct Session {
+    pub history: Mutex<Vec<String>>,
+    pub tx: broadcast::Sender<String>,
+}
+
 pub struct AppState {
     pub conn: Mutex<Connection>,
+    pub sessions: DashMap<String, Arc<Session>>,
 }
 
 #[derive(Deserialize)]
@@ -65,6 +71,50 @@ fn truncate_words(text: &str, limit: usize) -> String {
     } else {
         words[..limit].join(" ") + "..."
     }
+}
+
+fn get_spotify_embed_url(url: &str) -> Option<String> {
+    if url.contains("spotify.com/embed/") {
+        return Some(url.to_string());
+    }
+    
+    // Support tracks, albums, playlists
+    // format: https://open.spotify.com/album/4EFDM5bjlaF1xx3sNjutFE?utm_source=generator
+    let base_url = url.split('?').next()?;
+    if let Some(pos) = base_url.find("spotify.com/") {
+        let path = &base_url[pos + 12..];
+        return Some(format!("https://open.spotify.com/embed/{}", path));
+    }
+    None
+}
+
+fn get_youtube_embed_url(url: &str) -> Option<String> {
+    if url.contains("youtube.com/embed/") {
+        return Some(url.to_string());
+    }
+
+    // Support music.youtube.com and youtube.com
+    // music.youtube.com/watch?v=ID...
+    // youtube.com/watch?v=ID...
+    // youtube.com/v/ID
+    // youtu.be/ID
+    
+    if url.contains("youtu.be/") {
+        let id = url.split("youtu.be/").nth(1)?.split('?').next()?;
+        return Some(format!("https://www.youtube.com/embed/{}", id));
+    }
+
+    if let Some(pos) = url.find("v=") {
+        let id = &url[pos+2..].split('&').next()?;
+        return Some(format!("https://www.youtube.com/embed/{}", id));
+    }
+
+    if url.contains("/v/") {
+        let id = url.split("/v/").nth(1)?.split('?').next()?;
+        return Some(format!("https://www.youtube.com/embed/{}", id));
+    }
+
+    None
 }
 
 fn time_ago(timestamp: &str) -> String {
@@ -138,7 +188,7 @@ pub fn page(title: &str, style: &str, body: &str) -> Html<String> {
         #menu { background: var(--menu-bg); border-bottom: 1px solid var(--border); padding: 8px 20px; }
         #menu a { text-decoration: none; color: var(--fg); font-weight: bold; margin-right: 20px; font-size: 0.9em; }
         #menu a:hover { color: var(--link); }
-        #content { padding: 25px 20px; max-width: 1200px; margin: 0 auto; }
+        #content { padding: 30px 25px; max-width: 1300px; margin: 0 auto; }
         table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 0.9em; border: 1px solid var(--border); border-radius: 4px; overflow: hidden; margin-bottom: 20px; }
         th { background: var(--table-header-bg); text-align: left; padding: 10px; border-bottom: 1px solid var(--border); color: var(--fg); }
         td { padding: 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
@@ -164,9 +214,10 @@ pub fn page(title: &str, style: &str, body: &str) -> Html<String> {
             font-weight: bold;
         }
         .btn:hover { background: var(--hover-bg); text-decoration: none; }
-        .tabs { display: flex; border-bottom: 1px solid var(--border); margin-bottom: 20px; }
-        .tab { padding: 8px 20px; cursor: pointer; border: 1px solid transparent; border-bottom: none; margin-bottom: -1px; border-radius: 4px 4px 0 0; font-size: 0.9em; font-weight: bold; }
-        .tab.active { background: var(--bg); border-color: var(--border); color: var(--link); }
+        .tabs { display: flex; border-bottom: 2px solid var(--border); margin-bottom: 20px; gap: 5px; }
+        .tab { padding: 10px 25px; cursor: pointer; border: 1px solid transparent; border-bottom: none; margin-bottom: -2px; border-radius: 6px 6px 0 0; font-size: 0.95em; font-weight: 600; color: var(--meta); transition: all 0.2s; }
+        .tab:hover { background: var(--hover-bg); color: var(--fg); }
+        .tab.active { background: var(--bg); border: 2px solid var(--border); border-bottom: 2px solid var(--bg); color: var(--link); }
         .tab-content { display: none; }
         .tab-content.active { display: block; }
         .markdown-body { font-family: -apple-system, BlinkMacSystemFont, \"Segoe UI\", Helvetica, Arial, sans-serif; font-size: 16px; line-height: 1.5; word-wrap: break-word; }
@@ -202,6 +253,22 @@ pub fn page(title: &str, style: &str, body: &str) -> Html<String> {
              <script src='https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-core.min.js'></script>\
              <script src='https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js'></script>\
              <script>
+               function loadPage(event, pageNum) {{
+                 event.preventDefault();
+                 const logTab = document.getElementById('tab-log');
+                 logTab.style.opacity = '0.5';
+                 fetch('/api/commits?page=' + pageNum)
+                   .then(response => response.text())
+                   .then(html => {{
+                     logTab.innerHTML = html;
+                     logTab.style.opacity = '1';
+                     window.history.pushState({{}}, '', '/?page=' + pageNum);
+                   }})
+                   .catch(err => {{
+                     console.error('Failed to load commits:', err);
+                     logTab.style.opacity = '1';
+                   }});
+               }}
                function openTab(evt, tabName) {{
                  var i;
                  var x = document.getElementsByClassName('tab-content');
@@ -243,6 +310,165 @@ fn http_error(status: StatusCode, msg: &str) -> Response {
         .into_response()
 }
 
+async fn ws_handler(
+    ws: WebSocketUpgrade,
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    ws.on_upgrade(|socket| handle_socket(socket, state))
+}
+
+async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
+    let shell = crate::shell::Shell::new();
+    let mut current_session_id = "default".to_string();
+
+    // S'assurer que la session par défaut existe
+    {
+        if !state.sessions.contains_key(&current_session_id) {
+            let (tx, _) = broadcast::channel(100);
+            state.sessions.insert(current_session_id.clone(), Arc::new(Session {
+                history: Mutex::new(Vec::new()),
+                tx,
+            }));
+        }
+    }
+
+    let mut rx = {
+        let session = state.sessions.get(&current_session_id).unwrap();
+        
+        // Envoyer l'historique au nouveau client
+        let history = {
+            let h = session.history.lock().unwrap();
+            h.clone()
+        };
+        for line in history.iter() {
+            let _ = socket.send(Message::Text(line.clone().into())).await;
+        }
+        
+        session.tx.subscribe()
+    };
+
+    // Welcome message
+    let _ = socket.send(Message::Text("\r\n--- Attached to Lys Session: default ---\r\n".to_string().into())).await;
+
+    let mut socket_tx = state.sessions.get(&current_session_id).unwrap().tx.clone();
+
+    loop {
+        tokio::select! {
+            result = rx.recv() => {
+                if let Ok(msg) = result {
+                    if socket.send(Message::Text(msg.into())).await.is_err() {
+                        break;
+                    }
+                }
+            }
+            msg = socket.recv() => {
+                if let Some(Ok(msg)) = msg {
+                    match msg {
+                        Message::Text(text) => {
+                            let input = text.trim();
+                            
+                            // Gérer les requêtes d'auto-complétion (format: "complete:command")
+                            if input.starts_with("complete:") {
+                                let cmd_to_complete = &input[9..];
+                                let suggestions = shell.complete_command(cmd_to_complete);
+                                if !suggestions.is_empty() {
+                                    let resp = format!("suggestions:{}", suggestions.join(","));
+                                    let _ = socket.send(Message::Text(resp.into())).await;
+                                }
+                                continue;
+                            }
+
+                            if input.is_empty() {
+                                // Just prompt
+                                let _ = socket.send(Message::Text("lys> ".to_string().into())).await;
+                                continue;
+                            }
+
+                            if input == "exit" || input == "quit" {
+                                break;
+                            }
+
+                            if input == "clear" {
+                                // Effacer le terminal côté client
+                                let _ = socket.send(Message::Text("\x1b[2J\x1b[H".to_string().into())).await;
+                                let _ = socket.send(Message::Text("lys> ".to_string().into())).await;
+                                continue;
+                            }
+
+                            if input.starts_with("session ") {
+                                let parts: Vec<&str> = input.split_whitespace().collect();
+                                if parts.len() > 1 {
+                                    let new_id = parts[1].to_string();
+                                    // Switch session
+                                    current_session_id = new_id;
+                                    if !state.sessions.contains_key(&current_session_id) {
+                                        let (tx, _) = broadcast::channel(100);
+                                        state.sessions.insert(current_session_id.clone(), Arc::new(Session {
+                                            history: Mutex::new(Vec::new()),
+                                            tx,
+                                        }));
+                                    }
+                                    let session = state.sessions.get(&current_session_id).unwrap();
+                                    rx = session.tx.subscribe();
+                                    socket_tx = session.tx.clone();
+                                    
+                                    let _ = socket.send(Message::Text(format!("\r\n--- Switched to Session: {} ---\r\n", current_session_id).into())).await;
+                                    
+                                    {
+                                        let history = {
+                                            let h = session.history.lock().unwrap();
+                                            h.clone()
+                                        };
+                                        for line in history.iter() {
+                                            let _ = socket.send(Message::Text(line.clone().into())).await;
+                                        }
+                                    }
+                                    continue;
+                                }
+                            }
+
+                            if input == "sessions" {
+                                let mut list = String::from("\r\nActive sessions:\r\n");
+                                for s in state.sessions.iter() {
+                                    list.push_str(&format!("- {}\r\n", s.key()));
+                                }
+                                let _ = socket.send(Message::Text(list.into())).await;
+                                let _ = socket.send(Message::Text("lys> ".to_string().into())).await;
+                                continue;
+                            }
+
+                            // Exécution de la commande
+                            let output = shell.execute_command(input);
+                            if !output.is_empty() {
+                                let formatted_output = output.replace("\n", "\r\n");
+                                let full_output = format!("lys> {}\r\n{}", input, formatted_output);
+                                
+                                // Ajouter à l'historique et diffuser
+                                {
+                                    let session = state.sessions.get(&current_session_id).unwrap();
+                                    let mut history = session.history.lock().unwrap();
+                                    history.push(full_output.clone());
+                                    let _ = socket_tx.send(full_output);
+                                }
+                            } else {
+                                let prompt_line = format!("lys> {}\r\n", input);
+                                let session = state.sessions.get(&current_session_id).unwrap();
+                                let mut history = session.history.lock().unwrap();
+                                history.push(prompt_line.clone());
+                                let _ = socket_tx.send(prompt_line);
+                            }
+                        }
+                        Message::Close(_) => break,
+                        _ => (),
+                    }
+                } else {
+                    break;
+                }
+            }
+        }
+    }
+}
+
 pub async fn start_server(repo_path: &str, port: u16) {
     let path = PathBuf::from(repo_path);
 
@@ -251,11 +477,13 @@ pub async fn start_server(repo_path: &str, port: u16) {
 
     let shared_state = Arc::new(AppState {
         conn: Mutex::new(conn),
+        sessions: DashMap::new(),
     });
 
     let app = Router::new()
         .route("/", get(idx_commits))
         .route("/rss", get(serve_rss))
+        .route("/ws", get(ws_handler))
         .route("/commit/{id}", get(show_commit))
         .route("/commit/{id}/diff", get(show_commit_diff))
         .route("/commit/{id}/tree", get(show_commit_tree))
@@ -263,6 +491,7 @@ pub async fn start_server(repo_path: &str, port: u16) {
         .route("/file/{hash}", get(show_file))
         .route("/raw/{hash}", get(download_raw)) // <-- new: reliable way to view binary / huge files
         .route("/upload/{hash}", post(upload_atom))
+        .route("/api/commits", get(api_commits))
         .with_state(shared_state);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
@@ -274,25 +503,12 @@ pub async fn start_server(repo_path: &str, port: u16) {
     axum::serve(listener, app).await.unwrap();
 }
 
-pub async fn idx_commits(
-    State(state): State<Arc<AppState>>,
-    Query(pagination): Query<Pagination>,
-) -> impl IntoResponse {
-    let conn = match state.conn.lock() {
-        Ok(g) => g,
-        Err(_) => return http_error(StatusCode::INTERNAL_SERVER_ERROR, "DB lock poisoned"),
-    };
-
-    let page_num = pagination.page.unwrap_or(1).max(1);
+fn render_commits_list(conn: &sqlite::Connection, page_num: usize) -> (String, String) {
     let per_page = 20;
     let offset = (page_num - 1) * per_page;
 
-    // Stats
     let total_commits: i64 = {
-        let mut stmt = match conn.prepare("SELECT COUNT(*) FROM commits") {
-            Ok(s) => s,
-            Err(_) => return http_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to prepare count query"),
-        };
+        let mut stmt = conn.prepare("SELECT COUNT(*) FROM commits").unwrap();
         if let Ok(sqlite::State::Row) = stmt.next() {
             stmt.read(0).unwrap_or(0)
         } else {
@@ -301,44 +517,12 @@ pub async fn idx_commits(
     };
     let total_pages = (total_commits as f64 / per_page as f64).ceil() as i64;
 
-    let contributors = crate::db::get_unique_contributors(&conn).unwrap_or_default();
-    let contributor_names: Vec<String> = contributors.iter().map(|(n, _)| n.clone()).collect();
-
-    let mut stats_tab = String::from("<div style='display: grid; grid-template-columns: 1fr 1fr; gap: 20px;'>");
-
-    // Left: Author stats table
-    stats_tab.push_str("<div><h3>Commits by Author</h3><table><thead><tr><th>Author</th><th>Commits</th></tr></thead><tbody>");
-    for (name, count) in &contributors {
-        stats_tab.push_str(&format!("<tr><td>{}</td><td>{}</td></tr>", html_escape(name), count));
-    }
-    stats_tab.push_str("</tbody></table></div>");
-
-    // Right: Global stats
-    stats_tab.push_str("<div><h3>Global Statistics</h3>");
-    stats_tab.push_str(&format!(
-        "<div style='background: var(--menu-bg); padding: 15px; border: 1px solid var(--border); border-radius: 4px;'>\
-           <div style='display: grid; grid-template-columns: auto 1fr; gap: 10px 20px; font-size: 0.9em;'>\
-             <strong>Total Commits:</strong> <span>{}</span>\
-             <strong>Total Contributors:</strong> <span>{}</span>\
-           </div>\
-         </div>",
-        total_commits, contributors.len()
-    ));
-    stats_tab.push_str("</div></div>");
-
     let query = "SELECT id, hash, author, message, timestamp FROM commits ORDER BY id DESC LIMIT ? OFFSET ?";
     let mut rows = String::new();
 
-    let mut stmt = match conn.prepare(query) {
-        Ok(s) => s,
-        Err(_) => return http_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to query commits"),
-    };
-    if let Err(_) = stmt.bind((1, per_page as i64)) {
-        return http_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to bind limit");
-    }
-    if let Err(_) = stmt.bind((2, offset as i64)) {
-        return http_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to bind offset");
-    }
+    let mut stmt = conn.prepare(query).unwrap();
+    stmt.bind((1, per_page as i64)).unwrap();
+    stmt.bind((2, offset as i64)).unwrap();
 
     while let Ok(sqlite::State::Row) = stmt.next() {
         let id: i64 = stmt.read("id").unwrap_or(0);
@@ -367,7 +551,7 @@ pub async fn idx_commits(
         ));
     }
 
-    let nav_html = format!(
+    let mut nav_html = format!(
         "<div style='margin-top: 20px; font-size: 0.9em; padding: 10px; background: var(--nav-bg); border: 1px solid var(--border); border-radius: 4px;'>\
          <div style='margin-bottom: 10px;'>Page {} of {}</div>",
         page_num, total_pages
@@ -375,31 +559,170 @@ pub async fn idx_commits(
 
     let mut links = Vec::new();
     if page_num > 1 {
-        links.push(format!("<a href='/?page={}'>&laquo; Newer</a>", page_num - 1));
+        links.push(format!("<a href='/?page={}' onclick='loadPage(event, {})'>&laquo; Newer</a>", page_num - 1, page_num - 1));
     }
     if (page_num as i64) < total_pages {
-        links.push(format!("<a href='/?page={}'>Older &raquo;</a>", page_num + 1));
+        links.push(format!("<a href='/?page={}' onclick='loadPage(event, {})'>Older &raquo;</a>", page_num + 1, page_num + 1));
     }
 
-    let mut nav_html = nav_html;
     if !links.is_empty() {
         nav_html.push_str(&links.join(" | "));
     }
     nav_html.push_str("</div>");
+
+    (rows, nav_html)
+}
+
+pub async fn api_commits(
+    State(state): State<Arc<AppState>>,
+    Query(pagination): Query<Pagination>,
+) -> impl IntoResponse {
+    let conn = match state.conn.lock() {
+        Ok(g) => g,
+        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "DB lock poisoned").into_response(),
+    };
+
+    let page_num = pagination.page.unwrap_or(1).max(1);
+    let (rows, nav) = render_commits_list(&conn, page_num);
+    
+    let html = format!(
+        "<h3 id='latest'>Latest Commits</h3>\
+         <table>{}</table>\
+         {}",
+        rows, nav
+    );
+    Html(html).into_response()
+}
+
+pub async fn idx_commits(
+    State(state): State<Arc<AppState>>,
+    Query(pagination): Query<Pagination>,
+) -> impl IntoResponse {
+    let conn = match state.conn.lock() {
+        Ok(g) => g,
+        Err(_) => return http_error(StatusCode::INTERNAL_SERVER_ERROR, "DB lock poisoned"),
+    };
+
+    let page_num = pagination.page.unwrap_or(1).max(1);
+
+    // Spotify or YouTube Music URL
+    let mut music_embed = String::new();
+    {
+        let mut stmt = conn.prepare("SELECT value FROM config WHERE key = 'spotify_url'").unwrap();
+        if let Ok(sqlite::State::Row) = stmt.next() {
+            let url: String = stmt.read(0).unwrap();
+            if let Some(embed_url) = get_spotify_embed_url(&url) {
+                music_embed = format!(
+                    "<div style='margin-bottom: 30px; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 12px rgba(0,0,0,0.2);'>\
+                       <iframe src='{}' width='100%' height='352' frameBorder='0' allowfullscreen='' allow='autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture' loading='lazy'></iframe>\
+                     </div>",
+                    embed_url
+                );
+            } else if let Some(embed_url) = get_youtube_embed_url(&url) {
+                music_embed = format!(
+                    "<div style='margin-bottom: 30px; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 12px rgba(0,0,0,0.2);'>\
+                       <iframe width='100%' height='352' src='{}' title='YouTube music player' frameborder='0' allow='accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share' allowfullscreen></iframe>\
+                     </div>",
+                    embed_url
+                );
+            }
+        }
+    }
+
+    // YouTube Video Banner
+    let mut video_banner = String::new();
+    {
+        let mut stmt = conn.prepare("SELECT value FROM config WHERE key = 'video_banner_url'").unwrap();
+        if let Ok(sqlite::State::Row) = stmt.next() {
+            let url: String = stmt.read(0).unwrap();
+            if let Some(embed_url) = get_youtube_embed_url(&url) {
+                video_banner = format!(
+                    "<div style='margin-bottom: 30px; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 12px rgba(0,0,0,0.2); aspect-ratio: 16 / 9;'>\
+                       <iframe width='100%' height='100%' src='{}' title='YouTube video player' frameborder='0' allow='accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share' allowfullscreen></iframe>\
+                     </div>",
+                    embed_url
+                );
+            }
+        }
+    }
+
+    // Image Banner
+    let mut image_banner = String::new();
+    {
+        let mut stmt = conn.prepare("SELECT value FROM config WHERE key = 'banner_url'").unwrap();
+        if let Ok(sqlite::State::Row) = stmt.next() {
+            let url: String = stmt.read(0).unwrap();
+            image_banner = format!(
+                "<div style='margin-bottom: 30px; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 12px rgba(0,0,0,0.2);'>\
+                   <img src='{}' style='width: 100%; height: auto; display: block;' alt='Project Banner'>\
+                 </div>",
+                html_escape(&url)
+            );
+        }
+    }
+
+    // Stats
+    let total_commits: i64 = {
+        let mut stmt = conn.prepare("SELECT COUNT(*) FROM commits").unwrap();
+        if let Ok(sqlite::State::Row) = stmt.next() {
+            stmt.read(0).unwrap_or(0)
+        } else {
+            0
+        }
+    };
+
+    let contributors = crate::db::get_unique_contributors(&conn).unwrap_or_default();
+    let contributor_names: Vec<String> = contributors.iter().map(|(n, _)| n.clone()).collect();
+
+    let mut stats_tab = String::from("<div style='display: grid; grid-template-columns: 1fr 1fr; gap: 20px;'>");
+
+    // Left: Author stats table
+    stats_tab.push_str("<div><h3>Commits by Author</h3><table><thead><tr><th>Author</th><th>Commits</th></tr></thead><tbody>");
+    for (name, count) in &contributors {
+        stats_tab.push_str(&format!("<tr><td>{}</td><td>{}</td></tr>", html_escape(name), count));
+    }
+    stats_tab.push_str("</tbody></table></div>");
+
+    // Right: Global stats
+    stats_tab.push_str("<div><h3>Global Statistics</h3>");
+    stats_tab.push_str(&format!(
+        "<div style='background: var(--menu-bg); padding: 15px; border: 1px solid var(--border); border-radius: 4px;'>\
+           <div style='display: grid; grid-template-columns: auto 1fr; gap: 10px 20px; font-size: 0.9em;'>\
+             <strong>Total Commits:</strong> <span>{}</span>\
+             <strong>Total Contributors:</strong> <span>{}</span>\
+           </div>\
+         </div>",
+        total_commits, contributors.len()
+    ));
+    stats_tab.push_str("</div></div>");
+
+    let (rows, nav_html) = render_commits_list(&conn, page_num);
 
     let mut body = String::new();
     body.push_str("<div class='tabs'>");
     body.push_str("<div class='tab active' onclick=\"openTab(event, 'tab-log')\">Log</div>");
     body.push_str("<div class='tab' onclick=\"openTab(event, 'tab-contributors')\">Contributors</div>");
     body.push_str("<div class='tab' onclick=\"openTab(event, 'tab-stats')\">Stats</div>");
+    body.push_str("<div class='tab' onclick=\"openTab(event, 'tab-music')\">Music</div>");
     body.push_str("</div>");
 
     body.push_str("<div id='tab-log' class='tab-content active'>");
+    if !image_banner.is_empty() {
+        body.push_str(&image_banner);
+    }
+    if !video_banner.is_empty() {
+        body.push_str(&video_banner);
+    }
     body.push_str("<h3 id='latest'>Latest Commits</h3>");
     body.push_str("<table>");
     body.push_str(&rows);
     body.push_str("</table>");
     body.push_str(&nav_html);
+    body.push_str("</div>");
+
+    body.push_str("<div id='tab-music' class='tab-content'>");
+    body.push_str("<h3>Music</h3>");
+    body.push_str(&music_embed);
     body.push_str("</div>");
 
     body.push_str("<div id='tab-contributors' class='tab-content'>");
@@ -600,6 +923,468 @@ async fn show_commit_tree(
         return http_error(StatusCode::INTERNAL_SERVER_ERROR, &format!("Failed to render tree: {}", e));
     }
 
+    let terminal_html = format!(
+        "<div id='terminal-wrapper' class='terminal-wrapper'>
+            <div class='terminal-tabs-bar' id='terminal-tabs-bar'>
+                <div class='terminal-tab-item active' id='tab-btn-0' onclick='switchTerminalTab(0)'>
+                    <span id='tab-label-0'>Terminal 1</span>
+                    <span class='tab-close' onclick='closeTerminalTab(event, 0)'>&times;</span>
+                </div>
+                <button class='btn terminal-add-tab-btn' onclick='addTerminalTab()'>+</button>
+            </div>
+            <div id='terminal-tabs-container' class='terminal-tabs-container'>
+                <div id='terminal-tab-content-0' class='terminal-tab-content active'>
+                    <div id='terminal-panes-0' class='terminal-panes'>
+                        <div id='pane-0' class='terminal-pane active'>
+                            <div class='terminal-window' onclick='focusPane(0)'>
+                                <div class='terminal-header'>
+                                    <div class='terminal-dots'>
+                                        <span class='dot red' onclick='closePane(0)'></span>
+                                        <span class='dot yellow' onclick='minimizePane(0)'></span>
+                                        <span class='dot green' onclick='maximizePane(0)'></span>
+                                    </div>
+                                    <div class='terminal-title'>Lys Interactive Shell - <span id='pane-title-0'>Pane 0</span></div>
+                                    <div style='display: flex; gap: 10px; align-items: center;'>
+                                        <input type='text' id='session-id-0' placeholder='Session Name' value='default' class='terminal-input' onclick='event.stopPropagation()'>
+                                        <button class='btn terminal-btn' onclick='event.stopPropagation(); switchSession(0)'>Attach</button>
+                                        <button class='btn terminal-btn' onclick='event.stopPropagation(); splitVertical(0)'>Split V</button>
+                                        <button class='btn terminal-btn' onclick='event.stopPropagation(); splitHorizontal(0)'>Split H</button>
+                                        <span id='current-session-label-0' class='terminal-session-label'>Session: default</span>
+                                    </div>
+                                </div>
+                                <div id='terminal-0' class='terminal-container'></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <script src='https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js'></script>
+        <script src='https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js'></script>
+        <link rel='stylesheet' href='https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css' />
+        <script>
+            let panes = {{}};
+            let paneCounter = 1;
+            let terminalTabs = [0];
+            let activeTerminalTab = 0;
+            let terminalTabCounter = 1;
+
+            function createPane(id, sessionId = 'default') {{
+                const term = new Terminal({{
+                    cursorBlink: true,
+                    fontSize: 14,
+                    lineHeight: 1.2,
+                    fontFamily: 'SFMono-Regular, Consolas, \"Liberation Mono\", Menlo, monospace',
+                    theme: {{
+                        background: '#1a1a1a',
+                        foreground: '#e0e0e0',
+                        cursor: '#ffffff',
+                        selection: 'rgba(255, 255, 255, 0.3)',
+                        black: '#000000',
+                        red: '#e06c75',
+                        green: '#98c379',
+                        yellow: '#d19a66',
+                        blue: '#61afef',
+                        magenta: '#c678dd',
+                        cyan: '#56b6c2',
+                        white: '#abb2bf',
+                        brightBlack: '#5c6370',
+                        brightRed: '#e06c75',
+                        brightGreen: '#98c379',
+                        brightYellow: '#d19a66',
+                        brightBlue: '#61afef',
+                        brightMagenta: '#c678dd',
+                        brightCyan: '#56b6c2',
+                        brightWhite: '#ffffff'
+                    }}
+                }});
+                const fitAddon = new FitAddon.FitAddon();
+                term.loadAddon(fitAddon);
+                
+                panes[id] = {{
+                    term: term,
+                    fitAddon: fitAddon,
+                    socket: null,
+                    command: '',
+                    history: [],
+                    historyIndex: -1,
+                    sessionId: sessionId
+                }};
+
+                setTimeout(() => {{
+                    const el = document.getElementById('terminal-' + id);
+                    if (el) {{
+                        term.open(el);
+                        fitAddon.fit();
+                        connect(id);
+                        
+                        // Focus on click
+                        el.addEventListener('click', () => {{
+                            focusPane(id);
+                        }});
+                    }}
+                }}, 100);
+
+                term.onData(data => {{
+                    let p = panes[id];
+                    if (data === '\\r') {{
+                        if (p.command.trim().length > 0) {{
+                            p.history.push(p.command);
+                            p.historyIndex = -1;
+                        }}
+                        if (p.socket && p.socket.readyState === WebSocket.OPEN) {{
+                            p.socket.send(p.command);
+                        }}
+                        p.command = '';
+                        term.write('\\r\\n');
+                    }} else if (data === '\\x7f') {{ // Backspace
+                        if (p.command.length > 0) {{
+                            p.command = p.command.slice(0, -1);
+                            term.write('\\b \\b');
+                        }}
+                    }} else if (data === '\\x1b[A') {{ // Up arrow
+                        if (p.history.length > 0) {{
+                            if (p.historyIndex === -1) p.historyIndex = p.history.length - 1;
+                            else if (p.historyIndex > 0) p.historyIndex--;
+                            for (let i = 0; i < p.command.length; i++) term.write('\\b \\b');
+                            p.command = p.history[p.historyIndex];
+                            term.write(p.command);
+                        }}
+                    }} else if (data === '\\x1b[B') {{ // Down arrow
+                        if (p.historyIndex !== -1) {{
+                            if (p.historyIndex < p.history.length - 1) {{
+                                p.historyIndex++;
+                                for (let i = 0; i < p.command.length; i++) term.write('\\b \\b');
+                                p.command = p.history[p.historyIndex];
+                                term.write(p.command);
+                            }} else {{
+                                p.historyIndex = -1;
+                                for (let i = 0; i < p.command.length; i++) term.write('\\b \\b');
+                                p.command = '';
+                            }}
+                        }}
+                    }} else if (data === '\\t') {{ // Tab
+                        if (p.socket && p.socket.readyState === WebSocket.OPEN) {{
+                            p.socket.send('complete:' + p.command);
+                        }}
+                    }} else if (data.length === 1 && data.charCodeAt(0) >= 32) {{
+                        p.command += data;
+                        term.write(data);
+                    }}
+                }});
+            }}
+
+            function connect(id) {{
+                let p = panes[id];
+                if (p.socket) p.socket.close();
+                p.term.clear();
+                
+                // Show reconnecting status
+                p.term.write('\\r\\n\\x1b[33mConnecting to Lys server...\\x1b[0m\\r\\n');
+                
+                let protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                p.socket = new WebSocket(protocol + '//' + window.location.host + '/ws');
+                
+                p.socket.onmessage = (event) => {{
+                    if (event.data === '\\x1b[2J\\x1b[H') {{
+                        p.term.clear();
+                        return;
+                    }}
+                    if (event.data.startsWith('suggestions:')) {{
+                        const suggestions = event.data.substring(12).split(',');
+                        if (suggestions.length === 1) {{
+                            const lastSpace = p.command.lastIndexOf(' ');
+                            const currentWord = lastSpace === -1 ? p.command : p.command.substring(lastSpace + 1);
+                            const completion = suggestions[0].substring(currentWord.length);
+                            p.command += completion;
+                            p.term.write(completion);
+                        }} else if (suggestions.length > 1) {{
+                            p.term.write('\\r\\n' + suggestions.join('  ') + '\\r\\nlys> ' + p.command);
+                        }}
+                        return;
+                    }}
+                    p.term.write(event.data);
+                }};
+                
+                p.socket.onopen = () => {{
+                    p.term.clear();
+                    const sid_el = document.getElementById('session-id-' + id);
+                    const sid = sid_el ? sid_el.value : 'default';
+                    p.sessionId = sid;
+                    if (sid !== 'default') {{
+                        p.socket.send('session ' + sid);
+                    }}
+                    const label = document.getElementById('current-session-label-' + id);
+                    if (label) label.innerText = 'Session: ' + sid;
+                }};
+
+                p.socket.onclose = () => {{
+                    p.term.write('\\r\\n\\x1b[31mConnection lost. Retrying in 3 seconds...\\x1b[0m\\r\\n');
+                    setTimeout(() => connect(id), 3000);
+                }};
+
+                p.socket.onerror = (err) => {{
+                    console.error('WebSocket Error on pane ' + id + ':', err);
+                }};
+            }}
+
+            function switchSession(id) {{
+                connect(id);
+            }}
+
+            function splitVertical(id) {{
+                const oldPane = document.getElementById('pane-' + id);
+                const parent = oldPane.parentNode;
+                const newId = paneCounter++;
+                
+                const wrapper = document.createElement('div');
+                wrapper.className = 'pane-split-v';
+                parent.replaceChild(wrapper, oldPane);
+                
+                const pane1 = oldPane;
+                const pane2 = createPaneElement(newId);
+                
+                wrapper.appendChild(pane1);
+                wrapper.appendChild(pane2);
+                
+                createPane(newId, panes[id].sessionId);
+                setTimeout(() => {{ 
+                    panes[id].fitAddon.fit();
+                    panes[newId].fitAddon.fit();
+                }}, 200);
+            }}
+
+            function splitHorizontal(id) {{
+                const oldPane = document.getElementById('pane-' + id);
+                const parent = oldPane.parentNode;
+                const newId = paneCounter++;
+                
+                const wrapper = document.createElement('div');
+                wrapper.className = 'pane-split-h';
+                parent.replaceChild(wrapper, oldPane);
+                
+                const pane1 = oldPane;
+                const pane2 = createPaneElement(newId);
+                
+                wrapper.appendChild(pane1);
+                wrapper.appendChild(pane2);
+                
+                createPane(newId, panes[id].sessionId);
+                setTimeout(() => {{ 
+                    panes[id].fitAddon.fit();
+                    panes[newId].fitAddon.fit();
+                }}, 200);
+            }}
+
+            function focusPane(id) {{
+                // Remove active class from all terminal windows
+                document.querySelectorAll('.terminal-window').forEach(el => el.classList.remove('active'));
+                
+                const pane = document.getElementById('pane-' + id);
+                if (pane) {{
+                    const window = pane.querySelector('.terminal-window');
+                    if (window) window.classList.add('active');
+                }}
+                if (panes[id] && panes[id].term) {{
+                    panes[id].term.focus();
+                }}
+            }}
+
+            function createPaneElement(id) {{
+                const div = document.createElement('div');
+                div.id = 'pane-' + id;
+                div.className = 'terminal-pane';
+                div.innerHTML = `
+                    <div class='terminal-window' onclick='focusPane(${{id}})'>
+                        <div class='terminal-header'>
+                            <div class='terminal-dots'>
+                                <span class='dot red' onclick='closePane(${{id}})'></span>
+                                <span class='dot yellow' onclick='minimizePane(${{id}})'></span>
+                                <span class='dot green' onclick='maximizePane(${{id}})'></span>
+                            </div>
+                            <div class='terminal-title'>Lys Interactive Shell - <span id='pane-title-${{id}}'>Pane ${{id}}</span></div>
+                            <div style='display: flex; gap: 10px; align-items: center;'>
+                                <input type='text' id='session-id-${{id}}' placeholder='Session Name' value='default' class='terminal-input' onclick='event.stopPropagation()'>
+                                <button class='btn terminal-btn' onclick='event.stopPropagation(); switchSession(${{id}})'>Attach</button>
+                                <button class='btn terminal-btn' onclick='event.stopPropagation(); splitVertical(${{id}})'>Split V</button>
+                                <button class='btn terminal-btn' onclick='event.stopPropagation(); splitHorizontal(${{id}})'>Split H</button>
+                                <button class='btn terminal-btn' onclick='event.stopPropagation(); closePane(${{id}})' style='background:#d9534f !important'>&times;</button>
+                                <span id='current-session-label-${{id}}' class='terminal-session-label'>Session: default</span>
+                            </div>
+                        </div>
+                        <div id='terminal-${{id}}' class='terminal-container'></div>
+                    </div>
+                `;
+                return div;
+            }}
+
+            function closePane(id) {{
+                const pane = document.getElementById('pane-' + id);
+                const parent = pane.parentNode;
+                if (panes[id].socket) panes[id].socket.close();
+                delete panes[id];
+                
+                if (parent.classList.contains('pane-split-v') || parent.classList.contains('pane-split-h')) {{
+                    const otherPane = parent.children[0] === pane ? parent.children[1] : parent.children[0];
+                    const grandParent = parent.parentNode;
+                    grandParent.replaceChild(otherPane, parent);
+                    
+                    // Refit all remaining panes
+                    Object.keys(panes).forEach(pid => {{
+                        setTimeout(() => {{ if (panes[pid]) panes[pid].fitAddon.fit(); }}, 250);
+                    }});
+                }} else {{
+                    pane.remove();
+                }}
+            }}
+
+            function minimizePane(id) {{
+                const pane = document.getElementById('pane-' + id);
+                const container = pane.querySelector('.terminal-container');
+                if (container.style.display === 'none') {{
+                    container.style.display = 'block';
+                    pane.style.flex = '1';
+                    pane.style.minHeight = '200px';
+                }} else {{
+                    container.style.display = 'none';
+                    pane.style.flex = '0 0 auto';
+                    pane.style.minHeight = 'auto';
+                }}
+                setTimeout(() => {{ if (panes[id]) panes[id].fitAddon.fit(); }}, 100);
+            }}
+
+            function maximizePane(id) {{
+                const pane = document.getElementById('pane-' + id);
+                if (pane.classList.contains('maximized-pane')) {{
+                    pane.classList.remove('maximized-pane');
+                }} else {{
+                    // Remove maximized from any other pane
+                    document.querySelectorAll('.maximized-pane').forEach(el => el.classList.remove('maximized-pane'));
+                    pane.classList.add('maximized-pane');
+                }}
+                setTimeout(() => {{ if (panes[id]) panes[id].fitAddon.fit(); }}, 200);
+            }}
+
+            function addTerminalTab() {{
+                const tabId = terminalTabCounter++;
+                const paneId = paneCounter++;
+                
+                // Add tab button
+                const bar = document.getElementById('terminal-tabs-bar');
+                const addBtn = bar.querySelector('.terminal-add-tab-btn');
+                const newTabBtn = document.createElement('div');
+                newTabBtn.className = 'terminal-tab-item';
+                newTabBtn.id = 'tab-btn-' + tabId;
+                newTabBtn.onclick = () => switchTerminalTab(tabId);
+                newTabBtn.innerHTML = `
+                    <span id='tab-label-${{tabId}}'>Terminal ${{tabId + 1}}</span>
+                    <span class='tab-close' onclick='closeTerminalTab(event, ${{tabId}})'>&times;</span>
+                `;
+                bar.insertBefore(newTabBtn, addBtn);
+                
+                // Add tab content
+                const container = document.getElementById('terminal-tabs-container');
+                const newTabContent = document.createElement('div');
+                newTabContent.id = 'terminal-tab-content-' + tabId;
+                newTabContent.className = 'terminal-tab-content';
+                newTabContent.innerHTML = `
+                    <div id='terminal-panes-${{tabId}}' class='terminal-panes'>
+                        <div id='pane-${{paneId}}' class='terminal-pane active'>
+                            <div class='terminal-window' onclick='focusPane(${{paneId}})'>
+                                <div class='terminal-header'>
+                                    <div class='terminal-dots'>
+                                        <span class='dot red' onclick='closePane(${{paneId}})'></span>
+                                        <span class='dot yellow' onclick='minimizePane(${{paneId}})'></span>
+                                        <span class='dot green' onclick='maximizePane(${{paneId}})'></span>
+                                    </div>
+                                    <div class='terminal-title'>Lys Interactive Shell - <span id='pane-title-${{paneId}}'>Pane ${{paneId}}</span></div>
+                                    <div style='display: flex; gap: 10px; align-items: center;'>
+                                        <input type='text' id='session-id-${{paneId}}' placeholder='Session Name' value='default' class='terminal-input' onclick='event.stopPropagation()'>
+                                        <button class='btn terminal-btn' onclick='event.stopPropagation(); switchSession(${{paneId}})'>Attach</button>
+                                        <button class='btn terminal-btn' onclick='event.stopPropagation(); splitVertical(${{paneId}})'>Split V</button>
+                                        <button class='btn terminal-btn' onclick='event.stopPropagation(); splitHorizontal(${{paneId}})'>Split H</button>
+                                        <span id='current-session-label-${{paneId}}' class='terminal-session-label'>Session: default</span>
+                                    </div>
+                                </div>
+                                <div id='terminal-${{paneId}}' class='terminal-container'></div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+                container.appendChild(newTabContent);
+                
+                terminalTabs.push(tabId);
+                createPane(paneId);
+                switchTerminalTab(tabId);
+            }}
+
+            function switchTerminalTab(tabId) {{
+                terminalTabs.forEach(id => {{
+                    document.getElementById('tab-btn-' + id).classList.remove('active');
+                    document.getElementById('terminal-tab-content-' + id).classList.remove('active');
+                }});
+                document.getElementById('tab-btn-' + tabId).classList.add('active');
+                document.getElementById('terminal-tab-content-' + tabId).classList.add('active');
+                activeTerminalTab = tabId;
+                
+                // Trigger refit for all panes in this tab
+                const panesInTab = document.getElementById('terminal-tab-content-' + tabId).querySelectorAll('.terminal-container');
+                panesInTab.forEach(container => {{
+                    const pid = container.id.replace('terminal-', '');
+                    if (panes[pid]) {{
+                        setTimeout(() => panes[pid].fitAddon.fit(), 50);
+                    }}
+                }});
+            }}
+
+            function closeTerminalTab(event, tabId) {{
+                event.stopPropagation();
+                if (terminalTabs.length <= 1) return;
+                
+                const index = terminalTabs.indexOf(tabId);
+                terminalTabs.splice(index, 1);
+                
+                // Cleanup panes in this tab
+                const panesInTab = document.getElementById('terminal-tab-content-' + tabId).querySelectorAll('.terminal-container');
+                panesInTab.forEach(container => {{
+                    const pid = container.id.replace('terminal-', '');
+                    if (panes[pid]) {{
+                        if (panes[pid].socket) panes[pid].socket.close();
+                        delete panes[pid];
+                    }}
+                }});
+                
+                document.getElementById('tab-btn-' + tabId).remove();
+                document.getElementById('terminal-tab-content-' + tabId).remove();
+                
+                if (activeTerminalTab === tabId) {{
+                    switchTerminalTab(terminalTabs[Math.max(0, index - 1)]);
+                }}
+            }}
+
+            // Initial pane
+            createPane(0);
+
+            window.addEventListener('resize', () => {{
+                Object.values(panes).forEach(p => {{ if (p) p.fitAddon.fit(); }});
+            }});
+            
+            const observer = new MutationObserver((mutations) => {{
+                mutations.forEach((mutation) => {{
+                    if (mutation.attributeName === 'class') {{
+                        const target = mutation.target;
+                        if (target.id === 'terminal-tab' && target.classList.contains('active')) {{
+                            setTimeout(() => {{
+                                Object.values(panes).forEach(p => {{ if (p) p.fitAddon.fit(); }});
+                            }}, 50);
+                        }}
+                    }}
+                }});
+            }});
+            observer.observe(document.getElementById('terminal-tab'), {{ attributes: true }});
+        </script>"
+    );
+
     // Special files detection and rendering
     let mut special_content = std::collections::BTreeMap::new();
     let special_files = [
@@ -665,6 +1450,10 @@ async fn show_commit_tree(
         tabs_bodies.push_str(&format!("<div id='{}' class='tab-content'>{}</div>", tab_id, content));
     }
 
+    // Terminal tab
+    tabs_headers.push_str("<div class='tab' onclick='openTab(event, \"terminal-tab\")'>Terminal</div>");
+    tabs_bodies.push_str(&format!("<div id='terminal-tab' class='tab-content'>{}</div>", terminal_html));
+
     let tabs_html = format!(
         "<div class='tabs'>{}</div>{}",
         tabs_headers, tabs_bodies
@@ -698,7 +1487,179 @@ async fn show_commit_tree(
          .tree-table tr:hover { background: var(--hover-bg); }
          .icon { margin-right: 8px; }
          .dir { font-weight: bold; }
-         .breadcrumbs { margin-bottom: 20px; font-family: monospace; background: var(--nav-bg); padding: 12px; border: 1px solid var(--border); border-radius: 4px; }",
+         .breadcrumbs { margin-bottom: 20px; font-family: monospace; background: var(--nav-bg); padding: 12px; border: 1px solid var(--border); border-radius: 4px; }
+         .terminal-window {
+            border-radius: 8px;
+            overflow: hidden;
+            border: 1px solid #444;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+            background: #1a1a1a;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+         }
+         .terminal-panes {
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+            gap: 10px;
+         }
+         .terminal-pane {
+            flex: 1;
+            min-height: 200px;
+            height: 100%;
+         }
+         .pane-split-v {
+            display: flex;
+            flex-direction: row;
+            flex: 1;
+            gap: 10px;
+            height: 100%;
+         }
+         .pane-split-h {
+            display: flex;
+            flex-direction: column;
+            flex: 1;
+            gap: 10px;
+            height: 100%;
+         }
+         .terminal-header {
+            background: #333;
+            padding: 8px 15px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid #444;
+            position: relative;
+         }
+         .terminal-window.active {
+            border-color: var(--link);
+            box-shadow: 0 10px 30px rgba(0,0,0,0.7);
+         }
+         .terminal-window.active .terminal-header {
+            background: #444;
+         }
+         .terminal-dots { display: flex; gap: 6px; }
+         .maximized-pane {
+            position: fixed !important;
+            top: 0 !important;
+            left: 0 !important;
+            width: 100vw !important;
+            height: 100vh !important;
+            z-index: 9999 !important;
+            margin: 0 !important;
+            background: #1a1a1a !important;
+         }
+         .dot { width: 12px; height: 12px; border-radius: 50%; display: inline-block; cursor: pointer; }
+         .dot.red { background: #ff5f56; }
+         .dot.yellow { background: #ffbd2e; }
+         .dot.green { background: #27c93f; }
+         .terminal-title {
+            color: #abb2bf;
+            font-size: 0.8em;
+            font-family: sans-serif;
+         }
+         .terminal-input {
+            padding: 3px 8px;
+            border-radius: 4px;
+            border: 1px solid #555;
+            background: #222;
+            color: #eee;
+            font-size: 0.8em;
+            width: 80px;
+         }
+         .terminal-btn {
+            padding: 2px 8px !important;
+            font-size: 0.75em !important;
+            background: #444 !important;
+            border-color: #555 !important;
+            color: #eee !important;
+            margin-right: 2px !important;
+         }
+         .terminal-session-label {
+            font-size: 0.75em;
+            color: #888;
+         }
+         .terminal-container {
+            flex: 1;
+            padding: 10px;
+            overflow: hidden;
+         }
+         .terminal-wrapper {
+            height: 75vh;
+            min-height: 500px;
+            margin-bottom: 20px;
+            display: flex;
+            flex-direction: column;
+         }
+         .terminal-tabs-bar {
+            display: flex;
+            background: #252525;
+            padding: 5px 10px 0 10px;
+            gap: 2px;
+            border-bottom: 1px solid #444;
+         }
+         .terminal-tab-item {
+            padding: 6px 15px;
+            background: #333;
+            color: #888;
+            border-radius: 6px 6px 0 0;
+            font-size: 0.8em;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            border: 1px solid #444;
+            border-bottom: none;
+            transition: all 0.2s;
+         }
+         .terminal-tab-item:hover {
+            background: #444;
+            color: #eee;
+         }
+         .terminal-tab-item.active {
+            background: #1a1a1a;
+            color: #eee;
+            border-color: #555;
+            padding-bottom: 7px;
+            margin-bottom: -1px;
+         }
+         .tab-close {
+            font-size: 1.2em;
+            line-height: 1;
+            color: #666;
+         }
+         .tab-close:hover {
+            color: #ff5f56;
+         }
+         .terminal-add-tab-btn {
+            background: transparent !important;
+            border: none !important;
+            color: #888 !important;
+            font-size: 1.2em !important;
+            padding: 0 10px !important;
+            cursor: pointer;
+         }
+         .terminal-add-tab-btn:hover {
+            color: #eee !important;
+         }
+         .terminal-tabs-container {
+            flex: 1;
+            position: relative;
+            background: #1a1a1a;
+         }
+         .terminal-tab-content {
+            display: none;
+            height: 100%;
+         }
+         .terminal-tab-content.active {
+            display: block;
+         }
+         #terminal ::-webkit-scrollbar { width: 8px; }
+         #terminal ::-webkit-scrollbar-track { background: #1a1a1a; }
+         #terminal ::-webkit-scrollbar-thumb { background: #444; border-radius: 4px; }
+         #terminal ::-webkit-scrollbar-thumb:hover { background: #555; }
+         #terminal { scrollbar-width: thin; scrollbar-color: #444 #1a1a1a; }",
         &format!(
             "<h3>Tree View</h3>\
              <div class='breadcrumbs'>{}</div>\
@@ -949,7 +1910,7 @@ fn get_raw_blob(conn: &Connection, hash: &str) -> Vec<u8> {
         if stmt.bind((1, hash)).is_ok() {
             if let Ok(sqlite::State::Row) = stmt.next() {
                 if let Ok(content) = stmt.read::<Vec<u8>, _>(0) {
-                    return crate::db::decompress(&content);
+                    return decompress(&content);
                 }
             }
         }
@@ -1229,14 +2190,14 @@ async fn download_raw(
 
         let mut headers = HeaderMap::new();
         headers.insert(
-            axum::http::header::CONTENT_TYPE,
+            header::CONTENT_TYPE,
             axum::http::HeaderValue::from_static("application/octet-stream"),
         );
         // Avoid header injection: keep filename simple.
         let filename = format!("lys-{}.bin", short_hash(&hash));
         let cd = format!("attachment; filename=\"{}\"", filename);
         if let Ok(v) = axum::http::HeaderValue::from_str(&cd) {
-            headers.insert(axum::http::header::CONTENT_DISPOSITION, v);
+            headers.insert(header::CONTENT_DISPOSITION, v);
         }
 
         (StatusCode::OK, headers, bytes).into_response()

@@ -1560,14 +1560,25 @@ pub fn calculate_hash(path: &Path) -> IoResult<String> {
 
 pub fn start_pager() -> Option<std::process::Child> {
     if !std::io::IsTerminal::is_terminal(&std::io::stdout()) {
-        return None;
+        // Si on est dans le web (WebSocket), on peut essayer de voir si on a activé
+        // un mode "pager" virtuel, mais par défaut on désactive less.
+        if std::env::var("LYS_WEB_TERMINAL").is_err() {
+            return None;
+        }
     }
 
     let pager_cmd = std::env::var("PAGER").unwrap_or_else(|_| "less".to_string());
     let mut cmd = std::process::Command::new(&pager_cmd);
 
     if pager_cmd == "less" {
-        cmd.arg("-F").arg("-X").arg("-R");
+        if std::env::var("LYS_WEB_TERMINAL").is_ok() {
+            // Dans le web terminal, on veut que less sorte immédiatement s'il n'y a qu'une page
+            // et qu'il ne tente pas d'interagir avec le TTY.
+            // On peut aussi essayer de passer des options pour qu'il se comporte comme un filtre.
+            cmd.arg("-F").arg("-X").arg("-R");
+        } else {
+            cmd.arg("-F").arg("-X").arg("-R");
+        }
     }
 
     cmd.stdin(std::process::Stdio::piped()).spawn().ok()

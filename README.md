@@ -9,10 +9,15 @@ Lys is a **secure, local-first Version Control System (VCS)** designed for priva
 - **Secure by Design**: Ed25519 identity keys for cryptographically signing every commit.
 - **Git Integration**: Seamlessly `import` or `clone` existing Git repositories into Lys.
 - **Modern Workflow**: Built-in support for `feat`, `hotfix`, and `tag` management.
--  **Integrated Tools**: 
+- **Integrated Tools**: 
+  - **Interactive Shell**: Type `lys` without arguments to enter an interactive shell with history (`~/.lys-history`).
   - **Todo Manager**: Track project tasks directly within the VCS.
-    - **Team Chat**: Communicate with your team without leaving your terminal.
-    - **Web Interface**: Start a local web UI to visualize your repository.
+  - **Team Chat**: Communicate with your team without leaving your terminal.
+  - **Advanced Web Interface**: 
+    - Visualize your repository, commits, and diffs.
+    - **Integrated Terminal**: A powerful web-based terminal with multi-tab support, window splits (horizontal/vertical), and persistent sessions (tmux/screen style).
+    - **Music Integration**: Personalize your dashboard with your favorite albums from **Spotify** or **YouTube Music**.
+    - **Personalized Banner**: Showcase your project with a **YouTube video** or a **custom image banner** directly on the home page.
 - **Mounting**: Mount specific versions or the current HEAD to a directory as a virtual filesystem.
 - **Decentralized**: `push` and `pull` to remote architects, or `sync` to physical destinations like USB drives.
 - **TUI Support**: Includes `syl`, a beautiful terminal user interface for managing your work.
@@ -80,6 +85,9 @@ Commands:
   hotfix    Manage hotfix branches
   tag       Manage version tags
   web       Start the web interface
+  spotify   Set the Music album/track to display on the home page
+  video     Set the YouTube video banner to display on the home page
+  banner    Set the image banner to display on the home page
 ```
 
 ## Project Structure
@@ -90,6 +98,7 @@ Commands:
 │   ├── main.rs        # Core CLI logic (lys)
 │   ├── bin/
 │   │   └── syl.rs     # TUI application (syl)
+│   ├── shell.rs       # Interactive REPL shell logic
 │   ├── vcs.rs         # Version control engine
 │   ├── crypto.rs      # Ed25519 signing and hashing
 │   ├── todo.rs        # Task management logic
