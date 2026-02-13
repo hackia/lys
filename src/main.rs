@@ -5,6 +5,7 @@ use crate::commit::author;
 use crate::db::LYS_INIT;
 use crate::db::{connect_lys, get_current_branch};
 use crate::import::extract_repo_name;
+use crate::shell::Shell;
 use crate::utils::ko;
 use crate::utils::ok;
 use crate::utils::ok_merkle_hash;
@@ -21,7 +22,6 @@ use std::io::{Error, Write};
 use std::path::MAIN_SEPARATOR_STR;
 use std::path::Path;
 use std::process::{Command as Cmd, Stdio};
-use crate::shell::Shell;
 
 pub mod chat;
 pub mod commit;
@@ -351,7 +351,11 @@ fn cli() -> Command {
         .subcommand(
             Command::new("spotify")
                 .about("Set the Music album/track to display on the home page")
-                .arg(Arg::new("url").required(true).help("Music URL (Spotify or YouTube Music)")),
+                .arg(
+                    Arg::new("url")
+                        .required(true)
+                        .help("Music URL (Spotify or YouTube Music)"),
+                ),
         )
         .subcommand(
             Command::new("video")
@@ -1048,7 +1052,9 @@ pub fn execute_matches(app: clap::ArgMatches) -> Result<(), Error> {
 
             if let Some(video_url) = args.get_one::<String>("video") {
                 let mut stmt = conn
-                    .prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('video_banner_url', ?)")
+                    .prepare(
+                        "INSERT OR REPLACE INTO config (key, value) VALUES ('video_banner_url', ?)",
+                    )
                     .map_err(|e| Error::other(e.to_string()))?;
                 stmt.bind((1, video_url.as_str()))
                     .map_err(|e| Error::other(e.to_string()))?;
@@ -1070,16 +1076,20 @@ pub fn execute_matches(app: clap::ArgMatches) -> Result<(), Error> {
                 let mut stmt = conn
                     .prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('web_title', ?)")
                     .map_err(|e| Error::other(e.to_string()))?;
-                stmt.bind((1, title.as_str())).map_err(|e| Error::other(e.to_string()))?;
+                stmt.bind((1, title.as_str()))
+                    .map_err(|e| Error::other(e.to_string()))?;
                 stmt.next().map_err(|e| Error::other(e.to_string()))?;
                 ok("Web title updated");
             }
 
             if let Some(subtitle) = args.get_one::<String>("subtitle") {
                 let mut stmt = conn
-                    .prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('web_subtitle', ?)")
+                    .prepare(
+                        "INSERT OR REPLACE INTO config (key, value) VALUES ('web_subtitle', ?)",
+                    )
                     .map_err(|e| Error::other(e.to_string()))?;
-                stmt.bind((1, subtitle.as_str())).map_err(|e| Error::other(e.to_string()))?;
+                stmt.bind((1, subtitle.as_str()))
+                    .map_err(|e| Error::other(e.to_string()))?;
                 stmt.next().map_err(|e| Error::other(e.to_string()))?;
                 ok("Web subtitle updated");
             }
@@ -1093,16 +1103,20 @@ pub fn execute_matches(app: clap::ArgMatches) -> Result<(), Error> {
                 let mut stmt = conn
                     .prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('web_footer', ?)")
                     .map_err(|e| Error::other(e.to_string()))?;
-                stmt.bind((1, footer_content.as_str())).map_err(|e| Error::other(e.to_string()))?;
+                stmt.bind((1, footer_content.as_str()))
+                    .map_err(|e| Error::other(e.to_string()))?;
                 stmt.next().map_err(|e| Error::other(e.to_string()))?;
                 ok("Web footer updated");
             }
 
             if let Some(homepage) = args.get_one::<String>("homepage") {
                 let mut stmt = conn
-                    .prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('web_homepage', ?)")
+                    .prepare(
+                        "INSERT OR REPLACE INTO config (key, value) VALUES ('web_homepage', ?)",
+                    )
                     .map_err(|e| Error::other(e.to_string()))?;
-                stmt.bind((1, homepage.as_str())).map_err(|e| Error::other(e.to_string()))?;
+                stmt.bind((1, homepage.as_str()))
+                    .map_err(|e| Error::other(e.to_string()))?;
                 stmt.next().map_err(|e| Error::other(e.to_string()))?;
                 ok("Web homepage URL updated");
             }
@@ -1111,7 +1125,8 @@ pub fn execute_matches(app: clap::ArgMatches) -> Result<(), Error> {
                 let mut stmt = conn
                     .prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('web_documentation', ?)")
                     .map_err(|e| Error::other(e.to_string()))?;
-                stmt.bind((1, documentation.as_str())).map_err(|e| Error::other(e.to_string()))?;
+                stmt.bind((1, documentation.as_str()))
+                    .map_err(|e| Error::other(e.to_string()))?;
                 stmt.next().map_err(|e| Error::other(e.to_string()))?;
                 ok("Web documentation URL updated");
             }
@@ -1143,7 +1158,9 @@ pub fn execute_matches(app: clap::ArgMatches) -> Result<(), Error> {
             let current_dir = current_dir()?;
             let conn = connect_lys(&current_dir).map_err(|e| Error::other(e.to_string()))?;
             let mut stmt = conn
-                .prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('video_banner_url', ?)")
+                .prepare(
+                    "INSERT OR REPLACE INTO config (key, value) VALUES ('video_banner_url', ?)",
+                )
                 .map_err(|e| Error::other(e.to_string()))?;
             stmt.bind((1, url.as_str()))
                 .map_err(|e| Error::other(e.to_string()))?;
@@ -1192,9 +1209,7 @@ pub fn execute_matches(app: clap::ArgMatches) -> Result<(), Error> {
                 _ => Ok(()),
             }
         }
-        _ => {
-            Shell::new().run()
-        }
+        _ => Shell::new().run(),
     }
 }
 

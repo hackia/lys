@@ -24,7 +24,12 @@ pub fn start_todo(conn: &Connection, id: i64) -> Result<(), Error> {
     ok(format!("Task #{id} is now in progress").as_str());
     Ok(())
 }
-pub fn add_todo(conn: &Connection, title: &str, assigned_to: Option<&str>, due_date: Option<&str>) -> Result<(), Error> {
+pub fn add_todo(
+    conn: &Connection,
+    title: &str,
+    assigned_to: Option<&str>,
+    due_date: Option<&str>,
+) -> Result<(), Error> {
     let query = "INSERT INTO todos (title, assigned_to, due_date) VALUES (?, ?, ?)";
     let mut stmt = conn.prepare(query)?;
     stmt.bind((1, title))?;
@@ -35,7 +40,7 @@ pub fn add_todo(conn: &Connection, title: &str, assigned_to: Option<&str>, due_d
         "Todo appended : {title} (due date : {})",
         due_date.unwrap_or("unknown")
     )
-        .as_str());
+    .as_str());
     Ok(())
 }
 
@@ -46,14 +51,13 @@ pub fn list_todos(conn: &Connection) -> Result<(), Error> {
     let mut todos = Vec::new();
 
     while let Ok(State::Row) = stmt.next() {
-        todos.push(TodoItem{
-                id: stmt.read(0)?,
-                title: stmt.read(1)?,
-                status: stmt.read(2)?,
-                assigned_to: stmt.read(3)?,
-                due_date: stmt.read(4)?,
-            }
-        );
+        todos.push(TodoItem {
+            id: stmt.read(0)?,
+            title: stmt.read(1)?,
+            status: stmt.read(2)?,
+            assigned_to: stmt.read(3)?,
+            due_date: stmt.read(4)?,
+        });
     }
     if todos.is_empty() {
         ok("No pending tasks. You're all caught up!");

@@ -33,7 +33,10 @@ fn build_vfs_tree_parallel(
             .map(|e| {
                 let kind = e.kind().unwrap_or(ObjectType::Any);
                 let size = if kind == ObjectType::Blob {
-                    repo_guard.find_blob(e.id()).map(|b| b.size() as u64).unwrap_or(0)
+                    repo_guard
+                        .find_blob(e.id())
+                        .map(|b| b.size() as u64)
+                        .unwrap_or(0)
                 } else {
                     0
                 };
@@ -92,7 +95,11 @@ fn build_vfs_tree_parallel(
 
         pb.set_message(format!("Indexing {}", &entry_hash[..7]));
 
-        let size_opt = if kind == ObjectType::Blob { Some(size as i64) } else { None };
+        let size_opt = if kind == ObjectType::Blob {
+            Some(size as i64)
+        } else {
+            None
+        };
 
         // Insertion dans tree_nodes avec le hash Blake3 !
         db::insert_tree_node(conn, parent_hash, &name, &entry_hash, mode as i64, size_opt)?;

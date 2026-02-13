@@ -35,14 +35,8 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug)]
 pub enum Node {
-    File {
-        hash: String,
-        mode: u32,
-        size: u64,
-    },
-    Directory {
-        children: BTreeMap<String, Node>,
-    },
+    File { hash: String, mode: u32, size: u64 },
+    Directory { children: BTreeMap<String, Node> },
 }
 
 #[derive(Debug)]
@@ -290,24 +284,31 @@ fn time_ago_cli(timestamp: &str) -> String {
     }
 }
 
-fn last_commit_for_path_cli(conn: &Connection, full_path: &str, is_dir: bool) -> Option<(String, String)> {
-    // Retourne (hash, timestamp)
+fn last_commit_for_path_cli(
+    conn: &Connection,
+    full_path: &str,
+    is_dir: bool,
+) -> Option<(String, String, String)> {
+    // Retourne (hash, timestamp, message)
     let sql = if is_dir {
-        "SELECT c.hash, c.timestamp FROM manifest m JOIN commits c ON c.id = m.commit_id \
+        "SELECT c.hash, c.timestamp, c.message FROM manifest m JOIN commits c ON c.id = m.commit_id \
          WHERE m.file_path = ?1 OR m.file_path LIKE (?1 || '/%') ORDER BY c.timestamp DESC LIMIT 1"
     } else {
-        "SELECT c.hash, c.timestamp FROM manifest m JOIN commits c ON c.id = m.commit_id \
+        "SELECT c.hash, c.timestamp, c.message FROM manifest m JOIN commits c ON c.id = m.commit_id \
          WHERE m.file_path = ?1 ORDER BY c.timestamp DESC LIMIT 1"
     };
     let mut stmt = match conn.prepare(sql) {
         Ok(s) => s,
         Err(_) => return None,
     };
-    if stmt.bind((1, full_path)).is_err() { return None; }
+    if stmt.bind((1, full_path)).is_err() {
+        return None;
+    }
     if let Ok(State::Row) = stmt.next() {
         let h = stmt.read::<String, _>(0).ok()?;
         let ts = stmt.read::<String, _>(1).ok()?;
-        Some((h, ts))
+        let msg = stmt.read::<String, _>(2).ok()?;
+        Some((h, ts, msg))
     } else {
         None
     }
@@ -340,12 +341,27 @@ fn ls_tree_recursive(
     for (i, (name, hash, mode)) in entries.into_iter().enumerate() {
         let is_last = i == count - 1;
         let connector = if is_last { "└── " } else { "├── " };
-        let full_path = if current_path.is_empty() { name.clone() } else { format!("{}/{}", current_path, name) };
+        let full_path = if current_path.is_empty() {
+            name.clone()
+        } else {
+            format!("{}/{}", current_path, name)
+        };
 
         let mut suffix = String::new();
-        if let Some((h, ts)) = last_commit_for_path_cli(conn, &full_path, is_directory(conn, &hash)? ) {
+        if let Some((h, ts, msg)) =
+            last_commit_for_path_cli(conn, &full_path, is_directory(conn, &hash)?)
+        {
             let age = time_ago_cli(&ts);
-            suffix = if age.is_empty() { format!(" — {}", &h[0..7]) } else { format!(" — {} ({})", &h[0..7], age) };
+            let truncated_msg = if msg.len() > 30 {
+                format!("{}...", &msg[..27])
+            } else {
+                msg.clone()
+            };
+            suffix = if age.is_empty() {
+                format!(" — {} [{}]", &h[0..7], truncated_msg)
+            } else {
+                format!(" — {} ({}) [{}]", &h[0..7], age, truncated_msg)
+            };
         }
 
         lines.push(format!(
@@ -1368,14 +1384,7 @@ fn store_tree_recursive(
             // On enregistre chaque enfant dans la table tree_nodes
             // parent_tree_hash est le hash du dossier que nous venons de calculer
             for (name, hash, mode, size) in children_data {
-                crate::db::insert_tree_node(
-                    conn,
-                    &dir_hash,
-                    name,
-                    &hash,
-                    mode as i64,
-                    size,
-                )?;
+                crate::db::insert_tree_node(conn, &dir_hash, name, &hash, mode as i64, size)?;
             }
             Ok(dir_hash)
         }
@@ -1449,6 +1458,29 @@ pub fn commit(conn: &Connection, message: &str, author: &str) -> Result<(), Erro
     let mut stmt_id = conn.prepare(id_query)?;
     stmt_id.next()?;
     let commit_id: i64 = stmt_id.read(0)?;
+
+    // 5. Remplissage du manifest pour la vue tree
+    let mut state_map = HashMap::new();
+    flatten_tree(conn, &root_hash, PathBuf::new(), &mut state_map)?;
+    for (path, (blob_hash, _)) in state_map {
+        let mut stmt_blob = conn.prepare("SELECT id FROM store.blobs WHERE hash = ?")?;
+        stmt_blob.bind((1, blob_hash.as_str()))?;
+        if let Ok(State::Row) = stmt_blob.next() {
+            let blob_id: i64 = stmt_blob.read(0)?;
+            // Pour l'instant on met asset_id à 0 ou on en crée un si on veut être propre
+            // Mais la table manifest demande asset_id.
+            // On va essayer d'insérer avec asset_id = 0 pour voir si ça suffit à la vue tree.
+            // La vue tree fait JOIN manifest m JOIN commits c ON c.id = m.commit_id WHERE m.file_path = ?
+            // Elle n'utilise pas asset_id ni blob_id pour l'affichage du dernier commit.
+            let query_manifest = "INSERT INTO manifest (commit_id, asset_id, blob_id, file_path) VALUES (?, ?, ?, ?)";
+            let mut stmt_m = conn.prepare(query_manifest)?;
+            stmt_m.bind((1, commit_id))?;
+            stmt_m.bind((2, 0))?; // dummy asset_id
+            stmt_m.bind((3, blob_id))?;
+            stmt_m.bind((4, path.to_string_lossy().as_ref()))?;
+            stmt_m.next()?;
+        }
+    }
 
     // On récupère la branche actuelle et on met à jour son pointeur HEAD
     let branch = get_current_branch(conn)?;

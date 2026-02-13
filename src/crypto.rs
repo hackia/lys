@@ -182,11 +182,13 @@ mod tests {
         let signature_hex = sign_message(root_path, message).expect("Failed to sign message");
 
         // 3. Verify signature
-        let is_valid = verify_signature(root_path, message, &signature_hex).expect("Failed to verify signature");
+        let is_valid = verify_signature(root_path, message, &signature_hex)
+            .expect("Failed to verify signature");
         assert!(is_valid);
 
         // 4. Verify with wrong message
-        let is_valid_wrong = verify_signature(root_path, "Wrong message", &signature_hex).expect("Failed to verify signature");
+        let is_valid_wrong = verify_signature(root_path, "Wrong message", &signature_hex)
+            .expect("Failed to verify signature");
         assert!(!is_valid_wrong);
     }
 }

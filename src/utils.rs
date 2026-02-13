@@ -1,5 +1,5 @@
-use std::io::stdout;
 use std::fs::read_to_string;
+use std::io::stdout;
 use std::path::Path;
 use std::process::Command;
 
@@ -174,7 +174,7 @@ pub fn ko_audit_commit(hash: &str) {
 }
 
 pub fn run_hooks() -> Result<(), Box<dyn std::error::Error>> {
-    let lys_file = Path::new("Lys");
+    let lys_file = Path::new("lys");
     if !lys_file.exists() {
         return Ok(());
     }

@@ -249,7 +249,8 @@ pub fn page(title: &str, style: &str, body: &str) -> Html<String> {
     let site_homepage = WEB_HOMEPAGE.get().map(String::as_str).unwrap_or("");
     let site_documentation = WEB_DOCUMENTATION.get().map(String::as_str).unwrap_or("");
 
-    let mut menu_links = String::from("<a href='/'>Summary</a><a href='/'>Log</a><a href='/rss'>RSS</a>");
+    let mut menu_links =
+        String::from("<a href='/'>Summary</a><a href='/'>Log</a><a href='/rss'>RSS</a>");
     if !site_homepage.is_empty() {
         menu_links.push_str(&format!(
             "<a href='{}' target='_blank'>Homepage</a>",
@@ -264,7 +265,9 @@ pub fn page(title: &str, style: &str, body: &str) -> Html<String> {
     }
 
     let footer_html = if site_footer.is_empty() {
-        String::from("<div id='footer' style='padding:20px; border-top:1px solid var(--border); margin:30px 25px 0 25px;'><small>&copy; 2026 Lys Inc.</small></div>")
+        String::from(
+            "<div id='footer' style='padding:20px; border-top:1px solid var(--border); margin:30px 25px 0 25px;'><small>&copy; 2026 Lys Inc.</small></div>",
+        )
     } else {
         format!(
             "<div id='footer' style='padding:20px; border-top:1px solid var(--border); margin:30px 25px 0 25px;'>{}</div>",
@@ -1923,16 +1926,20 @@ fn render_tree_html_flat(
     summary_out.push_str(&summary_html);
 
     // Helper local pour récupérer le dernier commit touchant un chemin
-    fn last_commit_for_path(conn: &Connection, full_path: &str, is_dir: bool) -> Option<(i64, String, String)> {
+    fn last_commit_for_path(
+        conn: &Connection,
+        full_path: &str,
+        is_dir: bool,
+    ) -> Option<(i64, String, String, String)> {
         // Attention: la table manifest peut ne pas exister sur d'anciens dépôts
         let base_sql = if is_dir {
-            "SELECT c.id, c.hash, c.timestamp \
+            "SELECT c.id, c.hash, c.timestamp, c.message \
              FROM manifest m \
              JOIN commits c ON c.id = m.commit_id \
              WHERE m.file_path = ?1 OR m.file_path LIKE (?1 || '/%') \
              ORDER BY c.timestamp DESC LIMIT 1"
         } else {
-            "SELECT c.id, c.hash, c.timestamp \
+            "SELECT c.id, c.hash, c.timestamp, c.message \
              FROM manifest m \
              JOIN commits c ON c.id = m.commit_id \
              WHERE m.file_path = ?1 \
@@ -1942,12 +1949,15 @@ fn render_tree_html_flat(
             Ok(s) => s,
             Err(_) => return None,
         };
-        if stmt.bind((1, full_path)).is_err() { return None; }
+        if stmt.bind((1, full_path)).is_err() {
+            return None;
+        }
         if let Ok(sqlite::State::Row) = stmt.next() {
             let id = stmt.read::<i64, _>(0).ok()?;
             let hash = stmt.read::<String, _>(1).ok()?;
             let ts = stmt.read::<String, _>(2).ok()?;
-            Some((id, hash, ts))
+            let msg = stmt.read::<String, _>(3).ok()?;
+            Some((id, hash, ts, msg))
         } else {
             None
         }
@@ -1958,7 +1968,11 @@ fn render_tree_html_flat(
         let icon = if is_dir { "📁" } else { "📄" };
 
         let (full_path, link) = if is_dir {
-            let full_path = if current_path.is_empty() { name.clone() } else { format!("{}/{}", current_path, name) };
+            let full_path = if current_path.is_empty() {
+                name.clone()
+            } else {
+                format!("{}/{}", current_path, name)
+            };
             let link = format!(
                 "<a href='/commit/{commit_id}/tree/{}' class='dir'>{}</a>",
                 full_path,
@@ -1966,7 +1980,11 @@ fn render_tree_html_flat(
             );
             (full_path, link)
         } else {
-            let full_path = if current_path.is_empty() { name.clone() } else { format!("{}/{}", current_path, name) };
+            let full_path = if current_path.is_empty() {
+                name.clone()
+            } else {
+                format!("{}/{}", current_path, name)
+            };
             let link = format!(
                 "<a href='/file/{}' class='file'>{}</a>",
                 html_escape(&hash),
@@ -1975,12 +1993,25 @@ fn render_tree_html_flat(
             (full_path, link)
         };
 
-        let size_str = if is_dir { "-".to_string() } else { format!("{} B", size) };
+        let size_str = if is_dir {
+            "-".to_string()
+        } else {
+            format!("{} B", size)
+        };
 
-        let (last_commit_html, age_html) = if let Some((cid, chash, ts)) = last_commit_for_path(conn, &full_path, is_dir) {
+        let (last_commit_html, age_html) = if let Some((cid, chash, ts, msg)) =
+            last_commit_for_path(conn, &full_path, is_dir)
+        {
             let age = time_ago(&ts);
+            let truncated_msg = truncate_words(&msg, 10);
             (
-                format!("<a href='/commit/{}'><code class='hash'>{}</code></a>", cid, html_escape(short_hash(&chash))),
+                format!(
+                    "<a href='/commit/{}'><code class='hash'>{}</code></a> <span class='meta' title='{}'>{}</span>",
+                    cid,
+                    html_escape(short_hash(&chash)),
+                    html_escape(&msg),
+                    html_escape(&truncated_msg)
+                ),
                 html_escape(&age),
             )
         } else {
