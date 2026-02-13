@@ -21,6 +21,7 @@ use std::io::{Error, Write};
 use std::path::MAIN_SEPARATOR_STR;
 use std::path::Path;
 use std::process::{Command as Cmd, Stdio};
+use crate::shell::Shell;
 
 pub mod chat;
 pub mod commit;
@@ -28,6 +29,7 @@ pub mod crypto;
 pub mod db;
 pub mod import;
 mod mount;
+pub mod shell;
 pub mod todo;
 pub mod tree;
 pub mod utils;
@@ -647,9 +649,7 @@ fn summary() -> Result<(), Error> {
     }
     Ok(())
 }
-fn main() -> Result<(), Error> {
-    let args = cli();
-    let app = args.clone().get_matches();
+pub fn execute_matches(app: clap::ArgMatches) -> Result<(), Error> {
     match app.subcommand() {
         Some(("new", _)) => new_project(),
         Some(("verify", args)) => {
@@ -1003,8 +1003,22 @@ fn main() -> Result<(), Error> {
             }
         }
         _ => {
-            args.clone().print_help().expect("failed to print the help");
-            Ok(())
+            Shell::new().run()
+        }
+    }
+}
+
+fn main() -> Result<(), Error> {
+    let args = cli();
+    let app = args.clone().try_get_matches();
+    match app {
+        Ok(matches) => execute_matches(matches),
+        Err(e) => {
+            if std::env::args().len() == 1 {
+                Shell::new().run().map_err(|e| Error::other(e.to_string()))
+            } else {
+                e.exit();
+            }
         }
     }
 }

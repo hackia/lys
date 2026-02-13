@@ -1865,6 +1865,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "shlex",
  "similar",
  "sqlite",
  "tabled",
