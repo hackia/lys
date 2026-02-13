@@ -31,6 +31,7 @@ pub struct Session {
 pub struct AppState {
     pub conn: Mutex<Connection>,
     pub sessions: DashMap<String, Arc<Session>>,
+    pub chat_tx: broadcast::Sender<String>,
 }
 
 static WEB_TITLE: OnceCell<String> = OnceCell::new();
@@ -63,6 +64,13 @@ struct CommitForm {
 #[derive(Deserialize)]
 struct EditorForm {
     content: String,
+}
+
+#[derive(Deserialize)]
+struct TodoForm {
+    title: String,
+    assigned_to: Option<String>,
+    due_date: Option<String>,
 }
 
 fn short_hash(s: &str) -> &str {
@@ -263,7 +271,7 @@ pub fn page(title: &str, style: &str, body: &str) -> Html<String> {
     let site_documentation = WEB_DOCUMENTATION.get().map(String::as_str).unwrap_or("");
 
     let mut menu_links =
-        String::from("<a href='/'>Summary</a><a href='/'>Log</a><a href='/rss'>RSS</a><a href='/editor'>Editor</a><a href='/commit/new'>Commit</a>");
+        String::from("<a href='/'>Summary</a><a href='/'>Log</a><a href='/rss'>RSS</a><a href='/editor'>Editor</a><a href='/commit/new'>Commit</a><a href='/todo'>Todo</a><a href='/chat'>Chat</a>");
     if !site_homepage.is_empty() {
         menu_links.push_str(&format!(
             "<a href='{}' target='_blank'>Homepage</a>",
@@ -592,15 +600,19 @@ pub async fn start_server(repo_path: &str, port: u16) {
         }
     }
 
+    let (chat_tx, _) = broadcast::channel(100);
     let shared_state = Arc::new(AppState {
         conn: Mutex::new(conn),
         sessions: DashMap::new(),
+        chat_tx,
     });
 
     let app = Router::new()
         .route("/", get(idx_commits))
         .route("/rss", get(serve_rss))
         .route("/ws", get(ws_handler))
+        .route("/ws/chat", get(ws_chat_upgrade))
+        .route("/chat", get(show_chat))
         .route("/commit/new", get(new_commit_form))
         .route("/commit/create", post(create_commit))
         .route("/commit/{id}", get(show_commit))
@@ -609,6 +621,9 @@ pub async fn start_server(repo_path: &str, port: u16) {
         .route("/commit/{id}/tree/{*path}", get(show_commit_tree))
         .route("/editor", get(editor_list))
         .route("/editor/{*path}", get(editor_edit).post(editor_save))
+        .route("/todo", get(todo_list))
+        .route("/todo/add", post(todo_add))
+        .route("/todo/update/{id}/{status}", post(todo_update))
         .route("/file/{hash}", get(show_file))
         .route("/raw/{hash}", get(download_raw)) // <-- new: reliable way to view binary / huge files
         .route("/upload/{hash}", post(upload_atom))
@@ -2058,6 +2073,128 @@ fn render_tree_html_flat(
     Ok(())
 }
 
+// -----------------------------
+// TEAM CHAT (WebSocket + UI)
+// -----------------------------
+async fn show_chat() -> impl IntoResponse {
+    let body = "
+      <h3>Team Chat</h3>
+      <div id='chat-box' style='height: 420px; overflow-y: auto; border:1px solid var(--border); border-radius:4px; padding:10px; background: var(--code-bg); font-family: monospace; font-size: 0.9em; margin-bottom:10px;'></div>
+      <div style='display:flex; gap:8px;'>
+        <input id='sender' placeholder='Your name' style='flex:0 0 180px; padding:8px; border:1px solid var(--border); background:var(--bg); color:var(--fg);' />
+        <input id='message' placeholder='Type a message and press Enter' style='flex:1; padding:8px; border:1px solid var(--border); background:var(--bg); color:var(--fg);' />
+        <button id='send' class='btn'>Send</button>
+      </div>
+      <script>
+        (function(){
+          const log = document.getElementById('chat-box');
+          const input = document.getElementById('message');
+          const sender = document.getElementById('sender');
+          const btn = document.getElementById('send');
+          function append(line){
+            const el = document.createElement('div');
+            el.textContent = line;
+            log.appendChild(el);
+            log.scrollTop = log.scrollHeight;
+          }
+          const proto = (location.protocol === 'https:') ? 'wss' : 'ws';
+          const ws = new WebSocket(proto + '://' + location.host + '/ws/chat');
+          ws.onmessage = (ev)=>{
+            try {
+              const obj = JSON.parse(ev.data);
+              append('['+obj.sender+'] ' + obj.content);
+            } catch(_) {
+              append(ev.data);
+            }
+          };
+          function send(){
+            const s = (sender.value||'web');
+            const m = input.value.trim();
+            if(!m) return;
+            ws.send(JSON.stringify({sender:s, content:m}));
+            input.value='';
+          }
+          btn.onclick = send;
+          input.addEventListener('keydown', (e)=>{ if(e.key==='Enter'){ send(); }});
+        })();
+      </script>
+    ";
+    page("Team Chat", "", body).into_response()
+}
+
+async fn ws_chat_upgrade(
+    State(state): State<Arc<AppState>>,
+    ws: WebSocketUpgrade,
+) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| async move { handle_chat_socket(state, socket).await })
+}
+
+async fn handle_chat_socket(state: Arc<AppState>, mut socket: WebSocket) {
+    use axum::extract::ws::Message;
+
+    // 1) Récupérer l'historique récent (hors await), puis l'envoyer
+    let hist: Vec<(String, String)> = {
+        if let Ok(conn) = state.conn.lock() {
+            if let Ok(mut stmt) = conn.prepare("SELECT sender, content FROM ephemeral_messages ORDER BY id DESC LIMIT 50") {
+                let mut v = Vec::new();
+                while let Ok(sqlite::State::Row) = stmt.next() {
+                    let s: String = stmt.read(0).unwrap_or_else(|_| "?".into());
+                    let c: String = stmt.read(1).unwrap_or_default();
+                    v.push((s, c));
+                }
+                v
+            } else { Vec::new() }
+        } else { Vec::new() }
+    };
+    // On renvoie dans l'ordre chronologique
+    let mut hist = hist;
+    hist.reverse();
+    for (s, c) in hist {
+        let json = format!("{{\"sender\":{0:?},\"content\":{1:?}}}", s, c);
+        let _ = socket.send(Message::Text(json.into())).await;
+    }
+
+    // 2) Abonnement broadcast pour les nouveaux messages
+    let mut rx = state.chat_tx.subscribe();
+
+    // 3) Boucle principale: écoute à la fois le broadcast et ce client
+    loop {
+        tokio::select! {
+            // Messages broadcast vers ce client
+            Ok(line) = rx.recv() => {
+                if socket.send(Message::Text(line.into())).await.is_err() {
+                    break;
+                }
+            }
+            // Messages entrants de ce client
+            msg = socket.recv() => {
+                match msg {
+                    Some(Ok(Message::Text(txt))) => {
+                        let s_txt = txt.as_str();
+                        // On s'attend à un JSON {sender, content}
+                        let (sender_name, content) = match serde_json::from_str::<serde_json::Value>(s_txt) {
+                            Ok(v) => {
+                                let s = v.get("sender").and_then(|x| x.as_str()).unwrap_or("web");
+                                let c = v.get("content").and_then(|x| x.as_str()).unwrap_or("");
+                                (s.to_string(), c.to_string())
+                            }
+                            Err(_) => ("web".to_string(), s_txt.to_string()),
+                        };
+                        if content.trim().is_empty() { continue; }
+                        if let Ok(conn) = state.conn.lock() {
+                            let _ = crate::chat::send_message(&conn, &sender_name, &content);
+                        }
+                        let payload = format!("{{\"sender\":{0:?},\"content\":{1:?}}}", sender_name, content);
+                        let _ = state.chat_tx.send(payload);
+                    }
+                    Some(Ok(Message::Close(_))) | None => break,
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
 // 2.2. VUE DIFF D'UN COMMIT
 async fn show_commit_diff(
     State(state): State<Arc<AppState>>,
@@ -2853,6 +2990,174 @@ async fn create_commit(
     Response::builder()
         .status(StatusCode::SEE_OTHER)
         .header("Location", "/")
+        .body(axum::body::Body::empty())
+        .unwrap()
+}
+
+// -----------------------------
+// TODO HANDLERS
+// -----------------------------
+
+async fn todo_list(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let conn = match state.conn.lock() {
+        Ok(g) => g,
+        Err(_) => return http_error(StatusCode::INTERNAL_SERVER_ERROR, "DB lock poisoned"),
+    };
+
+    let query = "SELECT id, title, status, IFNULL(assigned_to, 'Me'), IFNULL(due_date, 'No limit') FROM todos ORDER BY CASE WHEN status = 'DONE' THEN 1 ELSE 0 END, created_at DESC";
+    let mut stmt = match conn.prepare(query) {
+        Ok(s) => s,
+        Err(_) => return http_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to prepare query"),
+    };
+
+    let mut rows_html = String::new();
+    while let Ok(sqlite::State::Row) = stmt.next() {
+        let id: i64 = stmt.read(0).unwrap();
+        let title: String = stmt.read(1).unwrap();
+        let status: String = stmt.read(2).unwrap();
+        let assigned: String = stmt.read(3).unwrap();
+        let due_date: String = stmt.read(4).unwrap();
+
+        let status_class = match status.as_str() {
+            "TODO" => "todo-pending",
+            "IN_PROGRESS" => "todo-progress",
+            "DONE" => "todo-done",
+            _ => "",
+        };
+
+        let mut actions = String::new();
+        if status != "DONE" {
+            if status == "TODO" {
+                actions.push_str(&format!(
+                    "<form action='/todo/update/{}/IN_PROGRESS' method='post' style='display:inline;'><button type='submit' class='btn'>Start</button></form>",
+                    id
+                ));
+            }
+            actions.push_str(&format!(
+                "<form action='/todo/update/{}/DONE' method='post' style='display:inline;'><button type='submit' class='btn btn-active'>Complete</button></form>",
+                id
+            ));
+        }
+
+        rows_html.push_str(&format!(
+            "<tr>\
+                <td>{}</td>\
+                <td><span class='todo-status {}'>{}</span></td>\
+                <td><strong>{}</strong></td>\
+                <td>{}</td>\
+                <td>{}</td>\
+                <td style='text-align: right;'>{}</td>\
+            </tr>",
+            id, status_class, status, html_escape(&title), html_escape(&assigned), html_escape(&due_date), actions
+        ));
+    }
+
+    let body = format!(
+        "<h3>Todo List</h3>\
+         <div style='margin-bottom: 30px; background: var(--menu-bg); padding: 20px; border: 1px solid var(--border); border-radius: 8px;'>\
+           <h4>Add New Task</h4>\
+           <form action='/todo/add' method='post' style='display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap;'>\
+             <div style='flex: 1; min-width: 200px;'>\
+               <label style='display:block; font-size:0.8em; margin-bottom:5px;'>Title</label>\
+               <input type='text' name='title' required style='width:100%; padding:8px; border:1px solid var(--border); border-radius:4px; background: var(--bg); color: var(--fg);'>\
+             </div>\
+             <div>\
+               <label style='display:block; font-size:0.8em; margin-bottom:5px;'>Assigned to</label>\
+               <input type='text' name='assigned_to' placeholder='Me' style='padding:8px; border:1px solid var(--border); border-radius:4px; background: var(--bg); color: var(--fg);'>\
+             </div>\
+             <div>\
+               <label style='display:block; font-size:0.8em; margin-bottom:5px;'>Due Date</label>\
+               <input type='text' name='due_date' placeholder='YYYY-MM-DD' style='padding:8px; border:1px solid var(--border); border-radius:4px; background: var(--bg); color: var(--fg);'>\
+             </div>\
+             <button type='submit' class='btn btn-active' style='height:38px;'>Add Todo</button>\
+           </form>\
+         </div>\
+         <table>\
+           <thead>\
+             <tr>\
+               <th style='width: 40px;'>ID</th>\
+               <th style='width: 100px;'>Status</th>\
+               <th>Task</th>\
+               <th style='width: 150px;'>Assigned</th>\
+               <th style='width: 150px;'>Due Date</th>\
+               <th style='text-align: right; width: 200px;'>Actions</th>\
+             </tr>\
+           </thead>\
+           <tbody>{}</tbody>\
+         </table>",
+        rows_html
+    );
+
+    page(
+        "Todo List",
+        ".todo-status { padding: 2px 8px; border-radius: 4px; font-size: 0.8em; font-weight: bold; }\
+         .todo-pending { background: #6c757d; color: white; }\
+         .todo-progress { background: #ffc107; color: black; }\
+         .todo-done { background: #28a745; color: white; text-decoration: line-through; opacity: 0.7; }\
+         h4 { margin-top: 0; margin-bottom: 15px; }",
+        &body
+    ).into_response()
+}
+
+async fn todo_add(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Form(form): axum::extract::Form<TodoForm>,
+) -> impl IntoResponse {
+    let conn = match state.conn.lock() {
+        Ok(g) => g,
+        Err(_) => return http_error(StatusCode::INTERNAL_SERVER_ERROR, "DB lock poisoned"),
+    };
+
+    if let Err(e) = crate::todo::add_todo(
+        &conn,
+        &form.title,
+        form.assigned_to.as_deref(),
+        form.due_date.as_deref(),
+    ) {
+        return http_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &format!("Failed to add todo: {}", e),
+        );
+    }
+
+    Response::builder()
+        .status(StatusCode::SEE_OTHER)
+        .header("Location", "/todo")
+        .body(axum::body::Body::empty())
+        .unwrap()
+}
+
+async fn todo_update(
+    State(state): State<Arc<AppState>>,
+    UrlPath(params): UrlPath<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let id: i64 = match params.get("id").and_then(|i| i.parse().ok()) {
+        Some(i) => i,
+        None => return http_error(StatusCode::BAD_REQUEST, "Invalid ID"),
+    };
+    let status = params.get("status").map(|s| s.as_str()).unwrap_or("");
+
+    let conn = match state.conn.lock() {
+        Ok(g) => g,
+        Err(_) => return http_error(StatusCode::INTERNAL_SERVER_ERROR, "DB lock poisoned"),
+    };
+
+    let res = match status {
+        "IN_PROGRESS" => crate::todo::start_todo(&conn, id),
+        "DONE" => crate::todo::complete_todo(&conn, id),
+        _ => return http_error(StatusCode::BAD_REQUEST, "Invalid status"),
+    };
+
+    if let Err(e) = res {
+        return http_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &format!("Failed to update todo: {}", e),
+        );
+    }
+
+    Response::builder()
+        .status(StatusCode::SEE_OTHER)
+        .header("Location", "/todo")
         .body(axum::body::Body::empty())
         .unwrap()
 }
