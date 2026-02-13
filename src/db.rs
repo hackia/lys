@@ -406,13 +406,13 @@ pub fn get_or_insert_blob(conn: &Connection, content: &[u8]) -> Result<i64, Erro
     stmt_id.read(0)
 }
 
-pub fn get_unique_contributors(conn: &Connection) -> Result<Vec<String>, Error> {
-    let query = "SELECT DISTINCT author FROM commits ORDER BY author ASC";
+pub fn get_unique_contributors(conn: &Connection) -> Result<Vec<(String, i64)>, Error> {
+    let query = "SELECT author, COUNT(*) as commit_count FROM commits GROUP BY author ORDER BY commit_count DESC";
     let mut stmt = conn.prepare(query)?;
 
     let mut contributors = Vec::new();
     while let Ok(State::Row) = stmt.next() {
-        contributors.push(stmt.read::<String, _>(0)?);
+        contributors.push((stmt.read::<String, _>(0)?, stmt.read::<i64, _>(1)?));
     }
     Ok(contributors)
 }

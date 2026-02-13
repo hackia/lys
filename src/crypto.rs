@@ -3,7 +3,6 @@ use ed25519_dalek::Signature;
 use ed25519_dalek::SigningKey;
 use ed25519_dalek::VerifyingKey;
 use ed25519_dalek::{Signer, Verifier};
-use rand::rngs::OsRng;
 use sqlite::{Connection, State};
 use std::fs;
 use std::fs::File;
@@ -14,7 +13,7 @@ pub fn sign_transfer(hash: &str, private_key_bytes: &[u8]) -> Vec<u8> {
     let signing_key = SigningKey::from_bytes(private_key_bytes.try_into().unwrap());
     // On signe le hash de l'atome
     let signature: Signature = signing_key.sign(hash.as_bytes());
-    signature.to_vec()
+    signature.to_bytes().to_vec()
 }
 
 pub fn verify_transfer(hash: &str, signature_bytes: &[u8], public_key_bytes: &[u8]) -> bool {
@@ -37,8 +36,7 @@ pub fn generate_keypair(root_path: &Path) -> Result<(), String> {
     }
 
     // Génération cryptographique
-    let mut csprng = OsRng;
-    let signing_key = SigningKey::generate(&mut csprng);
+    let signing_key = SigningKey::generate(&mut rand::rng());
     let verifying_key = signing_key.verifying_key();
 
     // Sauvegarde
@@ -158,4 +156,37 @@ pub fn audit(conn: &Connection) -> Result<bool, sqlite::Error> {
     }
     println!();
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_keygen_sign_verify() {
+        let dir = tempdir().unwrap();
+        let root_path = dir.path();
+
+        // 1. Generate keypair
+        generate_keypair(root_path).expect("Failed to generate keypair");
+
+        let secret_path = root_path.join(".lys/identity/secret.key");
+        let public_path = root_path.join(".lys/identity/public.key");
+
+        assert!(secret_path.exists());
+        assert!(public_path.exists());
+
+        // 2. Sign message
+        let message = "Hello, world!";
+        let signature_hex = sign_message(root_path, message).expect("Failed to sign message");
+
+        // 3. Verify signature
+        let is_valid = verify_signature(root_path, message, &signature_hex).expect("Failed to verify signature");
+        assert!(is_valid);
+
+        // 4. Verify with wrong message
+        let is_valid_wrong = verify_signature(root_path, "Wrong message", &signature_hex).expect("Failed to verify signature");
+        assert!(!is_valid_wrong);
+    }
 }

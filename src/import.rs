@@ -26,16 +26,23 @@ fn build_vfs_tree_parallel(
     }
 
     // 1. Extraction des entrées
-    let entries: Vec<(Oid, String, ObjectType, i32)> = {
+    let entries: Vec<(Oid, String, ObjectType, i32, u64)> = {
         let repo_guard = repo.lock().expect("Failed to lock repo");
         let tree = repo_guard.find_tree(tree_oid).expect("Failed to find tree");
         tree.iter()
             .map(|e| {
+                let kind = e.kind().unwrap_or(ObjectType::Any);
+                let size = if kind == ObjectType::Blob {
+                    repo_guard.find_blob(e.id()).map(|b| b.size() as u64).unwrap_or(0)
+                } else {
+                    0
+                };
                 (
                     e.id(),
                     e.name().unwrap_or("").to_string(),
-                    e.kind().unwrap_or(ObjectType::Any),
+                    kind,
                     e.filemode(),
+                    size,
                 )
             })
             .collect()
@@ -48,7 +55,7 @@ fn build_vfs_tree_parallel(
     // 2. Traitement des Blobs en parallèle (Correction de la syntaxe de déstructuration)
     entries
         .par_iter()
-        .for_each(|&(oid, ref _name, kind, _mode)| {
+        .for_each(|&(oid, ref _name, kind, _mode, _size)| {
             if let ObjectType::Blob = kind {
                 let content = {
                     let repo_guard = repo.lock().unwrap();
@@ -72,7 +79,7 @@ fn build_vfs_tree_parallel(
         });
 
     // 3. Traitement récursif et insertion (Séquentiel)
-    for (oid, name, kind, mode) in entries {
+    for (oid, name, kind, mode, size) in entries {
         // On utilise le hash Blake3 si c'est un blob, sinon on garde l'OID Git pour le dossier
         let entry_hash = if kind == ObjectType::Blob {
             blob_hashes
@@ -85,8 +92,10 @@ fn build_vfs_tree_parallel(
 
         pb.set_message(format!("Indexing {}", &entry_hash[..7]));
 
+        let size_opt = if kind == ObjectType::Blob { Some(size as i64) } else { None };
+
         // Insertion dans tree_nodes avec le hash Blake3 !
-        db::insert_tree_node(conn, parent_hash, &name, &entry_hash, mode as i64, None)?;
+        db::insert_tree_node(conn, parent_hash, &name, &entry_hash, mode as i64, size_opt)?;
 
         if let ObjectType::Tree = kind {
             build_vfs_tree_parallel(

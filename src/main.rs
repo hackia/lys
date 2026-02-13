@@ -642,8 +642,8 @@ fn summary() -> Result<(), Error> {
     let conn = connect_lys(root_path.as_path()).expect("Failed to connect to database");
     let contributors = db::get_unique_contributors(&conn).expect("Failed to get contributors");
 
-    for contributor in &contributors {
-        ok(contributor.as_str());
+    for (contributor, count) in &contributors {
+        ok(format!("{} ({} commits)", contributor, count).as_str());
     }
     Ok(())
 }
@@ -980,10 +980,7 @@ fn main() -> Result<(), Error> {
                 connect_lys(current_dir.as_path()).expect("failed to connect to the database");
             match sub.subcommand() {
                 Some(("add", args)) => {
-                    let title = match args.get_one::<String>("title") {
-                        Some(x) => x,
-                        None => todo!(),
-                    };
+                    let title = args.get_one::<String>("title").unwrap();
                     let user = args.get_one::<String>("user").map(|s| s.as_str());
                     let due = args.get_one::<String>("due").map(|s| s.as_str());
                     todo::add_todo(&conn, title, user, due).expect("failed to add todo");

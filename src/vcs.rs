@@ -35,8 +35,14 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug)]
 pub enum Node {
-    File { hash: String, mode: u32 },
-    Directory { children: BTreeMap<String, Node> },
+    File {
+        hash: String,
+        mode: u32,
+        size: u64,
+    },
+    Directory {
+        children: BTreeMap<String, Node>,
+    },
 }
 
 #[derive(Debug)]
@@ -1251,7 +1257,7 @@ pub fn files() -> Vec<String> {
     all
 }
 
-fn insert_into_tree(root: &mut Node, path: &Path, hash: String, mode: u32) {
+fn insert_into_tree(root: &mut Node, path: &Path, hash: String, mode: u32, size: u64) {
     let mut current = root;
 
     // On parcourt chaque composant du chemin (ex: ["src", "ui", "main.rs"])
@@ -1267,7 +1273,7 @@ fn insert_into_tree(root: &mut Node, path: &Path, hash: String, mode: u32) {
     }
 
     // Une fois arrivé au bout du chemin, on remplace le nœud par le fichier réel
-    *current = Node::File { hash, mode };
+    *current = Node::File { hash, mode, size };
 }
 
 fn store_tree_recursive(
@@ -1288,16 +1294,16 @@ fn store_tree_recursive(
                 // Appel récursif pour obtenir le hash de l'enfant
                 let child_hash = store_tree_recursive(conn, name, child_node)?;
 
-                let mode = match child_node {
-                    Node::File { mode, .. } => *mode,
-                    Node::Directory { .. } => 0o755, // Mode par défaut pour les répertoires
+                let (mode, size) = match child_node {
+                    Node::File { mode, size, .. } => (*mode, Some(*size as i64)),
+                    Node::Directory { .. } => (0o755, None), // Mode par défaut pour les répertoires
                 };
 
                 // On nourrit le hash du dossier avec les données de l'enfant (Nom + Hash)
                 hasher.update(name.as_bytes());
                 hasher.update(child_hash.as_bytes());
 
-                children_data.push((name, child_hash, mode));
+                children_data.push((name, child_hash, mode, size));
             }
 
             // Le hash final du dossier est le résultat de la combinaison de ses enfants
@@ -1305,14 +1311,14 @@ fn store_tree_recursive(
 
             // On enregistre chaque enfant dans la table tree_nodes
             // parent_tree_hash est le hash du dossier que nous venons de calculer
-            for (name, hash, mode) in children_data {
+            for (name, hash, mode, size) in children_data {
                 crate::db::insert_tree_node(
                     conn,
                     &dir_hash,
                     name,
                     &hash,
                     mode as i64,
-                    None, // On pourra passer l'env Nix ici plus tard
+                    size,
                 )?;
             }
             Ok(dir_hash)
@@ -1352,6 +1358,7 @@ pub fn commit(conn: &Connection, message: &str, author: &str) -> Result<(), Erro
             relative,
             content_hash,
             metadata.permissions().mode(),
+            metadata.len(),
         );
     }
 

@@ -201,18 +201,31 @@ pub fn page(title: &str, style: &str, body: &str) -> Html<String> {
              <div id='content'>{}</div>\
              <script src='https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-core.min.js'></script>\
              <script src='https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js'></script>\
-             <script>\
-               function copyToClipboard(elementId) {{\
-                 const element = document.getElementById(elementId);\
-                 const text = element.innerText || element.textContent;\
-                 navigator.clipboard.writeText(text).then(() => {{\
-                   const btn = event.target;\
-                   const originalText = btn.innerText;\
-                   btn.innerText = 'Copied!';\
-                   setTimeout(() => btn.innerText = originalText, 2000);\
-                 }});\
-               }}\
-             </script>\
+             <script>
+               function openTab(evt, tabName) {{
+                 var i;
+                 var x = document.getElementsByClassName('tab-content');
+                 for (i = 0; i < x.length; i++) {{
+                   x[i].style.display = 'none';
+                 }}
+                 var tabs = document.getElementsByClassName('tab');
+                 for (i = 0; i < tabs.length; i++) {{
+                   tabs[i].className = tabs[i].className.replace(' active', '');
+                 }}
+                 document.getElementById(tabName).style.display = 'block';
+                 evt.currentTarget.className += ' active';
+               }}
+               function copyToClipboard(elementId) {{
+                 const element = document.getElementById(elementId);
+                 const text = element.innerText || element.textContent;
+                 navigator.clipboard.writeText(text).then(() => {{
+                   const btn = event.target;
+                   const originalText = btn.innerText;
+                   btn.innerText = 'Copied!';
+                   setTimeout(() => btn.innerText = originalText, 2000);
+                 }});
+               }}
+             </script>
            </body>\
          </html>",
         html_escape(title),
@@ -289,24 +302,29 @@ pub async fn idx_commits(
     let total_pages = (total_commits as f64 / per_page as f64).ceil() as i64;
 
     let contributors = crate::db::get_unique_contributors(&conn).unwrap_or_default();
+    let contributor_names: Vec<String> = contributors.iter().map(|(n, _)| n.clone()).collect();
 
-    let stats_html = format!(
-        "<div style='margin-bottom: 20px; background: var(--menu-bg); padding: 15px; border: 1px solid var(--border); border-radius: 4px;'>\
-           <h3 style='margin-top: 0;'>Repository Summary</h3>\
+    let mut stats_tab = String::from("<div style='display: grid; grid-template-columns: 1fr 1fr; gap: 20px;'>");
+
+    // Left: Author stats table
+    stats_tab.push_str("<div><h3>Commits by Author</h3><table><thead><tr><th>Author</th><th>Commits</th></tr></thead><tbody>");
+    for (name, count) in &contributors {
+        stats_tab.push_str(&format!("<tr><td>{}</td><td>{}</td></tr>", html_escape(name), count));
+    }
+    stats_tab.push_str("</tbody></table></div>");
+
+    // Right: Global stats
+    stats_tab.push_str("<div><h3>Global Statistics</h3>");
+    stats_tab.push_str(&format!(
+        "<div style='background: var(--menu-bg); padding: 15px; border: 1px solid var(--border); border-radius: 4px;'>\
            <div style='display: grid; grid-template-columns: auto 1fr; gap: 10px 20px; font-size: 0.9em;'>\
              <strong>Total Commits:</strong> <span>{}</span>\
-             <strong>Contributors:</strong> <span>{}</span>\
-             <strong>Current Page:</strong> <span>{} / {}</span>\
-           </div>\
-           <div style='margin-top: 15px;'>\
-             <a href='/#latest' class='btn'>Jump to Latest Commits</a>\
+             <strong>Total Contributors:</strong> <span>{}</span>\
            </div>\
          </div>",
-        total_commits,
-        contributors.join(", "),
-        page_num,
-        total_pages
-    );
+        total_commits, contributors.len()
+    ));
+    stats_tab.push_str("</div></div>");
 
     let query = "SELECT id, hash, author, message, timestamp FROM commits ORDER BY id DESC LIMIT ? OFFSET ?";
     let mut rows = String::new();
@@ -369,20 +387,36 @@ pub async fn idx_commits(
     }
     nav_html.push_str("</div>");
 
+    let mut body = String::new();
+    body.push_str("<div class='tabs'>");
+    body.push_str("<div class='tab active' onclick=\"openTab(event, 'tab-log')\">Log</div>");
+    body.push_str("<div class='tab' onclick=\"openTab(event, 'tab-contributors')\">Contributors</div>");
+    body.push_str("<div class='tab' onclick=\"openTab(event, 'tab-stats')\">Stats</div>");
+    body.push_str("</div>");
+
+    body.push_str("<div id='tab-log' class='tab-content active'>");
+    body.push_str("<h3 id='latest'>Latest Commits</h3>");
+    body.push_str("<table>");
+    body.push_str(&rows);
+    body.push_str("</table>");
+    body.push_str(&nav_html);
+    body.push_str("</div>");
+
+    body.push_str("<div id='tab-contributors' class='tab-content'>");
+    body.push_str("<h3>Contributors</h3><ul>");
+    for name in contributor_names {
+        body.push_str(&format!("<li>{}</li>", html_escape(&name)));
+    }
+    body.push_str("</ul></div>");
+
+    body.push_str("<div id='tab-stats' class='tab-content'>");
+    body.push_str(&stats_tab);
+    body.push_str("</div>");
+
     page(
-        "Lys Log",
+        "Lys Repository",
         "",
-        &format!(
-            "{stats_html}\
-             <h3 id='latest'>Latest Commits</h3>\
-             <table>\
-               {rows}\
-             </table>\
-             {nav}",
-            stats_html = stats_html,
-            rows = rows,
-            nav = nav_html,
-        ),
+        &body,
     )
     .into_response()
 }
