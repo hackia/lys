@@ -1,0 +1,6 @@
+# Vérification du style
+cargo fmt --check
+# Exécution des tests
+cargo test
+# Analyse statique
+cargo clippy

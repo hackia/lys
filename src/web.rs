@@ -1070,7 +1070,7 @@ async fn show_commit_tree(
     }
 
     let mut tree_html = String::new();
-    tree_html.push_str("<thead><tr><th style='width: 20px;'></th><th>Name</th><th style='text-align: right;'>Size</th></tr></thead>");
+    tree_html.push_str("<thead><tr><th style='width: 20px;'></th><th>Name</th><th style='text-align: right;'>Size</th><th style='text-align: right;'>Last Commit</th><th style='text-align: right;'>Age</th></tr></thead>");
     let mut summary_html = String::new();
     if let Err(e) = render_tree_html_flat(
         &conn,
@@ -1922,33 +1922,69 @@ fn render_tree_html_flat(
     );
     summary_out.push_str(&summary_html);
 
+    // Helper local pour récupérer le dernier commit touchant un chemin
+    fn last_commit_for_path(conn: &Connection, full_path: &str, is_dir: bool) -> Option<(i64, String, String)> {
+        // Attention: la table manifest peut ne pas exister sur d'anciens dépôts
+        let base_sql = if is_dir {
+            "SELECT c.id, c.hash, c.timestamp \
+             FROM manifest m \
+             JOIN commits c ON c.id = m.commit_id \
+             WHERE m.file_path = ?1 OR m.file_path LIKE (?1 || '/%') \
+             ORDER BY c.timestamp DESC LIMIT 1"
+        } else {
+            "SELECT c.id, c.hash, c.timestamp \
+             FROM manifest m \
+             JOIN commits c ON c.id = m.commit_id \
+             WHERE m.file_path = ?1 \
+             ORDER BY c.timestamp DESC LIMIT 1"
+        };
+        let mut stmt = match conn.prepare(base_sql) {
+            Ok(s) => s,
+            Err(_) => return None,
+        };
+        if stmt.bind((1, full_path)).is_err() { return None; }
+        if let Ok(sqlite::State::Row) = stmt.next() {
+            let id = stmt.read::<i64, _>(0).ok()?;
+            let hash = stmt.read::<String, _>(1).ok()?;
+            let ts = stmt.read::<String, _>(2).ok()?;
+            Some((id, hash, ts))
+        } else {
+            None
+        }
+    }
+
     for (name, hash, mode, size) in entries {
         let is_dir = mode == 16384 || mode == 0o040000 || mode == 0o755;
         let icon = if is_dir { "📁" } else { "📄" };
 
-        let link = if is_dir {
-            let full_path = if current_path.is_empty() {
-                name.clone()
-            } else {
-                format!("{}/{}", current_path, name)
-            };
-            format!(
+        let (full_path, link) = if is_dir {
+            let full_path = if current_path.is_empty() { name.clone() } else { format!("{}/{}", current_path, name) };
+            let link = format!(
                 "<a href='/commit/{commit_id}/tree/{}' class='dir'>{}</a>",
                 full_path,
                 html_escape(&name)
-            )
+            );
+            (full_path, link)
         } else {
-            format!(
+            let full_path = if current_path.is_empty() { name.clone() } else { format!("{}/{}", current_path, name) };
+            let link = format!(
                 "<a href='/file/{}' class='file'>{}</a>",
                 html_escape(&hash),
                 html_escape(&name)
-            )
+            );
+            (full_path, link)
         };
 
-        let size_str = if is_dir {
-            "-".to_string()
+        let size_str = if is_dir { "-".to_string() } else { format!("{} B", size) };
+
+        let (last_commit_html, age_html) = if let Some((cid, chash, ts)) = last_commit_for_path(conn, &full_path, is_dir) {
+            let age = time_ago(&ts);
+            (
+                format!("<a href='/commit/{}'><code class='hash'>{}</code></a>", cid, html_escape(short_hash(&chash))),
+                html_escape(&age),
+            )
         } else {
-            format!("{} B", size)
+            (String::new(), String::new())
         };
 
         out.push_str(&format!(
@@ -1956,8 +1992,10 @@ fn render_tree_html_flat(
                 <td style='width: 20px;'><span class='icon'>{}</span></td>\
                 <td>{}</td>\
                 <td style='text-align: right; color: var(--meta); font-size: 0.8em;'>{}</td>\
+                <td style='text-align: right;'>{}</td>\
+                <td style='text-align: right; color: var(--meta); font-size: 0.8em;'>{}</td>\
              </tr>",
-            icon, link, size_str
+            icon, link, size_str, last_commit_html, age_html
         ));
     }
     Ok(())

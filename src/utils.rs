@@ -1,4 +1,7 @@
 use std::io::stdout;
+use std::fs::read_to_string;
+use std::path::Path;
+use std::process::Command;
 
 use crossterm::{
     execute,
@@ -168,4 +171,33 @@ pub fn ko_audit_commit(hash: &str) {
         Print(hash.red().bold()),
         Print(" ]\n".white().bold()),
     );
+}
+
+pub fn run_hooks() -> Result<(), Box<dyn std::error::Error>> {
+    let lys_file = Path::new("Lys");
+    if !lys_file.exists() {
+        return Ok(());
+    }
+
+    let content = read_to_string(lys_file)?;
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        ok(&format!("Running hook: {}", line));
+
+        let status = if cfg!(target_os = "windows") {
+            Command::new("cmd").args(["/C", line]).status()?
+        } else {
+            Command::new("sh").args(["-c", line]).status()?
+        };
+
+        if !status.success() {
+            return Err(format!("Hook failed: {}", line).into());
+        }
+    }
+
+    Ok(())
 }

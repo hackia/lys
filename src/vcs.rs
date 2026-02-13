@@ -55,7 +55,7 @@ pub enum FileStatus {
 
 pub fn push_atoms(conn: &Connection, remote_url: &str) -> Result<(), Box<dyn std::error::Error>> {
     // 1. Lister les hashes que tu possèdes
-    let mut stmt = conn.prepare("SELECT hash FROM blobs")?;
+    let mut stmt = conn.prepare("SELECT hash FROM store.blobs")?;
 
     // 2. Préparer une requête (ex: avec reqwest) pour envoyer chaque blob
     let client = reqwest::blocking::Client::new();
@@ -119,7 +119,7 @@ pub fn fetch_blob_with_conn(
     conn: &Connection,
     hash: &str,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    let mut stmt = conn.prepare("SELECT content FROM blobs WHERE hash = ?")?;
+    let mut stmt = conn.prepare("SELECT content FROM store.blobs WHERE hash = ?")?;
     stmt.bind((1, hash))?;
 
     if let Ok(State::Row) = stmt.next() {
@@ -148,7 +148,7 @@ pub fn fetch_blob(repo_root: &Path, hash: &str) -> Result<Vec<u8>, Box<dyn std::
     // Petite optimisation pour la lecture seule
     conn.execute("PRAGMA query_only = ON;")?;
 
-    let mut stmt = conn.prepare("SELECT content FROM blobs WHERE hash = ?")?;
+    let mut stmt = conn.prepare("SELECT content FROM store.blobs WHERE hash = ?")?;
     stmt.bind((1, hash))?;
 
     if let Ok(State::Row) = stmt.next() {
@@ -262,14 +262,62 @@ pub fn doctor() -> Result<(), String> {
 
 pub fn ls_tree(conn: &Connection, tree_hash: &str, prefix: &str) -> Result<Vec<String>, Error> {
     let mut lines = Vec::new();
-    ls_tree_recursive(conn, tree_hash, prefix, &mut lines)?;
+    // On démarre à la racine avec un chemin relatif vide
+    ls_tree_recursive(conn, tree_hash, prefix, "", &mut lines)?;
     Ok(lines)
+}
+
+fn time_ago_cli(timestamp: &str) -> String {
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(timestamp) {
+        let dt = dt.with_timezone(&chrono::Utc);
+        let now = chrono::Utc::now();
+        let diff = now.signed_duration_since(dt);
+        if diff.num_seconds() < 60 {
+            format!("{}s ago", diff.num_seconds())
+        } else if diff.num_minutes() < 60 {
+            format!("{}m ago", diff.num_minutes())
+        } else if diff.num_hours() < 24 {
+            format!("{}h ago", diff.num_hours())
+        } else if diff.num_days() < 30 {
+            format!("{}d ago", diff.num_days())
+        } else if diff.num_days() < 365 {
+            format!("{}mo ago", diff.num_days() / 30)
+        } else {
+            format!("{}y ago", diff.num_days() / 365)
+        }
+    } else {
+        String::new()
+    }
+}
+
+fn last_commit_for_path_cli(conn: &Connection, full_path: &str, is_dir: bool) -> Option<(String, String)> {
+    // Retourne (hash, timestamp)
+    let sql = if is_dir {
+        "SELECT c.hash, c.timestamp FROM manifest m JOIN commits c ON c.id = m.commit_id \
+         WHERE m.file_path = ?1 OR m.file_path LIKE (?1 || '/%') ORDER BY c.timestamp DESC LIMIT 1"
+    } else {
+        "SELECT c.hash, c.timestamp FROM manifest m JOIN commits c ON c.id = m.commit_id \
+         WHERE m.file_path = ?1 ORDER BY c.timestamp DESC LIMIT 1"
+    };
+    let mut stmt = match conn.prepare(sql) {
+        Ok(s) => s,
+        Err(_) => return None,
+    };
+    if stmt.bind((1, full_path)).is_err() { return None; }
+    if let Ok(State::Row) = stmt.next() {
+        let h = stmt.read::<String, _>(0).ok()?;
+        let ts = stmt.read::<String, _>(1).ok()?;
+        Some((h, ts))
+    } else {
+        None
+    }
 }
 
 fn ls_tree_recursive(
     conn: &Connection,
     tree_hash: &str,
     prefix: &str,
+    current_path: &str,
     lines: &mut Vec<String>,
 ) -> Result<(), Error> {
     // On récupère tous les enfants directs de ce hash de dossier
@@ -292,13 +340,21 @@ fn ls_tree_recursive(
     for (i, (name, hash, mode)) in entries.into_iter().enumerate() {
         let is_last = i == count - 1;
         let connector = if is_last { "└── " } else { "├── " };
+        let full_path = if current_path.is_empty() { name.clone() } else { format!("{}/{}", current_path, name) };
+
+        let mut suffix = String::new();
+        if let Some((h, ts)) = last_commit_for_path_cli(conn, &full_path, is_directory(conn, &hash)? ) {
+            let age = time_ago_cli(&ts);
+            suffix = if age.is_empty() { format!(" — {}", &h[0..7]) } else { format!(" — {} ({})", &h[0..7], age) };
+        }
 
         lines.push(format!(
-            "{} [ {} ] {}{}",
+            "{} [ {} ] {}{}{}",
             format_mode(mode),
             &hash[0..7],
             prefix,
             connector.to_string() + &name,
+            suffix,
         ));
 
         // Si le hash possède lui-même des enfants dans tree_nodes, c'est un dossier
@@ -308,7 +364,7 @@ fn ls_tree_recursive(
             } else {
                 format!("{}│   ", prefix)
             };
-            ls_tree_recursive(conn, &hash, &new_prefix, lines)?;
+            ls_tree_recursive(conn, &hash, &new_prefix, &full_path, lines)?;
         }
     }
     Ok(())

@@ -84,6 +84,18 @@ pub const LYS_INIT: &str = "CREATE TABLE IF NOT EXISTS tree_nodes (
         FOREIGN KEY (head_commit_id) REFERENCES commits(id)
     );
 
+    CREATE TABLE IF NOT EXISTS manifest (
+        commit_id INTEGER NOT NULL,
+        asset_id INTEGER NOT NULL,
+        blob_id INTEGER NOT NULL,
+        file_path TEXT NOT NULL,
+        FOREIGN KEY (commit_id) REFERENCES commits(id),
+        FOREIGN KEY (asset_id) REFERENCES assets(id),
+        FOREIGN KEY (blob_id) REFERENCES blobs(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_manifest_commit ON manifest(commit_id);
+    CREATE INDEX IF NOT EXISTS idx_manifest_path ON manifest(file_path);
+
     -- ====================================================================
     -- PARTIE 4 : OUTILS COLLABORATIFS ET SYSTÈME
     -- ====================================================================
@@ -131,7 +143,7 @@ pub fn get_or_insert_blob_parallel(
 
     let compressed = compress(content);
     let mut stmt =
-        conn.prepare("INSERT OR IGNORE INTO blobs (hash, content, size) VALUES (?, ?, ?)")?;
+        conn.prepare("INSERT OR IGNORE INTO store.blobs (hash, content, size) VALUES (?, ?, ?)")?;
     stmt.bind((1, hash))?; // On utilise le hash passé (le SHA1 de Git)
     stmt.bind((2, &compressed[..]))?;
     stmt.bind((3, content.len() as i64))?;
@@ -216,7 +228,7 @@ pub fn verify(conn: &Connection, deep: bool) -> Result<(), Box<dyn std::error::E
     }
 
     // On récupère les objets référencés par les commits (ignorant les dossiers)
-    let query = "SELECT DISTINCT hash, name FROM tree_nodes WHERE mode != 16384";
+    let query = "SELECT DISTINCT hash, name FROM tree_nodes WHERE mode != 16384 AND mode != 16400 AND mode != 49152";
     let mut stmt = conn.prepare(query)?;
 
     let mut missing = 0;
@@ -421,7 +433,7 @@ pub fn get_unique_contributors(conn: &Connection) -> Result<Vec<(String, i64)>, 
 pub fn insert_blob_with_conn(conn: &Connection, hash: &str, content: &[u8]) -> Result<(), Error> {
     let compressed = compress(content); // Ta fonction de compression existante
     let mut stmt =
-        conn.prepare("INSERT OR IGNORE INTO blobs (hash, content, size) VALUES (?, ?, ?)")?;
+        conn.prepare("INSERT OR IGNORE INTO store.blobs (hash, content, size) VALUES (?, ?, ?)")?;
     stmt.bind((1, hash))?;
     stmt.bind((2, &compressed[..]))?;
     stmt.bind((3, content.len() as i64))?;
