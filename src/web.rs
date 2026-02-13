@@ -1976,7 +1976,7 @@ fn render_tree_html_flat(
              FROM manifest m \
              JOIN commits c ON c.id = m.commit_id \
              WHERE m.file_path = ?1 AND c.id <= ?2 \
-             ORDER BY c.timestamp DESC LIMIT 1"
+ss             ORDER BY c.timestamp DESC LIMIT 1"
         };
         let mut stmt = match conn.prepare(base_sql) {
             Ok(s) => s,
@@ -2077,49 +2077,102 @@ fn render_tree_html_flat(
 // TEAM CHAT (WebSocket + UI)
 // -----------------------------
 async fn show_chat() -> impl IntoResponse {
-    let body = "
+    let username = nix::unistd::User::from_uid(nix::unistd::getuid())
+        .ok()
+        .flatten()
+        .map(|u| u.name)
+        .unwrap_or_else(|| "web".into());
+    let body = format!("
       <h3>Team Chat</h3>
       <div id='chat-box' style='height: 420px; overflow-y: auto; border:1px solid var(--border); border-radius:4px; padding:10px; background: var(--code-bg); font-family: monospace; font-size: 0.9em; margin-bottom:10px;'></div>
-      <div style='display:flex; gap:8px;'>
-        <input id='sender' placeholder='Your name' style='flex:0 0 180px; padding:8px; border:1px solid var(--border); background:var(--bg); color:var(--fg);' />
-        <input id='message' placeholder='Type a message and press Enter' style='flex:1; padding:8px; border:1px solid var(--border); background:var(--bg); color:var(--fg);' />
-        <button id='send' class='btn'>Send</button>
+      <div style='display:flex; gap:8px; align-items: flex-end;'>
+        <textarea id='message' placeholder='Type a message and press Enter' rows='1' style='flex:1; padding:8px; border:1px solid var(--border); background:var(--bg); color:var(--fg); resize: none; overflow-y: hidden; line-height: 1.4;'></textarea>
       </div>
       <script>
-        (function(){
+        (function(){{
           const log = document.getElementById('chat-box');
           const input = document.getElementById('message');
-          const sender = document.getElementById('sender');
-          const btn = document.getElementById('send');
-          function append(line){
+          const currentUser = {username:?};
+
+          function autoResize() {{
+            input.style.height = 'auto';
+            input.style.height = input.scrollHeight + 'px';
+          }}
+          input.addEventListener('input', autoResize);
+
+          function formatTime(ts) {{
+            if(!ts) return '';
+            // SQLite CURRENT_TIMESTAMP is YYYY-MM-DD HH:MM:SS
+            // We convert it to ISO 8601 YYYY-MM-DDTHH:MM:SSZ
+            const isoStr = ts.replace(' ', 'T') + 'Z';
+            const date = new Date(isoStr);
+            if (isNaN(date.getTime())) return '';
+            const now = new Date();
+            const diff = Math.floor((now - date) / 1000);
+            if (diff < 0) return 'just now';
+            if (diff < 60) return diff + 's ago';
+            if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+            if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+            return Math.floor(diff / 86400) + 'd ago';
+          }}
+
+          function append(obj){{
             const el = document.createElement('div');
-            el.textContent = line;
+            el.style.marginBottom = '10px';
+            const meta = document.createElement('div');
+            meta.style.fontSize = '0.8em';
+            meta.style.color = 'var(--meta)';
+            meta.className = 'message-meta';
+            meta.dataset.timestamp = obj.created_at;
+            const timeStr = formatTime(obj.created_at);
+            meta.textContent = obj.sender + ' • ' + timeStr;
+            
+            const content = document.createElement('div');
+            content.style.whiteSpace = 'pre-wrap';
+            content.style.wordBreak = 'break-word';
+            content.textContent = obj.content;
+            
+            el.appendChild(meta);
+            el.appendChild(content);
             log.appendChild(el);
             log.scrollTop = log.scrollHeight;
-          }
+          }}
+
+          function refreshTimes() {{
+            document.querySelectorAll('.message-meta').forEach(m => {{
+              const ts = m.dataset.timestamp;
+              const sender = m.textContent.split(' • ')[0];
+              m.textContent = sender + ' • ' + formatTime(ts);
+            }});
+          }}
+          setInterval(refreshTimes, 30000);
           const proto = (location.protocol === 'https:') ? 'wss' : 'ws';
           const ws = new WebSocket(proto + '://' + location.host + '/ws/chat');
-          ws.onmessage = (ev)=>{
-            try {
+          ws.onmessage = (ev)=>{{
+            try {{
               const obj = JSON.parse(ev.data);
-              append('['+obj.sender+'] ' + obj.content);
-            } catch(_) {
-              append(ev.data);
-            }
-          };
-          function send(){
-            const s = (sender.value||'web');
+              append(obj);
+            }} catch(_) {{
+              console.error('Failed to parse message', ev.data);
+            }}
+          }};
+          function send(){{
             const m = input.value.trim();
             if(!m) return;
-            ws.send(JSON.stringify({sender:s, content:m}));
+            ws.send(JSON.stringify({{sender: currentUser, content: m}}));
             input.value='';
-          }
-          btn.onclick = send;
-          input.addEventListener('keydown', (e)=>{ if(e.key==='Enter'){ send(); }});
-        })();
+            input.style.height = 'auto';
+          }}
+          input.addEventListener('keydown', (e)=>{{ 
+            if(e.key==='Enter' && !e.shiftKey){{ 
+              e.preventDefault();
+              send(); 
+            }}
+          }});
+        }})();
       </script>
-    ";
-    page("Team Chat", "", body).into_response()
+    ", username = username);
+    page("Team Chat", "", &body).into_response()
 }
 
 async fn ws_chat_upgrade(
@@ -2133,14 +2186,15 @@ async fn handle_chat_socket(state: Arc<AppState>, mut socket: WebSocket) {
     use axum::extract::ws::Message;
 
     // 1) Récupérer l'historique récent (hors await), puis l'envoyer
-    let hist: Vec<(String, String)> = {
+    let hist: Vec<(String, String, String)> = {
         if let Ok(conn) = state.conn.lock() {
-            if let Ok(mut stmt) = conn.prepare("SELECT sender, content FROM ephemeral_messages ORDER BY id DESC LIMIT 50") {
+            if let Ok(mut stmt) = conn.prepare("SELECT sender, content, created_at FROM ephemeral_messages ORDER BY id DESC LIMIT 50") {
                 let mut v = Vec::new();
                 while let Ok(sqlite::State::Row) = stmt.next() {
                     let s: String = stmt.read(0).unwrap_or_else(|_| "?".into());
                     let c: String = stmt.read(1).unwrap_or_default();
-                    v.push((s, c));
+                    let t: String = stmt.read(2).unwrap_or_default();
+                    v.push((s, c, t));
                 }
                 v
             } else { Vec::new() }
@@ -2149,8 +2203,8 @@ async fn handle_chat_socket(state: Arc<AppState>, mut socket: WebSocket) {
     // On renvoie dans l'ordre chronologique
     let mut hist = hist;
     hist.reverse();
-    for (s, c) in hist {
-        let json = format!("{{\"sender\":{0:?},\"content\":{1:?}}}", s, c);
+    for (s, c, t) in hist {
+        let json = format!("{{\"sender\":{0:?},\"content\":{1:?},\"created_at\":{2:?}}}", s, c, t);
         let _ = socket.send(Message::Text(json.into())).await;
     }
 
@@ -2184,7 +2238,8 @@ async fn handle_chat_socket(state: Arc<AppState>, mut socket: WebSocket) {
                         if let Ok(conn) = state.conn.lock() {
                             let _ = crate::chat::send_message(&conn, &sender_name, &content);
                         }
-                        let payload = format!("{{\"sender\":{0:?},\"content\":{1:?}}}", sender_name, content);
+                        let now = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+                        let payload = format!("{{\"sender\":{0:?},\"content\":{1:?},\"created_at\":{2:?}}}", sender_name, content, now);
                         let _ = state.chat_tx.send(payload);
                     }
                     Some(Ok(Message::Close(_))) | None => break,
@@ -2800,7 +2855,15 @@ async fn editor_list() -> impl IntoResponse {
     }
     files.sort();
 
-    let mut body = String::from("<h3>Editor - Select a file</h3><ul>");
+    let mut body = String::from("
+        <h3>Editor - Select a file</h3>
+        <div style='margin-bottom: 20px;'>
+            <form action='/editor/new' method='post' style='display: flex; gap: 8px;'>
+                <input type='text' name='path' placeholder='new_file.txt' style='padding: 6px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--fg); flex: 1;'>
+                <button type='submit' class='btn btn-active'>Create New File</button>
+            </form>
+        </div>
+        <ul>");
     for f in files {
         body.push_str(&format!(
             "<li><a href='/editor/{}'>{}</a></li>",

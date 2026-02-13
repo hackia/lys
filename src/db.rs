@@ -100,6 +100,7 @@ pub const LYS_INIT: &str = "CREATE TABLE IF NOT EXISTS tree_nodes (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         sender TEXT NOT NULL,
         content TEXT NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         expires_at DATETIME NOT NULL
     );
     CREATE TABLE IF NOT EXISTS config (

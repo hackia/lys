@@ -8,6 +8,7 @@ pub struct Message {
     pub id: i64,
     pub sender: String,
     pub content: String,
+    pub created_at: String,
     pub expires_at: String,
 }
 
@@ -54,7 +55,7 @@ pub fn list_messages(conn: &Connection) -> Result<Vec<Message>, Error> {
     cleanup_messages(conn)?;
 
     let query =
-        "SELECT id, sender, content, expires_at FROM ephemeral_messages ORDER BY created_at DESC";
+        "SELECT id, sender, content, created_at, expires_at FROM ephemeral_messages ORDER BY created_at DESC";
     let mut stmt = conn.prepare(query)?;
 
     let mut messages = Vec::new();
@@ -64,7 +65,8 @@ pub fn list_messages(conn: &Connection) -> Result<Vec<Message>, Error> {
             id: stmt.read(0)?,
             sender: stmt.read(1)?,
             content: stmt.read(2)?,
-            expires_at: stmt.read(3)?,
+            created_at: stmt.read(3)?,
+            expires_at: stmt.read(4)?,
         });
     }
     Ok(messages)
