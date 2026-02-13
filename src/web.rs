@@ -2068,10 +2068,10 @@ ss             ORDER BY c.timestamp DESC LIMIT 1"
             "<tr>\
                 <td style='width: 20px;'><span class='icon'>{}</span></td>\
                 <td>{}</td>\
-                <td style='text-align: right;'>{}</td>\
+                <td style='text-align: right; white-space: nowrap;'>{}</td>\
                 <td style='text-align: left;'>{}</td>\
-                <td style='text-align: right; color: var(--meta); font-size: 0.8em;'>{}</td>\
-                <td style='text-align: right; color: var(--meta); font-size: 0.8em;'>{}</td>\
+                <td style='text-align: right; color: var(--meta); font-size: 0.8em; white-space: nowrap;'>{}</td>\
+                <td style='text-align: right; color: var(--meta); font-size: 0.8em; white-space: nowrap;'>{}</td>\
              </tr>",
             icon, link, commit_hash_html, commit_msg_html, age_html, size_str
         ));
