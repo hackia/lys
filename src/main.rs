@@ -316,6 +316,36 @@ fn cli() -> Command {
                         .long("banner")
                         .help("Image URL to display as banner on the home page")
                         .action(ArgAction::Set),
+                )
+                .arg(
+                    Arg::new("title")
+                        .long("title")
+                        .help("Custom site title to display in header and browser tab")
+                        .action(ArgAction::Set),
+                )
+                .arg(
+                    Arg::new("subtitle")
+                        .long("subtitle")
+                        .help("Custom subtitle/description to display under the header title")
+                        .action(ArgAction::Set),
+                )
+                .arg(
+                    Arg::new("footer")
+                        .long("footer")
+                        .help("Custom footer HTML to display at the bottom of pages")
+                        .action(ArgAction::Set),
+                )
+                .arg(
+                    Arg::new("homepage")
+                        .long("homepage")
+                        .help("URL to the project's homepage")
+                        .action(ArgAction::Set),
+                )
+                .arg(
+                    Arg::new("documentation")
+                        .long("documentation")
+                        .help("URL to the project's documentation")
+                        .action(ArgAction::Set),
                 ),
         )
         .subcommand(
@@ -1034,6 +1064,56 @@ pub fn execute_matches(app: clap::ArgMatches) -> Result<(), Error> {
                     .map_err(|e| Error::other(e.to_string()))?;
                 stmt.next().map_err(|e| Error::other(e.to_string()))?;
                 ok("Image banner URL updated");
+            }
+
+            if let Some(title) = args.get_one::<String>("title") {
+                let mut stmt = conn
+                    .prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('web_title', ?)")
+                    .map_err(|e| Error::other(e.to_string()))?;
+                stmt.bind((1, title.as_str())).map_err(|e| Error::other(e.to_string()))?;
+                stmt.next().map_err(|e| Error::other(e.to_string()))?;
+                ok("Web title updated");
+            }
+
+            if let Some(subtitle) = args.get_one::<String>("subtitle") {
+                let mut stmt = conn
+                    .prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('web_subtitle', ?)")
+                    .map_err(|e| Error::other(e.to_string()))?;
+                stmt.bind((1, subtitle.as_str())).map_err(|e| Error::other(e.to_string()))?;
+                stmt.next().map_err(|e| Error::other(e.to_string()))?;
+                ok("Web subtitle updated");
+            }
+
+            if let Some(footer) = args.get_one::<String>("footer") {
+                let footer_content = if Path::new(footer).exists() && Path::new(footer).is_file() {
+                    read_to_string(footer).unwrap_or_else(|_| footer.clone())
+                } else {
+                    footer.clone()
+                };
+                let mut stmt = conn
+                    .prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('web_footer', ?)")
+                    .map_err(|e| Error::other(e.to_string()))?;
+                stmt.bind((1, footer_content.as_str())).map_err(|e| Error::other(e.to_string()))?;
+                stmt.next().map_err(|e| Error::other(e.to_string()))?;
+                ok("Web footer updated");
+            }
+
+            if let Some(homepage) = args.get_one::<String>("homepage") {
+                let mut stmt = conn
+                    .prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('web_homepage', ?)")
+                    .map_err(|e| Error::other(e.to_string()))?;
+                stmt.bind((1, homepage.as_str())).map_err(|e| Error::other(e.to_string()))?;
+                stmt.next().map_err(|e| Error::other(e.to_string()))?;
+                ok("Web homepage URL updated");
+            }
+
+            if let Some(documentation) = args.get_one::<String>("documentation") {
+                let mut stmt = conn
+                    .prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('web_documentation', ?)")
+                    .map_err(|e| Error::other(e.to_string()))?;
+                stmt.bind((1, documentation.as_str())).map_err(|e| Error::other(e.to_string()))?;
+                stmt.next().map_err(|e| Error::other(e.to_string()))?;
+                ok("Web documentation URL updated");
             }
 
             let port: u16 = args

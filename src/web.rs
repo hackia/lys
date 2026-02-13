@@ -1,22 +1,25 @@
-
 use crate::db::decompress;
 use crate::utils::ok;
 use axum::{
     Router,
     body::Bytes,
-    extract::{Path as UrlPath, Query, State, ws::{WebSocketUpgrade, WebSocket, Message}},
+    extract::{
+        Path as UrlPath, Query, State,
+        ws::{Message, WebSocket, WebSocketUpgrade},
+    },
     http::{HeaderMap, StatusCode, header},
     response::{Html, IntoResponse, Response},
     routing::{get, post},
 };
 use chrono::{DateTime, Utc};
+use dashmap::DashMap;
+use once_cell::sync::OnceCell;
 use pulldown_cmark::{Options, Parser, html as cmark_html};
 use serde::Deserialize;
 use sqlite::Connection;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::path::PathBuf;
-use dashmap::DashMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::broadcast;
 
@@ -29,6 +32,12 @@ pub struct AppState {
     pub conn: Mutex<Connection>,
     pub sessions: DashMap<String, Arc<Session>>,
 }
+
+static WEB_TITLE: OnceCell<String> = OnceCell::new();
+static WEB_SUBTITLE: OnceCell<String> = OnceCell::new();
+static WEB_FOOTER: OnceCell<String> = OnceCell::new();
+static WEB_HOMEPAGE: OnceCell<String> = OnceCell::new();
+static WEB_DOCUMENTATION: OnceCell<String> = OnceCell::new();
 
 #[derive(Deserialize)]
 pub struct Pagination {
@@ -77,7 +86,7 @@ fn get_spotify_embed_url(url: &str) -> Option<String> {
     if url.contains("spotify.com/embed/") {
         return Some(url.to_string());
     }
-    
+
     // Support tracks, albums, playlists
     // format: https://open.spotify.com/album/4EFDM5bjlaF1xx3sNjutFE?utm_source=generator
     let base_url = url.split('?').next()?;
@@ -98,14 +107,14 @@ fn get_youtube_embed_url(url: &str) -> Option<String> {
     // youtube.com/watch?v=ID...
     // youtube.com/v/ID
     // youtu.be/ID
-    
+
     if url.contains("youtu.be/") {
         let id = url.split("youtu.be/").nth(1)?.split('?').next()?;
         return Some(format!("https://www.youtube.com/embed/{}", id));
     }
 
     if let Some(pos) = url.find("v=") {
-        let id = &url[pos+2..].split('&').next()?;
+        let id = &url[pos + 2..].split('&').next()?;
         return Some(format!("https://www.youtube.com/embed/{}", id));
     }
 
@@ -228,6 +237,41 @@ pub fn page(title: &str, style: &str, body: &str) -> Html<String> {
         .markdown-body ul, .markdown-body ol { padding-left: 2em; }
     ";
 
+    let site_title = WEB_TITLE
+        .get()
+        .map(String::as_str)
+        .unwrap_or("Lys Repository");
+    let site_subtitle = WEB_SUBTITLE
+        .get()
+        .map(String::as_str)
+        .unwrap_or("A secure local-first vcs");
+    let site_footer = WEB_FOOTER.get().map(String::as_str).unwrap_or("");
+    let site_homepage = WEB_HOMEPAGE.get().map(String::as_str).unwrap_or("");
+    let site_documentation = WEB_DOCUMENTATION.get().map(String::as_str).unwrap_or("");
+
+    let mut menu_links = String::from("<a href='/'>Summary</a><a href='/'>Log</a><a href='/rss'>RSS</a>");
+    if !site_homepage.is_empty() {
+        menu_links.push_str(&format!(
+            "<a href='{}' target='_blank'>Homepage</a>",
+            html_escape(site_homepage)
+        ));
+    }
+    if !site_documentation.is_empty() {
+        menu_links.push_str(&format!(
+            "<a href='{}' target='_blank'>Documentation</a>",
+            html_escape(site_documentation)
+        ));
+    }
+
+    let footer_html = if site_footer.is_empty() {
+        String::from("<div id='footer' style='padding:20px; border-top:1px solid var(--border); margin:30px 25px 0 25px;'><small>&copy; 2026 Lys Inc.</small></div>")
+    } else {
+        format!(
+            "<div id='footer' style='padding:20px; border-top:1px solid var(--border); margin:30px 25px 0 25px;'>{}</div>",
+            site_footer
+        )
+    };
+
     Html(format!(
         "<!doctype html>\
          <html>\
@@ -241,15 +285,14 @@ pub fn page(title: &str, style: &str, body: &str) -> Html<String> {
            </head>\
            <body>\
              <div id='header'>\
-               <h1>Lys Repository</h1>\
-               <div class='repo-desc'>A secure local-first vcs</div>\
+               <h1>{}</h1>\
+               <div class='repo-desc'>{}</div>\
              </div>\
              <div id='menu'>\
-               <a href='/'>Summary</a>\
-               <a href='/'>Log</a>\
-               <a href='/rss'>RSS</a>\
+               {}\
              </div>\
              <div id='content'>{}</div>\
+             {}\
              <script src='https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-core.min.js'></script>\
              <script src='https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js'></script>\
              <script>
@@ -293,27 +336,35 @@ pub fn page(title: &str, style: &str, body: &str) -> Html<String> {
                  }});
                }}
              </script>
-           </body>\
+           </body>
          </html>",
         html_escape(title),
         COMMON_STYLE,
         style,
-        body
+        html_escape(site_title),
+        html_escape(site_subtitle),
+        menu_links,
+        body,
+        footer_html,
     ))
 }
 
 fn http_error(status: StatusCode, msg: &str) -> Response {
-    (status, page("Error", "body{font-family:sans-serif;max-width:800px;margin:auto;padding:20px}", &format!(
-        "<h2>Error</h2><p>{}</p><p><a href='/'>Back</a></p>",
-        html_escape(msg)
-    )))
+    (
+        status,
+        page(
+            "Error",
+            "body{font-family:sans-serif;max-width:800px;margin:auto;padding:20px}",
+            &format!(
+                "<h2>Error</h2><p>{}</p><p><a href='/'>Back</a></p>",
+                html_escape(msg)
+            ),
+        ),
+    )
         .into_response()
 }
 
-async fn ws_handler(
-    ws: WebSocketUpgrade,
-    State(state): State<Arc<AppState>>,
-) -> impl IntoResponse {
+async fn ws_handler(ws: WebSocketUpgrade, State(state): State<Arc<AppState>>) -> impl IntoResponse {
     ws.on_upgrade(|socket| handle_socket(socket, state))
 }
 
@@ -325,16 +376,19 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
     {
         if !state.sessions.contains_key(&current_session_id) {
             let (tx, _) = broadcast::channel(100);
-            state.sessions.insert(current_session_id.clone(), Arc::new(Session {
-                history: Mutex::new(Vec::new()),
-                tx,
-            }));
+            state.sessions.insert(
+                current_session_id.clone(),
+                Arc::new(Session {
+                    history: Mutex::new(Vec::new()),
+                    tx,
+                }),
+            );
         }
     }
 
     let mut rx = {
         let session = state.sessions.get(&current_session_id).unwrap();
-        
+
         // Envoyer l'historique au nouveau client
         let history = {
             let h = session.history.lock().unwrap();
@@ -343,12 +397,18 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
         for line in history.iter() {
             let _ = socket.send(Message::Text(line.clone().into())).await;
         }
-        
+
         session.tx.subscribe()
     };
 
     // Welcome message
-    let _ = socket.send(Message::Text("\r\n--- Attached to Lys Session: default ---\r\n".to_string().into())).await;
+    let _ = socket
+        .send(Message::Text(
+            "\r\n--- Attached to Lys Session: default ---\r\n"
+                .to_string()
+                .into(),
+        ))
+        .await;
 
     let mut socket_tx = state.sessions.get(&current_session_id).unwrap().tx.clone();
 
@@ -366,7 +426,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
                     match msg {
                         Message::Text(text) => {
                             let input = text.trim();
-                            
+
                             // Gérer les requêtes d'auto-complétion (format: "complete:command")
                             if input.starts_with("complete:") {
                                 let cmd_to_complete = &input[9..];
@@ -411,9 +471,9 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
                                     let session = state.sessions.get(&current_session_id).unwrap();
                                     rx = session.tx.subscribe();
                                     socket_tx = session.tx.clone();
-                                    
+
                                     let _ = socket.send(Message::Text(format!("\r\n--- Switched to Session: {} ---\r\n", current_session_id).into())).await;
-                                    
+
                                     {
                                         let history = {
                                             let h = session.history.lock().unwrap();
@@ -442,7 +502,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
                             if !output.is_empty() {
                                 let formatted_output = output.replace("\n", "\r\n");
                                 let full_output = format!("lys> {}\r\n{}", input, formatted_output);
-                                
+
                                 // Ajouter à l'historique et diffuser
                                 {
                                     let session = state.sessions.get(&current_session_id).unwrap();
@@ -474,6 +534,47 @@ pub async fn start_server(repo_path: &str, port: u16) {
 
     // On ouvre une connexion dédiée au serveur web
     let conn = crate::db::connect_lys(&path).expect("Failed to connect to DB");
+
+    // Initialize site-wide options (title, subtitle, footer) from config once
+    {
+        // Helper to read a single key
+        let read_key = |key: &str| -> Option<String> {
+            let mut stmt = conn
+                .prepare("SELECT value FROM config WHERE key = ?")
+                .ok()?;
+            stmt.bind((1, key)).ok()?;
+            if let Ok(sqlite::State::Row) = stmt.next() {
+                stmt.read::<String, _>(0).ok()
+            } else {
+                None
+            }
+        };
+        if let Some(t) = read_key("web_title") {
+            let _ = WEB_TITLE.set(t);
+        } else {
+            let _ = WEB_TITLE.set("Lys Repository".to_string());
+        }
+        if let Some(st) = read_key("web_subtitle") {
+            let _ = WEB_SUBTITLE.set(st);
+        } else {
+            let _ = WEB_SUBTITLE.set("A secure local-first vcs".to_string());
+        }
+        if let Some(f) = read_key("web_footer") {
+            let _ = WEB_FOOTER.set(f);
+        } else {
+            let _ = WEB_FOOTER.set(String::new());
+        }
+        if let Some(h) = read_key("web_homepage") {
+            let _ = WEB_HOMEPAGE.set(h);
+        } else {
+            let _ = WEB_HOMEPAGE.set(String::new());
+        }
+        if let Some(d) = read_key("web_documentation") {
+            let _ = WEB_DOCUMENTATION.set(d);
+        } else {
+            let _ = WEB_DOCUMENTATION.set(String::new());
+        }
+    }
 
     let shared_state = Arc::new(AppState {
         conn: Mutex::new(conn),
@@ -527,9 +628,13 @@ fn render_commits_list(conn: &sqlite::Connection, page_num: usize) -> (String, S
     while let Ok(sqlite::State::Row) = stmt.next() {
         let id: i64 = stmt.read("id").unwrap_or(0);
         let hash: String = stmt.read("hash").unwrap_or_default();
-        let msg: String = stmt.read("message").unwrap_or_else(|_| String::from("(no message)"));
+        let msg: String = stmt
+            .read("message")
+            .unwrap_or_else(|_| String::from("(no message)"));
         let date: String = stmt.read("timestamp").unwrap_or_else(|_| String::from(""));
-        let author: String = stmt.read("author").unwrap_or_else(|_| String::from("Unknown"));
+        let author: String = stmt
+            .read("author")
+            .unwrap_or_else(|_| String::from("Unknown"));
 
         let first_line = msg.lines().next().unwrap_or("");
         let summary = truncate_words(first_line, 100);
@@ -559,10 +664,18 @@ fn render_commits_list(conn: &sqlite::Connection, page_num: usize) -> (String, S
 
     let mut links = Vec::new();
     if page_num > 1 {
-        links.push(format!("<a href='/?page={}' onclick='loadPage(event, {})'>&laquo; Newer</a>", page_num - 1, page_num - 1));
+        links.push(format!(
+            "<a href='/?page={}' onclick='loadPage(event, {})'>&laquo; Newer</a>",
+            page_num - 1,
+            page_num - 1
+        ));
     }
     if (page_num as i64) < total_pages {
-        links.push(format!("<a href='/?page={}' onclick='loadPage(event, {})'>Older &raquo;</a>", page_num + 1, page_num + 1));
+        links.push(format!(
+            "<a href='/?page={}' onclick='loadPage(event, {})'>Older &raquo;</a>",
+            page_num + 1,
+            page_num + 1
+        ));
     }
 
     if !links.is_empty() {
@@ -584,7 +697,7 @@ pub async fn api_commits(
 
     let page_num = pagination.page.unwrap_or(1).max(1);
     let (rows, nav) = render_commits_list(&conn, page_num);
-    
+
     let html = format!(
         "<h3 id='latest'>Latest Commits</h3>\
          <table>{}</table>\
@@ -608,7 +721,9 @@ pub async fn idx_commits(
     // Spotify or YouTube Music URL
     let mut music_embed = String::new();
     {
-        let mut stmt = conn.prepare("SELECT value FROM config WHERE key = 'spotify_url'").unwrap();
+        let mut stmt = conn
+            .prepare("SELECT value FROM config WHERE key = 'spotify_url'")
+            .unwrap();
         if let Ok(sqlite::State::Row) = stmt.next() {
             let url: String = stmt.read(0).unwrap();
             if let Some(embed_url) = get_spotify_embed_url(&url) {
@@ -632,7 +747,9 @@ pub async fn idx_commits(
     // YouTube Video Banner
     let mut video_banner = String::new();
     {
-        let mut stmt = conn.prepare("SELECT value FROM config WHERE key = 'video_banner_url'").unwrap();
+        let mut stmt = conn
+            .prepare("SELECT value FROM config WHERE key = 'video_banner_url'")
+            .unwrap();
         if let Ok(sqlite::State::Row) = stmt.next() {
             let url: String = stmt.read(0).unwrap();
             if let Some(embed_url) = get_youtube_embed_url(&url) {
@@ -649,7 +766,9 @@ pub async fn idx_commits(
     // Image Banner
     let mut image_banner = String::new();
     {
-        let mut stmt = conn.prepare("SELECT value FROM config WHERE key = 'banner_url'").unwrap();
+        let mut stmt = conn
+            .prepare("SELECT value FROM config WHERE key = 'banner_url'")
+            .unwrap();
         if let Ok(sqlite::State::Row) = stmt.next() {
             let url: String = stmt.read(0).unwrap();
             image_banner = format!(
@@ -674,12 +793,17 @@ pub async fn idx_commits(
     let contributors = crate::db::get_unique_contributors(&conn).unwrap_or_default();
     let contributor_names: Vec<String> = contributors.iter().map(|(n, _)| n.clone()).collect();
 
-    let mut stats_tab = String::from("<div style='display: grid; grid-template-columns: 1fr 1fr; gap: 20px;'>");
+    let mut stats_tab =
+        String::from("<div style='display: grid; grid-template-columns: 1fr 1fr; gap: 20px;'>");
 
     // Left: Author stats table
     stats_tab.push_str("<div><h3>Commits by Author</h3><table><thead><tr><th>Author</th><th>Commits</th></tr></thead><tbody>");
     for (name, count) in &contributors {
-        stats_tab.push_str(&format!("<tr><td>{}</td><td>{}</td></tr>", html_escape(name), count));
+        stats_tab.push_str(&format!(
+            "<tr><td>{}</td><td>{}</td></tr>",
+            html_escape(name),
+            count
+        ));
     }
     stats_tab.push_str("</tbody></table></div>");
 
@@ -701,7 +825,9 @@ pub async fn idx_commits(
     let mut body = String::new();
     body.push_str("<div class='tabs'>");
     body.push_str("<div class='tab active' onclick=\"openTab(event, 'tab-log')\">Log</div>");
-    body.push_str("<div class='tab' onclick=\"openTab(event, 'tab-contributors')\">Contributors</div>");
+    body.push_str(
+        "<div class='tab' onclick=\"openTab(event, 'tab-contributors')\">Contributors</div>",
+    );
     body.push_str("<div class='tab' onclick=\"openTab(event, 'tab-stats')\">Stats</div>");
     body.push_str("<div class='tab' onclick=\"openTab(event, 'tab-music')\">Music</div>");
     body.push_str("</div>");
@@ -736,12 +862,7 @@ pub async fn idx_commits(
     body.push_str(&stats_tab);
     body.push_str("</div>");
 
-    page(
-        "Lys Repository",
-        "",
-        &body,
-    )
-    .into_response()
+    page("Lys Repository", "", &body).into_response()
 }
 
 // 2. PAGE DE DÉTAIL : CONTENU D'UN COMMIT
@@ -762,17 +883,25 @@ async fn show_commit(
     let mut hash = String::new();
 
     {
-        let mut stmt_c = match conn.prepare("SELECT message, hash, tree_hash, author, timestamp, id FROM commits WHERE id = ?") {
+        let mut stmt_c = match conn.prepare(
+            "SELECT message, hash, tree_hash, author, timestamp, id FROM commits WHERE id = ?",
+        ) {
             Ok(s) => s,
-            Err(_) => return http_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to query commit"),
+            Err(_) => {
+                return http_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to query commit");
+            }
         };
         if stmt_c.bind((1, commit_id)).is_ok() {
             if let Ok(sqlite::State::Row) = stmt_c.next() {
                 title = stmt_c.read("message").unwrap_or_else(|_| String::from(""));
                 hash = stmt_c.read("hash").unwrap_or_else(|_| String::from(""));
-                tree_hash = stmt_c.read("tree_hash").unwrap_or_else(|_| String::from(""));
+                tree_hash = stmt_c
+                    .read("tree_hash")
+                    .unwrap_or_else(|_| String::from(""));
                 author = stmt_c.read("author").unwrap_or_else(|_| String::from(""));
-                date = stmt_c.read("timestamp").unwrap_or_else(|_| String::from(""));
+                date = stmt_c
+                    .read("timestamp")
+                    .unwrap_or_else(|_| String::from(""));
             }
         }
     }
@@ -784,10 +913,16 @@ async fn show_commit(
     // Search tags for this commit
     let mut tags = Vec::new();
     {
-        let mut stmt_t = match conn.prepare("SELECT key FROM config WHERE key LIKE 'tag_%' AND value = ?") {
-            Ok(s) => s,
-            Err(_) => return http_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to prepare tags query"),
-        };
+        let mut stmt_t =
+            match conn.prepare("SELECT key FROM config WHERE key LIKE 'tag_%' AND value = ?") {
+                Ok(s) => s,
+                Err(_) => {
+                    return http_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "Failed to prepare tags query",
+                    );
+                }
+            };
         if stmt_t.bind((1, hash.as_str())).is_ok() {
             while let Ok(sqlite::State::Row) = stmt_t.next() {
                 if let Ok(tag_key) = stmt_t.read::<String, _>(0) {
@@ -796,11 +931,11 @@ async fn show_commit(
             }
         }
     }
-    let tags_html = if tags.is_empty() { 
-        String::new() 
-    } else { 
-        format!("<tr><td><b>tags</b></td><td>{}</td></tr>", 
-            tags.iter().map(|t| format!("<span class='btn' style='margin-bottom:5px; background:var(--link); color:white; border:none;'>{}</span>", html_escape(t))).collect::<Vec<_>>().join(" ")) 
+    let tags_html = if tags.is_empty() {
+        String::new()
+    } else {
+        format!("<tr><td><b>tags</b></td><td>{}</td></tr>",
+                tags.iter().map(|t| format!("<span class='btn' style='margin-bottom:5px; background:var(--link); color:white; border:none;'>{}</span>", html_escape(t))).collect::<Vec<_>>().join(" "))
     };
 
     page(
@@ -838,7 +973,7 @@ async fn show_commit(
             html_escape(&title)
         ),
     )
-    .into_response()
+        .into_response()
 }
 
 // 2.1. VUE ARBORESCENTE D'UN COMMIT
@@ -863,12 +998,16 @@ async fn show_commit_tree(
     {
         let mut stmt_c = match conn.prepare("SELECT hash, tree_hash FROM commits WHERE id = ?") {
             Ok(s) => s,
-            Err(_) => return http_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to query commit"),
+            Err(_) => {
+                return http_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to query commit");
+            }
         };
         if stmt_c.bind((1, commit_id)).is_ok() {
             if let Ok(sqlite::State::Row) = stmt_c.next() {
                 commit_hash = stmt_c.read("hash").unwrap_or_else(|_| String::from(""));
-                root_tree_hash = stmt_c.read("tree_hash").unwrap_or_else(|_| String::from(""));
+                root_tree_hash = stmt_c
+                    .read("tree_hash")
+                    .unwrap_or_else(|_| String::from(""));
             }
         }
     }
@@ -885,13 +1024,24 @@ async fn show_commit_tree(
         let query = "SELECT hash, mode FROM tree_nodes WHERE parent_tree_hash = ? AND name = ?";
         let mut stmt = match conn.prepare(query) {
             Ok(s) => s,
-            Err(_) => return http_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to query tree nodes"),
+            Err(_) => {
+                return http_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Failed to query tree nodes",
+                );
+            }
         };
         if let Err(_) = stmt.bind((1, current_tree_hash.as_str())) {
-            return http_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to bind parent hash");
+            return http_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to bind parent hash",
+            );
         }
         if let Err(_) = stmt.bind((2, *comp)) {
-            return http_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to bind component name");
+            return http_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to bind component name",
+            );
         }
 
         if let Ok(sqlite::State::Row) = stmt.next() {
@@ -913,14 +1063,27 @@ async fn show_commit_tree(
     for comp in &components {
         acc_path.push_str("/");
         acc_path.push_str(comp);
-        breadcrumbs.push_str(&format!(" / <a href='/commit/{commit_id}/tree{acc_path}'>{}</a>", html_escape(comp)));
+        breadcrumbs.push_str(&format!(
+            " / <a href='/commit/{commit_id}/tree{acc_path}'>{}</a>",
+            html_escape(comp)
+        ));
     }
 
     let mut tree_html = String::new();
     tree_html.push_str("<thead><tr><th style='width: 20px;'></th><th>Name</th><th style='text-align: right;'>Size</th></tr></thead>");
     let mut summary_html = String::new();
-    if let Err(e) = render_tree_html_flat(&conn, commit_id, &path_str, &current_tree_hash, &mut tree_html, &mut summary_html) {
-        return http_error(StatusCode::INTERNAL_SERVER_ERROR, &format!("Failed to render tree: {}", e));
+    if let Err(e) = render_tree_html_flat(
+        &conn,
+        commit_id,
+        &path_str,
+        &current_tree_hash,
+        &mut tree_html,
+        &mut summary_html,
+    ) {
+        return http_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &format!("Failed to render tree: {}", e),
+        );
     }
 
     let terminal_html = format!(
@@ -1401,8 +1564,12 @@ async fn show_commit_tree(
                 Ok(s) => s,
                 Err(_) => continue,
             };
-            if stmt.bind((1, current_tree_hash.as_str())).is_err() { continue; }
-            if stmt.bind((2, sf)).is_err() { continue; }
+            if stmt.bind((1, current_tree_hash.as_str())).is_err() {
+                continue;
+            }
+            if stmt.bind((2, sf)).is_err() {
+                continue;
+            }
             if let Ok(sqlite::State::Row) = stmt.next() {
                 if let Ok(hash) = stmt.read::<String, _>(0) {
                     let bytes = get_raw_blob(&conn, &hash);
@@ -1418,7 +1585,10 @@ async fn show_commit_tree(
                             cmark_html::push_html(&mut html_output, parser);
                             format!("<div class='markdown-body'>{}</div>", html_output)
                         } else {
-                            format!("<pre style='white-space: pre-wrap; font-family: sans-serif;'>{}</pre>", html_escape(&text))
+                            format!(
+                                "<pre style='white-space: pre-wrap; font-family: sans-serif;'>{}</pre>",
+                                html_escape(&text)
+                            )
                         };
                         special_content.insert(label.to_string(), content_html);
                         break; // Found one for this category
@@ -1433,31 +1603,56 @@ async fn show_commit_tree(
     let active_tab = "FILES";
 
     // Files tab
-    tabs_headers.push_str(&format!("<div class='tab {}' onclick='openTab(event, \"files-tab\")'>Files</div>", if active_tab == "FILES" { "active" } else { "" }));
-    tabs_bodies.push_str(&format!("<div id='files-tab' class='tab-content {}'>{}<table class='tree-table'>{}</table></div>", if active_tab == "FILES" { "active" } else { "" }, summary_html, tree_html));
+    tabs_headers.push_str(&format!(
+        "<div class='tab {}' onclick='openTab(event, \"files-tab\")'>Files</div>",
+        if active_tab == "FILES" { "active" } else { "" }
+    ));
+    tabs_bodies.push_str(&format!(
+        "<div id='files-tab' class='tab-content {}'>{}<table class='tree-table'>{}</table></div>",
+        if active_tab == "FILES" { "active" } else { "" },
+        summary_html,
+        tree_html
+    ));
 
     // README tab
     if let Some(content) = special_content.get("README") {
-        tabs_headers.push_str(&format!("<div class='tab {}' onclick='openTab(event, \"readme-tab\")'>README</div>", if active_tab == "README" { "active" } else { "" }));
-        tabs_bodies.push_str(&format!("<div id='readme-tab' class='tab-content {}'>{}</div>", if active_tab == "README" { "active" } else { "" }, content));
+        tabs_headers.push_str(&format!(
+            "<div class='tab {}' onclick='openTab(event, \"readme-tab\")'>README</div>",
+            if active_tab == "README" { "active" } else { "" }
+        ));
+        tabs_bodies.push_str(&format!(
+            "<div id='readme-tab' class='tab-content {}'>{}</div>",
+            if active_tab == "README" { "active" } else { "" },
+            content
+        ));
     }
 
     // Other special tabs
     for (label, content) in &special_content {
-        if label == "README" { continue; }
+        if label == "README" {
+            continue;
+        }
         let tab_id = format!("{}-tab", label.to_lowercase().replace("_", "-"));
-        tabs_headers.push_str(&format!("<div class='tab' onclick='openTab(event, \"{}\")'>{}</div>", tab_id, label.replace("_", " ")));
-        tabs_bodies.push_str(&format!("<div id='{}' class='tab-content'>{}</div>", tab_id, content));
+        tabs_headers.push_str(&format!(
+            "<div class='tab' onclick='openTab(event, \"{}\")'>{}</div>",
+            tab_id,
+            label.replace("_", " ")
+        ));
+        tabs_bodies.push_str(&format!(
+            "<div id='{}' class='tab-content'>{}</div>",
+            tab_id, content
+        ));
     }
 
     // Terminal tab
-    tabs_headers.push_str("<div class='tab' onclick='openTab(event, \"terminal-tab\")'>Terminal</div>");
-    tabs_bodies.push_str(&format!("<div id='terminal-tab' class='tab-content'>{}</div>", terminal_html));
+    tabs_headers
+        .push_str("<div class='tab' onclick='openTab(event, \"terminal-tab\")'>Terminal</div>");
+    tabs_bodies.push_str(&format!(
+        "<div id='terminal-tab' class='tab-content'>{}</div>",
+        terminal_html
+    ));
 
-    let tabs_html = format!(
-        "<div class='tabs'>{}</div>{}",
-        tabs_headers, tabs_bodies
-    );
+    let tabs_html = format!("<div class='tabs'>{}</div>{}", tabs_headers, tabs_bodies);
 
     let script = "
         <script>
@@ -1670,7 +1865,7 @@ async fn show_commit_tree(
             script
         ),
     )
-    .into_response()
+        .into_response()
 }
 
 fn render_tree_html_flat(
@@ -1730,16 +1925,24 @@ fn render_tree_html_flat(
     for (name, hash, mode, size) in entries {
         let is_dir = mode == 16384 || mode == 0o040000 || mode == 0o755;
         let icon = if is_dir { "📁" } else { "📄" };
-        
+
         let link = if is_dir {
             let full_path = if current_path.is_empty() {
                 name.clone()
             } else {
                 format!("{}/{}", current_path, name)
             };
-            format!("<a href='/commit/{commit_id}/tree/{}' class='dir'>{}</a>", full_path, html_escape(&name))
+            format!(
+                "<a href='/commit/{commit_id}/tree/{}' class='dir'>{}</a>",
+                full_path,
+                html_escape(&name)
+            )
         } else {
-            format!("<a href='/file/{}' class='file'>{}</a>", html_escape(&hash), html_escape(&name))
+            format!(
+                "<a href='/file/{}' class='file'>{}</a>",
+                html_escape(&hash),
+                html_escape(&name)
+            )
         };
 
         let size_str = if is_dir {
@@ -1754,9 +1957,7 @@ fn render_tree_html_flat(
                 <td>{}</td>\
                 <td style='text-align: right; color: var(--meta); font-size: 0.8em;'>{}</td>\
              </tr>",
-            icon,
-            link,
-            size_str
+            icon, link, size_str
         ));
     }
     Ok(())
@@ -1782,17 +1983,24 @@ async fn show_commit_diff(
     {
         let mut stmt = match conn.prepare("SELECT hash, tree_hash, id FROM commits WHERE id = ?") {
             Ok(s) => s,
-            Err(_) => return http_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to query commit"),
+            Err(_) => {
+                return http_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to query commit");
+            }
         };
         if let Err(_) = stmt.bind((1, commit_id)) {
-            return http_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to bind commit ID");
+            return http_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to bind commit ID",
+            );
         }
         if let Ok(sqlite::State::Row) = stmt.next() {
             commit_hash = stmt.read("hash").unwrap_or_default();
             tree_hash = stmt.read("tree_hash").unwrap_or_default();
             let current_db_id: i64 = stmt.read("id").unwrap_or(0);
 
-            if let Ok(mut stmt_p) = conn.prepare("SELECT tree_hash FROM commits WHERE id < ? ORDER BY id DESC LIMIT 1") {
+            if let Ok(mut stmt_p) =
+                conn.prepare("SELECT tree_hash FROM commits WHERE id < ? ORDER BY id DESC LIMIT 1")
+            {
                 if stmt_p.bind((1, current_db_id)).is_ok() {
                     if let Ok(sqlite::State::Row) = stmt_p.next() {
                         parent_tree_hash = stmt_p.read(0).ok();
@@ -1834,10 +2042,15 @@ async fn show_commit_diff(
                     "<div class='diff-file-header'>\
                        <button class='btn copy-btn' onclick='copyToClipboard(\"{}\")'>Copy</button>\
                        <strong>Modified: {}</strong>\
-                     </div>", 
-                    diff_id, path.display()
+                     </div>",
+                    diff_id,
+                    path.display()
                 ));
-                diff_html.push_str(&format!("<div id='{}'>{}</div>", diff_id, render_diff(&old_bytes, &new_bytes, &mode)));
+                diff_html.push_str(&format!(
+                    "<div id='{}'>{}</div>",
+                    diff_id,
+                    render_diff(&old_bytes, &new_bytes, &mode)
+                ));
             }
             (None, Some((new_hash, _))) => {
                 // Added
@@ -1846,10 +2059,15 @@ async fn show_commit_diff(
                     "<div class='diff-file-header'>\
                        <button class='btn copy-btn' onclick='copyToClipboard(\"{}\")'>Copy</button>\
                        <strong>Added: {}</strong>\
-                     </div>", 
-                    diff_id, path.display()
+                     </div>",
+                    diff_id,
+                    path.display()
                 ));
-                diff_html.push_str(&format!("<div id='{}'>{}</div>", diff_id, render_diff(&[], &new_bytes, &mode)));
+                diff_html.push_str(&format!(
+                    "<div id='{}'>{}</div>",
+                    diff_id,
+                    render_diff(&[], &new_bytes, &mode)
+                ));
             }
             (Some((old_hash, _)), None) => {
                 // Deleted
@@ -1857,7 +2075,7 @@ async fn show_commit_diff(
                 diff_html.push_str(&format!(
                     "<div class='diff-file-header'>\
                        <strong>Deleted: {}</strong>\
-                     </div>", 
+                     </div>",
                     path.display()
                 ));
                 diff_html.push_str(&render_diff(&old_bytes, &[], &mode));
@@ -1901,7 +2119,7 @@ async fn show_commit_diff(
             short_hash(&commit_hash),
             if diff_html.is_empty() { "<p>No text changes.</p>" } else { "" },
             diff_html
-        )
+        ),
     ).into_response()
 }
 
@@ -1921,24 +2139,31 @@ fn get_raw_blob(conn: &Connection, hash: &str) -> Vec<u8> {
 fn render_diff(old: &[u8], new: &[u8], mode: &str) -> String {
     let old_s = String::from_utf8_lossy(old);
     let new_s = String::from_utf8_lossy(new);
-    
+
     // Si c'est binaire (approximatif)
     if old_s.contains('\0') || new_s.contains('\0') {
         return "<div class='diff-container'>(Binary file diff not shown)</div>".to_string();
     }
 
     if mode == "raw" {
-        return format!("<div class='diff-container'><pre style='margin:0;'><code>{}</code></pre></div>", html_escape(&new_s));
+        return format!(
+            "<div class='diff-container'><pre style='margin:0;'><code>{}</code></pre></div>",
+            html_escape(&new_s)
+        );
     }
 
     let diff = similar::TextDiff::from_lines(&old_s, &new_s);
-    
+
     if mode == "side-by-side" {
         let mut out = String::from("<table class='diff-ss-table'>");
         for opcode in diff.grouped_ops(3) {
             for op in opcode {
                 match op {
-                    similar::DiffOp::Equal { old_index, new_index, len } => {
+                    similar::DiffOp::Equal {
+                        old_index,
+                        new_index,
+                        len,
+                    } => {
                         for i in 0..len {
                             let old_line = diff.old_slices()[old_index + i];
                             let new_line = diff.new_slices()[new_index + i];
@@ -1952,7 +2177,9 @@ fn render_diff(old: &[u8], new: &[u8], mode: &str) -> String {
                             ));
                         }
                     }
-                    similar::DiffOp::Delete { old_index, old_len, .. } => {
+                    similar::DiffOp::Delete {
+                        old_index, old_len, ..
+                    } => {
                         for i in 0..old_len {
                             let old_line = diff.old_slices()[old_index + i];
                             out.push_str(&format!(
@@ -1964,7 +2191,9 @@ fn render_diff(old: &[u8], new: &[u8], mode: &str) -> String {
                             ));
                         }
                     }
-                    similar::DiffOp::Insert { new_index, new_len, .. } => {
+                    similar::DiffOp::Insert {
+                        new_index, new_len, ..
+                    } => {
                         for i in 0..new_len {
                             let new_line = diff.new_slices()[new_index + i];
                             out.push_str(&format!(
@@ -1976,7 +2205,12 @@ fn render_diff(old: &[u8], new: &[u8], mode: &str) -> String {
                             ));
                         }
                     }
-                    similar::DiffOp::Replace { old_index, old_len, new_index, new_len } => {
+                    similar::DiffOp::Replace {
+                        old_index,
+                        old_len,
+                        new_index,
+                        new_len,
+                    } => {
                         let common = old_len.min(new_len);
                         for i in 0..common {
                             let old_line = diff.old_slices()[old_index + i];
@@ -2028,7 +2262,12 @@ fn render_diff(old: &[u8], new: &[u8], mode: &str) -> String {
             similar::ChangeTag::Insert => ("+", "diff-added"),
             similar::ChangeTag::Equal => (" ", "diff-equal"),
         };
-        out.push_str(&format!("<span class='{}'>{}{}</span>", class, sign, html_escape(&change.to_string())));
+        out.push_str(&format!(
+            "<span class='{}'>{}{}</span>",
+            class,
+            sign,
+            html_escape(&change.to_string())
+        ));
     }
     out.push_str("</div>");
     out
@@ -2094,7 +2333,7 @@ async fn show_file(
                     text.truncate(MAX_PREVIEW_BYTES);
                     text.push_str("\n\n[... truncated preview ...]");
                 }
-                
+
                 // Déterminer la classe de langage pour Prism de manière plus générique
                 let extension = Path::new(&filename)
                     .extension()
@@ -2143,7 +2382,11 @@ async fn show_file(
                     _ => "language-none",
                 };
 
-                body.push_str(&format!("<pre class='line-numbers'><code class='{}'>{}</code></pre>", lang_class, html_escape(&text)));
+                body.push_str(&format!(
+                    "<pre class='line-numbers'><code class='{}'>{}</code></pre>",
+                    lang_class,
+                    html_escape(&text)
+                ));
                 page("File View", "", &body).into_response()
             }
             Err(_) => {
@@ -2206,9 +2449,7 @@ async fn download_raw(
     }
 }
 
-async fn serve_rss(
-    State(state): State<Arc<AppState>>,
-) -> impl IntoResponse {
+async fn serve_rss(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let conn = match state.conn.lock() {
         Ok(g) => g,
         Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "DB lock poisoned").into_response(),
@@ -2220,10 +2461,13 @@ async fn serve_rss(
         .and_then(|p| p.file_name().map(|s| s.to_string_lossy().into_owned()))
         .unwrap_or_else(|| "Lys".to_string());
 
-    let query = "SELECT id, hash, author, message, timestamp FROM commits ORDER BY id DESC LIMIT 50";
+    let query =
+        "SELECT id, hash, author, message, timestamp FROM commits ORDER BY id DESC LIMIT 50";
     let mut stmt = match conn.prepare(query) {
         Ok(s) => s,
-        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to query commits").into_response(),
+        Err(_) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to query commits").into_response();
+        }
     };
 
     let mut items = String::new();
@@ -2232,9 +2476,13 @@ async fn serve_rss(
             Ok(sqlite::State::Row) => {
                 let id: i64 = stmt.read("id").unwrap_or(0);
                 let hash: String = stmt.read("hash").unwrap_or_default();
-                let msg: String = stmt.read("message").unwrap_or_else(|_| String::from("(no message)"));
+                let msg: String = stmt
+                    .read("message")
+                    .unwrap_or_else(|_| String::from("(no message)"));
                 let date_str: String = stmt.read("timestamp").unwrap_or_else(|_| String::from(""));
-                let author: String = stmt.read("author").unwrap_or_else(|_| String::from("Unknown"));
+                let author: String = stmt
+                    .read("author")
+                    .unwrap_or_else(|_| String::from("Unknown"));
 
                 // RSS needs RFC822/2822 dates. Let's try to convert our RFC3339.
                 let pub_date = match DateTime::parse_from_rfc3339(&date_str) {
@@ -2282,7 +2530,10 @@ async fn serve_rss(
     );
 
     let mut headers = HeaderMap::new();
-    headers.insert(header::CONTENT_TYPE, header::HeaderValue::from_static("application/rss+xml"));
+    headers.insert(
+        header::CONTENT_TYPE,
+        header::HeaderValue::from_static("application/rss+xml"),
+    );
 
     (StatusCode::OK, headers, rss).into_response()
 }
@@ -2294,7 +2545,10 @@ async fn upload_atom(
     body: Bytes,
 ) -> StatusCode {
     // 1. On récupère la signature envoyée par le client dans l'entête
-    let signature = match headers.get("X-Silex-Signature").and_then(|s| s.to_str().ok()) {
+    let signature = match headers
+        .get("X-Silex-Signature")
+        .and_then(|s| s.to_str().ok())
+    {
         Some(s) if !s.is_empty() => s,
         _ => return StatusCode::UNAUTHORIZED, // Pas de signature = Rejet
     };
@@ -2316,8 +2570,7 @@ async fn upload_atom(
                 Err(_) => return StatusCode::INTERNAL_SERVER_ERROR,
             };
 
-            let query =
-                "INSERT OR IGNORE INTO store.blobs (hash, content, size) VALUES (?, ?, ?)";
+            let query = "INSERT OR IGNORE INTO store.blobs (hash, content, size) VALUES (?, ?, ?)";
             let mut stmt = match conn.prepare(query) {
                 Ok(s) => s,
                 Err(_) => return StatusCode::INTERNAL_SERVER_ERROR,
