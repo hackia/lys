@@ -33,6 +33,7 @@ pub struct AppState {
     pub conn: Mutex<Connection>,
     pub sessions: DashMap<String, Arc<Session>>,
     pub chat_tx: broadcast::Sender<String>,
+    pub repo_root: PathBuf,
 }
 
 static WEB_TITLE: OnceCell<String> = OnceCell::new();
@@ -247,6 +248,23 @@ pub struct Pagination {
 }
 
 #[derive(Deserialize)]
+pub struct CommitQueryParams {
+    pub author: Option<String>,
+    pub message: Option<String>,
+    pub file: Option<String>,
+    pub branch: Option<String>,
+    pub tag: Option<String>,
+    pub hash: Option<String>,
+    pub after: Option<String>,
+    pub before: Option<String>,
+    pub since: Option<String>,
+    pub until: Option<String>,
+    pub limit: Option<usize>,
+    pub page: Option<usize>,
+    pub fields: Option<String>,
+}
+
+#[derive(Deserialize)]
 pub struct DiffParams {
     pub mode: Option<String>,
 }
@@ -297,6 +315,78 @@ struct TodoForm {
 
 fn short_hash(s: &str) -> &str {
     s.get(..7).unwrap_or(s)
+}
+
+#[derive(Default)]
+struct QueryFieldSet {
+    date: bool,
+    author: bool,
+    message: bool,
+    files: bool,
+    hash: bool,
+}
+
+impl QueryFieldSet {
+    fn all() -> Self {
+        Self {
+            date: true,
+            author: true,
+            message: true,
+            files: true,
+            hash: true,
+        }
+    }
+}
+
+fn parse_query_fields(fields: &Option<String>) -> QueryFieldSet {
+    let raw = match fields {
+        Some(v) if !v.trim().is_empty() => v,
+        _ => return QueryFieldSet::all(),
+    };
+    let mut set = QueryFieldSet::default();
+    for field in raw.split(',') {
+        match field.trim() {
+            "date" => set.date = true,
+            "author" => set.author = true,
+            "message" => set.message = true,
+            "files" => set.files = true,
+            "hash" => set.hash = true,
+            _ => {}
+        }
+    }
+    if !(set.date || set.author || set.message || set.files || set.hash) {
+        QueryFieldSet::all()
+    } else {
+        set
+    }
+}
+
+fn clean_param(value: Option<String>) -> Option<String> {
+    value.and_then(|v| {
+        let trimmed = v.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
+}
+
+fn normalize_date_filter(value: &str, end_of_day: bool) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let normalized = trimmed.replace('T', " ");
+    if normalized.len() == 10 {
+        if end_of_day {
+            Some(format!("{normalized} 23:59:59"))
+        } else {
+            Some(format!("{normalized} 00:00:00"))
+        }
+    } else {
+        Some(normalized)
+    }
 }
 
 fn html_escape(s: &str) -> String {
@@ -635,6 +725,19 @@ pub fn page(title: &str, style: &str, body: &str) -> Html<String> {
         .form-stack { display: flex; flex-direction: column; gap: 16px; }
         .field label { display: block; font-weight: 600; margin-bottom: 6px; font-size: 0.85em; color: var(--muted); }
         .form-stack .field input, .form-stack .field textarea, .form-stack .field select { width: 100%; }
+        .query-actions { display: flex; gap: 8px; align-items: center; }
+        .checkbox-row { display: flex; flex-wrap: wrap; gap: 10px; }
+        .checkbox { display: inline-flex; align-items: center; gap: 6px; font-size: 0.85em; color: var(--muted); }
+        .checkbox input { accent-color: var(--accent); }
+        .query-meta { color: var(--muted); font-size: 0.85em; }
+        .file-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+        .file-chip { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: var(--radius-xs); border: 1px solid var(--border); background: var(--surface); font-family: var(--font-mono); font-size: 0.75em; }
+        .file-chip.more { color: var(--muted); }
+        .query-table td { vertical-align: top; }
+        .query-message { font-weight: 600; }
+        .query-ideas { margin-top: 12px; }
+        .query-ideas ul { margin: 8px 0 0 18px; color: var(--muted); font-size: 0.88em; }
+        .query-ideas li { margin-bottom: 4px; }
         input[type='text'], input[type='date'], textarea, select { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-xs); padding: 8px 10px; color: var(--fg); font-family: var(--font-body); }
         textarea { min-height: 90px; }
         input:focus, textarea:focus, select:focus { outline: none; box-shadow: var(--focus-ring); border-color: var(--accent); }
@@ -805,6 +908,47 @@ pub fn page(title: &str, style: &str, body: &str) -> Html<String> {
                    btn.innerText = 'Copied!';
                    setTimeout(() => btn.innerText = originalText, 2000);
                  }});
+               }}
+               function runQuery(event, pageOverride) {{
+                 if (event) event.preventDefault();
+                 const form = document.getElementById('commit-query-form');
+                 const results = document.getElementById('query-results');
+                 if (!form || !results) return;
+                 const params = new URLSearchParams();
+                 const formData = new FormData(form);
+                 formData.forEach((value, key) => {{
+                   if (key === 'fields') return;
+                   const trimmed = String(value).trim();
+                   if (trimmed !== '') {{
+                     params.append(key, trimmed);
+                   }}
+                 }});
+                 const fields = Array.from(form.querySelectorAll('input[name=fields]:checked'))
+                   .map(el => el.value)
+                   .filter(v => v);
+                 if (fields.length) {{
+                   params.set('fields', fields.join(','));
+                 }}
+                 if (pageOverride) {{
+                   params.set('page', pageOverride);
+                 }}
+                 results.innerHTML = `<div class='card tight'><span class='query-meta'>Loading...</span></div>`;
+                 fetch('/api/commits/query?' + params.toString())
+                   .then(response => response.text())
+                   .then(html => {{
+                     results.innerHTML = html;
+                   }})
+                   .catch(err => {{
+                     console.error('Failed to run query:', err);
+                     results.innerHTML = `<div class='card'><span class='meta'>Query failed. Try again.</span></div>`;
+                   }});
+               }}
+               function resetQueryForm() {{
+                 const form = document.getElementById('commit-query-form');
+                 const results = document.getElementById('query-results');
+                 if (!form || !results) return;
+                 form.reset();
+                 results.innerHTML = `<div class='card tight'><span class='query-meta'>Run a query to see results.</span></div>`;
                }}
              </script>
            </body>
@@ -1061,6 +1205,7 @@ pub async fn start_server(repo_path: &str, port: u16) {
         conn: Mutex::new(conn),
         sessions: DashMap::new(),
         chat_tx,
+        repo_root: path.clone(),
     });
 
     let app = Router::new()
@@ -1100,6 +1245,7 @@ pub async fn start_server(repo_path: &str, port: u16) {
         .route("/raw/{hash}", get(download_raw)) // <-- new: reliable way to view binary / huge files
         .route("/upload/{hash}", post(upload_atom))
         .route("/api/commits", get(api_commits))
+        .route("/api/commits/query", get(api_commit_query))
         .fallback_service(tower_http::services::ServeDir::new("."))
         .with_state(shared_state);
 
@@ -1192,6 +1338,159 @@ fn render_commits_list(conn: &Connection, page_num: usize) -> (String, String) {
     nav_html.push_str("</div>");
 
     (rows, nav_html)
+}
+
+fn render_query_results_html(
+    conn: &Connection,
+    items: &[crate::db::CommitQueryResult],
+    total: i64,
+    page_num: usize,
+    limit: usize,
+    fields: &QueryFieldSet,
+) -> String {
+    let mut html = String::new();
+    let total_pages = if total <= 0 {
+        1
+    } else {
+        (total as f64 / limit as f64).ceil() as usize
+    };
+    let start_index = if total == 0 {
+        0
+    } else {
+        (page_num.saturating_sub(1) * limit) + 1
+    };
+    let end_index = if total == 0 {
+        0
+    } else {
+        ((page_num.saturating_sub(1) * limit) + items.len()).min(total as usize)
+    };
+
+    let summary = if total == 0 {
+        "Results 0".to_string()
+    } else {
+        format!("Results {start_index}-{end_index} of {total}")
+    };
+    html.push_str(&format!(
+        "<div class='card tight'><span class='query-meta'>{}</span></div>",
+        html_escape(&summary)
+    ));
+
+    if items.is_empty() {
+        html.push_str("<div class='card'><span class='meta'>No results. Adjust filters and try again.</span></div>");
+        return html;
+    }
+
+    html.push_str("<div class='card table-card'>");
+    html.push_str("<table class='query-table'><thead><tr>");
+    if fields.date {
+        html.push_str("<th>Date</th>");
+    }
+    if fields.author {
+        html.push_str("<th>Author</th>");
+    }
+    if fields.message {
+        html.push_str("<th>Message</th>");
+    }
+    if fields.files {
+        html.push_str("<th>Files</th>");
+    }
+    if fields.hash {
+        html.push_str("<th>Commit</th>");
+    }
+    html.push_str("</tr></thead><tbody>");
+
+    for item in items {
+        let first_line = item.message.lines().next().unwrap_or("");
+        let summary = truncate_words(first_line, 24);
+        let hash_short = short_hash(&item.hash);
+        let date_html = format!(
+            "<div>{}</div><div class='meta'>{}</div>",
+            html_escape(&item.timestamp),
+            html_escape(&time_ago(&item.timestamp))
+        );
+        let message_html = format!(
+            "<a href='/commit/{}' class='query-message'>{}</a>",
+            item.id,
+            html_escape(&summary)
+        );
+
+        let mut files_html = String::new();
+        if fields.files {
+            let (files, total_files) = crate::db::commit_files_preview(conn, item.id, 6)
+                .unwrap_or_else(|_| (Vec::new(), 0));
+            if files.is_empty() {
+                files_html.push_str("<span class='meta'>No files</span>");
+            } else {
+                files_html.push_str("<div class='file-chips'>");
+                for file in &files {
+                    files_html.push_str(&format!(
+                        "<span class='file-chip'>{}</span>",
+                        html_escape(&file)
+                    ));
+                }
+                let extra = total_files.saturating_sub(files.clone().len() as i64);
+                if extra > 0 {
+                    files_html.push_str(&format!(
+                        "<span class='file-chip more'>+{} more</span>",
+                        extra
+                    ));
+                }
+                files_html.push_str("</div>");
+            }
+        }
+
+        html.push_str("<tr>");
+        if fields.date {
+            html.push_str(&format!("<td>{}</td>", date_html));
+        }
+        if fields.author {
+            html.push_str(&format!("<td>{}</td>", html_escape(&item.author)));
+        }
+        if fields.message {
+            html.push_str(&format!("<td>{}</td>", message_html));
+        }
+        if fields.files {
+            html.push_str(&format!("<td>{}</td>", files_html));
+        }
+        if fields.hash {
+            html.push_str(&format!(
+                "<td><a href='/commit/{}' class='hash'>{}</a></td>",
+                item.id,
+                html_escape(hash_short)
+            ));
+        }
+        html.push_str("</tr>");
+    }
+    html.push_str("</tbody></table></div>");
+
+    if total_pages > 1 {
+        let mut nav_html = format!(
+            "<div class='pager card tight'><div class='pager-info'>Page {} of {}</div>",
+            page_num, total_pages
+        );
+        let mut links = Vec::new();
+        if page_num > 1 {
+            links.push(format!(
+                "<a class='btn btn-ghost' href='#' onclick='runQuery(event, {})'>&laquo; Newer</a>",
+                page_num - 1
+            ));
+        }
+        if page_num < total_pages {
+            links.push(format!(
+                "<a class='btn btn-ghost' href='#' onclick='runQuery(event, {})'>Older &raquo;</a>",
+                page_num + 1
+            ));
+        }
+        if !links.is_empty() {
+            nav_html.push_str("<div class='pager-links'>");
+            nav_html.push_str(&links.join(""));
+            nav_html.push_str("</div>");
+        }
+        nav_html.push_str("</div>");
+        html.push_str(&nav_html);
+    }
+
+    html
 }
 
 fn terminal_panel_html() -> String {
@@ -1682,6 +1981,73 @@ pub async fn api_commits(
     Html(html).into_response()
 }
 
+pub async fn api_commit_query(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<CommitQueryParams>,
+) -> impl IntoResponse {
+    let conn = match state.conn.lock() {
+        Ok(g) => g,
+        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "DB lock poisoned").into_response(),
+    };
+
+    let page_num = params.page.unwrap_or(1).max(1);
+    let limit = params.limit.unwrap_or(20).max(1).min(200);
+
+    let author = clean_param(params.author);
+    let message = clean_param(params.message);
+    let file = clean_param(params.file);
+    let tag = clean_param(params.tag);
+    let hash_prefix = clean_param(params.hash);
+
+    let after_raw = clean_param(params.after).or_else(|| clean_param(params.since));
+    let before_raw = clean_param(params.before).or_else(|| clean_param(params.until));
+
+    let mut branch = match clean_param(params.branch) {
+        Some(name) if name == "current" => crate::db::get_current_branch(&conn).ok(),
+        Some(name) => Some(name),
+        None => None,
+    };
+
+    let author_only = author.is_some()
+        && message.is_none()
+        && file.is_none()
+        && after_raw.is_none()
+        && before_raw.is_none()
+        && branch.is_none()
+        && tag.is_none()
+        && hash_prefix.is_none();
+    if author_only {
+        branch = crate::db::get_current_branch(&conn).ok();
+    }
+
+    let query = crate::db::CommitQuery {
+        author,
+        message,
+        file,
+        after: after_raw
+            .as_deref()
+            .and_then(|v| normalize_date_filter(v, false)),
+        before: before_raw
+            .as_deref()
+            .and_then(|v| normalize_date_filter(v, true)),
+        branch,
+        tag,
+        hash_prefix,
+    };
+
+    let fields = parse_query_fields(&params.fields);
+
+    let (rows, total) = match crate::db::query_commits(&conn, &query, page_num, limit) {
+        Ok(v) => v,
+        Err(_) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to query commits").into_response();
+        }
+    };
+
+    let html = render_query_results_html(&conn, &rows, total, page_num, limit, &fields);
+    Html(html).into_response()
+}
+
 pub async fn idx_commits(
     State(state): State<Arc<AppState>>,
     Query(pagination): Query<Pagination>,
@@ -1767,6 +2133,48 @@ pub async fn idx_commits(
 
     let contributors = crate::db::get_unique_contributors(&conn).unwrap_or_default();
     let contributor_names: Vec<String> = contributors.iter().map(|(n, _)| n.clone()).collect();
+    let mut author_datalist = String::from("<datalist id='author-list'>");
+    for name in &contributor_names {
+        author_datalist.push_str(&format!("<option value='{}'></option>", html_escape(name)));
+    }
+    author_datalist.push_str("</datalist>");
+
+    let branches = crate::db::list_branches(&conn);
+    let current_branch =
+        crate::db::get_current_branch(&conn).unwrap_or_else(|_| "main".to_string());
+    let mut branch_options =
+        String::from("<option value='' selected>Auto (current when author-only)</option>");
+    branch_options.push_str(&format!(
+        "<option value='current'>Current: {}</option>",
+        html_escape(&current_branch)
+    ));
+    for branch in branches {
+        branch_options.push_str(&format!(
+            "<option value='{}'>{}</option>",
+            html_escape(&branch),
+            html_escape(&branch)
+        ));
+    }
+
+    let tags = crate::db::list_tags(&conn);
+    let mut tag_options = String::from("<option value='' selected>Any tag</option>");
+    for tag in tags {
+        tag_options.push_str(&format!(
+            "<option value='{}'>{}</option>",
+            html_escape(&tag),
+            html_escape(&tag)
+        ));
+    }
+
+    let files = crate::tree::list_files(&state.repo_root, 400);
+    let mut file_datalist = String::from("<datalist id='file-list'>");
+    for file in files {
+        file_datalist.push_str(&format!(
+            "<option value='{}'></option>",
+            html_escape(&file)
+        ));
+    }
+    file_datalist.push_str("</datalist>");
 
     let mut stats_tab = String::from("<div class='stats-grid'>");
 
@@ -1793,10 +2201,108 @@ pub async fn idx_commits(
     stats_tab.push_str("</div></div>");
 
     let (rows, nav_html) = render_commits_list(&conn, page_num);
+    let query_tab = format!(
+        "<div id='tab-query' class='tab-content'>\
+            <div class='card'>\
+              <h3>Query Builder</h3>\
+              <form id='commit-query-form' class='form-stack' onsubmit='runQuery(event)'>\
+                <div class='form-inline'>\
+                  <div class='field'>\
+                    <label>Author</label>\
+                    <input type='text' name='author' list='author-list' placeholder='name or email'>\
+                  </div>\
+                  <div class='field'>\
+                    <label>Message</label>\
+                    <input type='text' name='message' placeholder='feat, fix, release'>\
+                  </div>\
+                  <div class='field'>\
+                    <label>File path</label>\
+                    <input type='text' name='file' list='file-list' placeholder='src/main.rs'>\
+                  </div>\
+                </div>\
+                <div class='form-inline'>\
+                  <div class='field'>\
+                    <label>Branch</label>\
+                    <select name='branch'>\
+                      {}\
+                    </select>\
+                  </div>\
+                  <div class='field'>\
+                    <label>Tag</label>\
+                    <select name='tag'>\
+                      {}\
+                    </select>\
+                  </div>\
+                  <div class='field'>\
+                    <label>Hash prefix</label>\
+                    <input type='text' name='hash' placeholder='a1b2c3'>\
+                  </div>\
+                </div>\
+                <div class='form-inline'>\
+                  <div class='field'>\
+                    <label>After</label>\
+                    <input type='date' name='after'>\
+                  </div>\
+                  <div class='field'>\
+                    <label>Before</label>\
+                    <input type='date' name='before'>\
+                  </div>\
+                  <div class='field'>\
+                    <label>Limit</label>\
+                    <select name='limit'>\
+                      <option value='20' selected>20</option>\
+                      <option value='50'>50</option>\
+                      <option value='100'>100</option>\
+                    </select>\
+                  </div>\
+                </div>\
+                <div class='form-inline'>\
+                  <div class='field'>\
+                    <label>Columns</label>\
+                    <div class='checkbox-row'>\
+                      <label class='checkbox'><input type='checkbox' name='fields' value='date' checked>Date</label>\
+                      <label class='checkbox'><input type='checkbox' name='fields' value='author' checked>Author</label>\
+                      <label class='checkbox'><input type='checkbox' name='fields' value='message' checked>Message</label>\
+                      <label class='checkbox'><input type='checkbox' name='fields' value='files' checked>Files</label>\
+                      <label class='checkbox'><input type='checkbox' name='fields' value='hash' checked>Commit</label>\
+                    </div>\
+                  </div>\
+                  <div class='field'>\
+                    <label>&nbsp;</label>\
+                    <div class='query-actions'>\
+                      <button type='submit' class='btn'>Search</button>\
+                      <button type='button' class='btn btn-ghost' onclick='resetQueryForm()'>Clear</button>\
+                    </div>\
+                  </div>\
+                </div>\
+              </form>\
+              <div class='divider query-ideas'>\
+                <strong>Ideas for powerful filters (coming soon)</strong>\
+                <ul>\
+                  <li>Change type (added / modified / deleted)</li>\
+                  <li>Path prefix / extension presets</li>\
+                  <li>Author domain (ex: @company.com)</li>\
+                  <li>Message regex or keyword groups</li>\
+                  <li>Time presets (last 7/30/90 days)</li>\
+                  <li>Signed-only or verified-only commits</li>\
+                </ul>\
+              </div>\
+              {}{}\
+            </div>\
+            <div id='query-results' class='panel'>\
+              <div class='card tight'><span class='query-meta'>Run a query to see results.</span></div>\
+            </div>\
+         </div>",
+        branch_options,
+        tag_options,
+        author_datalist,
+        file_datalist
+    );
 
     let mut body = String::new();
     body.push_str("<div class='tabs'>");
     body.push_str("<div class='tab active' onclick=\"openTab(event, 'tab-log')\">Log</div>");
+    body.push_str("<div class='tab' onclick=\"openTab(event, 'tab-query')\">Query</div>");
     body.push_str(
         "<div class='tab' onclick=\"openTab(event, 'tab-contributors')\">Contributors</div>",
     );
@@ -1817,6 +2323,8 @@ pub async fn idx_commits(
     body.push_str("</div>");
     body.push_str(&nav_html);
     body.push_str("</div>");
+
+    body.push_str(&query_tab);
 
     body.push_str("<div id='tab-music' class='tab-content'>");
     body.push_str("<h3>Music</h3>");
@@ -1875,7 +2383,9 @@ async fn show_commit(
                 date = stmt_c
                     .read("timestamp")
                     .unwrap_or_else(|_| String::from(""));
-                parent_hash = stmt_c.read("parent_hash").unwrap_or_else(|_| String::from(""));
+                parent_hash = stmt_c
+                    .read("parent_hash")
+                    .unwrap_or_else(|_| String::from(""));
             }
         }
     }
@@ -2002,8 +2512,7 @@ async fn show_commit(
     }
 
     let diff_section = if diff_accordions.is_empty() {
-        "<div class='card'><p class='meta' style='margin:0;'>No file changes.</p></div>"
-            .to_string()
+        "<div class='card'><p class='meta' style='margin:0;'>No file changes.</p></div>".to_string()
     } else {
         format!(
             "<div class='card' style='margin-bottom: 25px;'>\
@@ -2111,7 +2620,7 @@ async fn restore_working_deleted(
             return http_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Failed to load HEAD state",
-            )
+            );
         }
     };
 
@@ -2427,12 +2936,10 @@ async fn show_commit_tree(
              <div class='breadcrumbs card'>{}</div>\
              {}\
              {}",
-            breadcrumbs,
-            tabs_html,
-            script
+            breadcrumbs, tabs_html, script
         ),
     )
-        .into_response()
+    .into_response()
 }
 
 fn render_tree_html_flat(
@@ -2808,7 +3315,9 @@ async fn show_commit_diff(
     let mut parent_tree_hash: Option<String> = None;
 
     {
-        let mut stmt = match conn.prepare("SELECT hash, tree_hash, parent_hash, id FROM commits WHERE id = ?") {
+        let mut stmt = match conn
+            .prepare("SELECT hash, tree_hash, parent_hash, id FROM commits WHERE id = ?")
+        {
             Ok(s) => s,
             Err(_) => {
                 return http_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to query commit");
@@ -2827,7 +3336,8 @@ async fn show_commit_diff(
             let current_db_id: i64 = stmt.read("id").unwrap_or(0);
 
             if !parent_hash.is_empty() {
-                if let Ok(mut stmt_p) = conn.prepare("SELECT tree_hash FROM commits WHERE hash = ?") {
+                if let Ok(mut stmt_p) = conn.prepare("SELECT tree_hash FROM commits WHERE hash = ?")
+                {
                     if stmt_p.bind((1, parent_hash.as_str())).is_ok() {
                         if let Ok(sqlite::State::Row) = stmt_p.next() {
                             parent_tree_hash = stmt_p.read(0).ok();
@@ -3634,7 +4144,10 @@ async fn editor_delete_path(UrlPath(path): UrlPath<String>) -> impl IntoResponse
 
 async fn run_hooks_web() -> impl IntoResponse {
     if !Path::new("lys").exists() {
-        return http_error(StatusCode::NOT_FOUND, "No lys file found at repository root");
+        return http_error(
+            StatusCode::NOT_FOUND,
+            "No lys file found at repository root",
+        );
     }
     match crate::utils::run_hooks() {
         Ok(_) => Response::builder()
@@ -3692,8 +4205,10 @@ async fn new_commit_form(
     let hook_notice_html = match notice.hooks.as_deref() {
         Some("ok") => "<div class='card hook-note hook-note-ok'>Hooks executed successfully.</div>"
             .to_string(),
-        Some("err") => "<div class='card hook-note hook-note-err'>Hooks failed. Check server logs.</div>"
-            .to_string(),
+        Some("err") => {
+            "<div class='card hook-note hook-note-err'>Hooks failed. Check server logs.</div>"
+                .to_string()
+        }
         _ => String::new(),
     };
     let hook_action_html = if Path::new("lys").exists() {
@@ -4031,7 +4546,8 @@ async fn create_commit(
     let min_alnum = 50usize;
     let max_summary = 82usize;
     let too_short = |s: &str| s.chars().count() < min_len;
-    let too_few_alnum = |s: &str| s.chars().filter(|c| c.is_ascii_alphanumeric()).count() < min_alnum;
+    let too_few_alnum =
+        |s: &str| s.chars().filter(|c| c.is_ascii_alphanumeric()).count() < min_alnum;
     if summary.is_empty() || why.is_empty() || how.is_empty() || outcome.is_empty() {
         return http_error(
             StatusCode::BAD_REQUEST,
@@ -4050,7 +4566,8 @@ async fn create_commit(
             "Summary must be 82 characters or less",
         );
     }
-    if too_few_alnum(summary) || too_few_alnum(why) || too_few_alnum(how) || too_few_alnum(outcome) {
+    if too_few_alnum(summary) || too_few_alnum(why) || too_few_alnum(how) || too_few_alnum(outcome)
+    {
         return http_error(
             StatusCode::BAD_REQUEST,
             "Each section must include at least 50 alphanumeric characters (A-Z, a-z, 0-9)",
@@ -4058,10 +4575,7 @@ async fn create_commit(
     }
 
     // Construction du message formaté (on émule Commit::Display)
-    let message = format!(
-        "{}\n\n{}\n\n{}\n\n{}",
-        summary, why, how, outcome
-    );
+    let message = format!("{}\n\n{}\n\n{}\n\n{}", summary, why, how, outcome);
 
     let author = crate::commit::author();
 

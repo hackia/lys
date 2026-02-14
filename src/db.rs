@@ -111,6 +111,274 @@ pub const LYS_INIT: &str = "CREATE TABLE IF NOT EXISTS tree_nodes (
     INSERT OR IGNORE INTO config (key, value) VALUES ('current_branch', 'main');
 ";
 
+#[derive(Default)]
+pub struct CommitQuery {
+    pub author: Option<String>,
+    pub message: Option<String>,
+    pub file: Option<String>,
+    pub after: Option<String>,
+    pub before: Option<String>,
+    pub branch: Option<String>,
+    pub tag: Option<String>,
+    pub hash_prefix: Option<String>,
+}
+
+pub struct CommitQueryResult {
+    pub id: i64,
+    pub hash: String,
+    pub author: String,
+    pub message: String,
+    pub timestamp: String,
+}
+
+pub fn list_branches(conn: &Connection) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut stmt = match conn.prepare("SELECT name FROM branches ORDER BY name") {
+        Ok(s) => s,
+        Err(_) => return out,
+    };
+    while let Ok(State::Row) = stmt.next() {
+        if let Ok(name) = stmt.read::<String, _>(0) {
+            out.push(name);
+        }
+    }
+    out
+}
+
+pub fn list_tags(conn: &Connection) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Ok(mut stmt) = conn.prepare("SELECT name FROM tags ORDER BY name") {
+        while let Ok(State::Row) = stmt.next() {
+            if let Ok(name) = stmt.read::<String, _>(0) {
+                out.push(name);
+            }
+        }
+        if !out.is_empty() {
+            return out;
+        }
+    }
+
+    let mut stmt = match conn.prepare("SELECT key FROM config WHERE key LIKE 'tag_%' ORDER BY key")
+    {
+        Ok(s) => s,
+        Err(_) => return out,
+    };
+    while let Ok(State::Row) = stmt.next() {
+        if let Ok(key) = stmt.read::<String, _>(0) {
+            if let Some(name) = key.strip_prefix("tag_") {
+                out.push(name.to_string());
+            }
+        }
+    }
+    out
+}
+
+pub fn tag_hash(conn: &Connection, tag: &str) -> Option<String> {
+    if let Ok(mut stmt) =
+        conn.prepare("SELECT c.hash FROM tags t JOIN commits c ON t.commit_id = c.id WHERE t.name = ?")
+    {
+        if stmt.bind((1, tag)).is_ok() {
+            if let Ok(State::Row) = stmt.next() {
+                if let Ok(hash) = stmt.read::<String, _>(0) {
+                    return Some(hash);
+                }
+            }
+        }
+    }
+
+    let key = format!("tag_{tag}");
+    let mut stmt = conn
+        .prepare("SELECT value FROM config WHERE key = ?")
+        .ok()?;
+    stmt.bind((1, key.as_str())).ok()?;
+    if let Ok(State::Row) = stmt.next() {
+        stmt.read::<String, _>(0).ok()
+    } else {
+        None
+    }
+}
+
+pub fn branch_head_id(conn: &Connection, branch: &str) -> Result<Option<i64>, Error> {
+    let query =
+        "SELECT c.id FROM branches b JOIN commits c ON b.head_commit_id = c.id WHERE b.name = ?";
+    let mut stmt = conn.prepare(query)?;
+    stmt.bind((1, branch))?;
+    if let Ok(State::Row) = stmt.next() {
+        Ok(Some(stmt.read::<i64, _>(0)?))
+    } else {
+        Ok(None)
+    }
+}
+
+pub fn query_commits(
+    conn: &Connection,
+    query: &CommitQuery,
+    page: usize,
+    limit: usize,
+) -> Result<(Vec<CommitQueryResult>, i64), Error> {
+    let mut clauses: Vec<String> = Vec::new();
+    let mut params: Vec<String> = Vec::new();
+    let mut cte_sql = String::new();
+    let mut cte_params: Vec<String> = Vec::new();
+    let mut from_clause = String::from("commits");
+
+    if let Some(branch) = query.branch.as_ref().map(|v| v.trim()).filter(|v| !v.is_empty()) {
+        if let Some(head_id) = branch_head_id(conn, branch)? {
+            cte_sql = String::from(
+                "WITH RECURSIVE branch_commits(id, hash, parent_hash) AS ( \
+                 SELECT id, hash, parent_hash FROM commits WHERE id = ? \
+                 UNION ALL \
+                 SELECT c.id, c.hash, c.parent_hash FROM commits c \
+                 JOIN branch_commits bc ON c.hash = bc.parent_hash \
+                 ) ",
+            );
+            cte_params.push(head_id.to_string());
+            from_clause = String::from("commits JOIN branch_commits bc ON commits.id = bc.id");
+        } else {
+            return Ok((Vec::new(), 0));
+        }
+    }
+
+    if let Some(tag) = query.tag.as_ref().map(|v| v.trim()).filter(|v| !v.is_empty()) {
+        if let Some(hash) = tag_hash(conn, tag) {
+            clauses.push("hash = ?".to_string());
+            params.push(hash);
+        } else {
+            return Ok((Vec::new(), 0));
+        }
+    }
+
+    if let Some(prefix) = query
+        .hash_prefix
+        .as_ref()
+        .map(|v| v.trim())
+        .filter(|v| !v.is_empty())
+    {
+        clauses.push("hash LIKE ?".to_string());
+        params.push(format!("{prefix}%"));
+    }
+
+    if let Some(author) = query.author.as_ref().map(|v| v.trim()).filter(|v| !v.is_empty()) {
+        clauses.push("author LIKE ? COLLATE NOCASE".to_string());
+        params.push(format!("%{author}%"));
+    }
+    if let Some(message) = query
+        .message
+        .as_ref()
+        .map(|v| v.trim())
+        .filter(|v| !v.is_empty())
+    {
+        clauses.push("message LIKE ? COLLATE NOCASE".to_string());
+        params.push(format!("%{message}%"));
+    }
+    if let Some(file) = query.file.as_ref().map(|v| v.trim()).filter(|v| !v.is_empty()) {
+        clauses.push("EXISTS (SELECT 1 FROM manifest WHERE manifest.commit_id = commits.id AND file_path LIKE ? COLLATE NOCASE)".to_string());
+        params.push(format!("%{file}%"));
+    }
+    if let Some(after) = query.after.as_ref().map(|v| v.trim()).filter(|v| !v.is_empty()) {
+        clauses.push("timestamp >= ?".to_string());
+        params.push(after.to_string());
+    }
+    if let Some(before) = query
+        .before
+        .as_ref()
+        .map(|v| v.trim())
+        .filter(|v| !v.is_empty())
+    {
+        clauses.push("timestamp <= ?".to_string());
+        params.push(before.to_string());
+    }
+
+    let where_clause = if clauses.is_empty() {
+        String::new()
+    } else {
+        format!(" WHERE {}", clauses.join(" AND "))
+    };
+
+    let count_sql = if cte_sql.is_empty() {
+        format!("SELECT COUNT(*) FROM {from_clause}{where_clause}")
+    } else {
+        format!("{cte_sql}SELECT COUNT(*) FROM {from_clause}{where_clause}")
+    };
+    let mut count_stmt = conn.prepare(count_sql)?;
+    let mut bind_idx = 1;
+    for value in cte_params.iter() {
+        count_stmt.bind((bind_idx, value.as_str()))?;
+        bind_idx += 1;
+    }
+    for value in params.iter() {
+        count_stmt.bind((bind_idx, value.as_str()))?;
+        bind_idx += 1;
+    }
+    let total = if let Ok(State::Row) = count_stmt.next() {
+        count_stmt.read::<i64, _>(0).unwrap_or(0)
+    } else {
+        0
+    };
+
+    let offset = (page.saturating_sub(1) * limit) as i64;
+    let data_sql = if cte_sql.is_empty() {
+        format!(
+            "SELECT id, hash, author, message, timestamp FROM {from_clause}{where_clause} ORDER BY id DESC LIMIT ? OFFSET ?"
+        )
+    } else {
+        format!(
+            "{cte_sql}SELECT id, hash, author, message, timestamp FROM {from_clause}{where_clause} ORDER BY id DESC LIMIT ? OFFSET ?"
+        )
+    };
+    let mut stmt = conn.prepare(data_sql)?;
+    let mut bind_idx = 1;
+    for value in cte_params.iter() {
+        stmt.bind((bind_idx, value.as_str()))?;
+        bind_idx += 1;
+    }
+    for value in params.iter() {
+        stmt.bind((bind_idx, value.as_str()))?;
+        bind_idx += 1;
+    }
+    stmt.bind((bind_idx, limit as i64))?;
+    stmt.bind((bind_idx + 1, offset))?;
+
+    let mut rows = Vec::new();
+    while let Ok(State::Row) = stmt.next() {
+        rows.push(CommitQueryResult {
+            id: stmt.read::<i64, _>("id").unwrap_or(0),
+            hash: stmt.read::<String, _>("hash").unwrap_or_default(),
+            author: stmt.read::<String, _>("author").unwrap_or_default(),
+            message: stmt.read::<String, _>("message").unwrap_or_default(),
+            timestamp: stmt.read::<String, _>("timestamp").unwrap_or_default(),
+        });
+    }
+
+    Ok((rows, total))
+}
+
+pub fn commit_files_preview(
+    conn: &Connection,
+    commit_id: i64,
+    max_files: usize,
+) -> Result<(Vec<String>, i64), Error> {
+    let mut count_stmt = conn.prepare("SELECT COUNT(*) FROM manifest WHERE commit_id = ?")?;
+    count_stmt.bind((1, commit_id))?;
+    let total = if let Ok(State::Row) = count_stmt.next() {
+        count_stmt.read::<i64, _>(0).unwrap_or(0)
+    } else {
+        0
+    };
+
+    let mut stmt =
+        conn.prepare("SELECT file_path FROM manifest WHERE commit_id = ? ORDER BY file_path ASC LIMIT ?")?;
+    stmt.bind((1, commit_id))?;
+    stmt.bind((2, max_files as i64))?;
+
+    let mut files = Vec::new();
+    while let Ok(State::Row) = stmt.next() {
+        files.push(stmt.read::<String, _>(0).unwrap_or_default());
+    }
+
+    Ok((files, total))
+}
+
 pub fn insert_tree_node(
     conn: &Connection,
     parent_hash: &str,

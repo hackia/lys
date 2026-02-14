@@ -75,6 +75,35 @@ pub fn scan_and_print_tree(root_path: &Path, max_level: Option<u32>, color: Opti
     println!("\nSummary: {dir_count} directories, {file_count} files\n");
 }
 
+pub fn list_files(root_path: &Path, max_files: usize) -> Vec<String> {
+    let walker = WalkBuilder::new(root_path)
+        .hidden(false)
+        .add_custom_ignore_filename("syl")
+        .standard_filters(true)
+        .filter_entry(|entry| entry.file_name() != ".lys")
+        .threads(4)
+        .build();
+
+    let mut files = Vec::new();
+    for result in walker {
+        if files.len() >= max_files {
+            break;
+        }
+        if let Ok(entry) = result {
+            if entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+                if let Ok(relative) = entry.path().strip_prefix(root_path) {
+                    if !relative.as_os_str().is_empty() {
+                        files.push(relative.to_string_lossy().to_string());
+                    }
+                }
+            }
+        }
+    }
+    files.sort();
+    files.dedup();
+    files
+}
+
 fn print_node(
     node: &TreeNode,
     prefix: &str,
