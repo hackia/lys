@@ -461,19 +461,6 @@ fn get_blob_bytes(conn: &Connection, branch: &str, path: &Path) -> Result<Option
     Ok(None)
 }
 
-fn get_file_content_from_head(
-    conn: &Connection,
-    branch: &str,
-    path: &Path,
-) -> Result<String, Error> {
-    match get_blob_bytes(conn, branch, path)? {
-        Some(content) => match String::from_utf8(content) {
-            Ok(s) => Ok(s),
-            Err(_) => Ok(String::from("(Binary content)")),
-        },
-        None => Ok(String::new()),
-    }
-}
 // Helper pour savoir si un hash est un dossier (présent en tant que parent)
 fn is_directory(conn: &Connection, hash: &str) -> Result<bool, Error> {
     let query = "SELECT 1 FROM tree_nodes WHERE parent_tree_hash = ? LIMIT 1";
@@ -1088,17 +1075,26 @@ pub fn diff(conn: &Connection) -> Result<(), Error> {
                 println!("\n\x1b[1;33mDiff: {}\x1b[0m", path.display());
                 println!("\x1b[90m==================================================\x1b[0m");
 
-                // A. Lire le nouveau contenu sur le disque
-                let new_content = match std::fs::read_to_string(&path) {
+                // A. Lire les octets du fichier sur le disque
+                let new_bytes = match std::fs::read(&path) {
                     Ok(c) => c,
                     Err(_) => {
-                        println!("(Binary or unreadable file)");
+                        println!("(Unreadable file)");
                         continue;
                     }
                 };
 
-                // B. Récupérer l'ancien contenu depuis la BDD (via le Hash du HEAD)
-                let old_content = get_file_content_from_head(conn, &branch, &path)?;
+                // B. Récupérer les octets depuis le HEAD
+                let old_bytes = get_blob_bytes(conn, &branch, &path)?.unwrap_or_default();
+
+                let is_binary = |buf: &[u8]| buf.iter().any(|b| *b == 0);
+                if is_binary(&new_bytes) || is_binary(&old_bytes) {
+                    println!("(Binary file diff not shown)");
+                    continue;
+                }
+
+                let new_content = String::from_utf8_lossy(&new_bytes);
+                let old_content = String::from_utf8_lossy(&old_bytes);
 
                 // C. Calculer et afficher le Diff
                 let diff = TextDiff::from_lines(&old_content, &new_content);

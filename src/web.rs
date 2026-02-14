@@ -26,6 +26,7 @@ use tokio::sync::broadcast;
 pub struct Session {
     pub history: Mutex<Vec<String>>,
     pub tx: broadcast::Sender<String>,
+    pub cwd: Mutex<PathBuf>,
 }
 
 pub struct AppState {
@@ -40,6 +41,206 @@ static WEB_FOOTER: OnceCell<String> = OnceCell::new();
 static WEB_HOMEPAGE: OnceCell<String> = OnceCell::new();
 static WEB_DOCUMENTATION: OnceCell<String> = OnceCell::new();
 
+const TERMINAL_STYLE: &str = r#"
+         .terminal-window {
+            border-radius: var(--radius-xs);
+            overflow: hidden;
+            border: 1px solid var(--border);
+            box-shadow: var(--shadow);
+            background: linear-gradient(180deg, var(--surface), var(--bg));
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+         }
+         .terminal-panes {
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+            gap: 10px;
+         }
+         .terminal-pane {
+            flex: 1;
+            min-height: 200px;
+            height: 100%;
+         }
+         .pane-split-v {
+            display: flex;
+            flex-direction: row;
+            flex: 1;
+            gap: 10px;
+            height: 100%;
+         }
+         .pane-split-h {
+            display: flex;
+            flex-direction: column;
+            flex: 1;
+            gap: 10px;
+            height: 100%;
+         }
+         .terminal-header {
+            background: linear-gradient(90deg, var(--surface), var(--surface-2));
+            padding: 8px 15px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid var(--border);
+            position: relative;
+         }
+         .terminal-window.active {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 1px var(--accent), 0 0 18px var(--accent-glow);
+         }
+         .terminal-window.active .terminal-header {
+            background: linear-gradient(90deg, var(--surface-2), var(--surface));
+         }
+         .terminal-dots { display: flex; gap: 6px; }
+         .maximized-pane {
+            position: fixed !important;
+            top: 0 !important;
+            left: 0 !important;
+            width: 100vw !important;
+            height: 100vh !important;
+            z-index: 9999 !important;
+            margin: 0 !important;
+            background: var(--bg) !important;
+         }
+         .dot { width: 12px; height: 10px; border-radius: var(--radius-xs); display: inline-block; cursor: pointer; }
+         .dot.red { background: #ff5d6c; }
+         .dot.yellow { background: #ffd166; }
+         .dot.green { background: #6ce9a6; }
+         .terminal-title {
+            color: var(--text);
+            font-size: 0.8em;
+            font-family: var(--font-body);
+         }
+         .terminal-input {
+            padding: 3px 8px;
+            border-radius: var(--radius-xs);
+            border: 1px solid var(--border);
+            background: var(--bg);
+            color: var(--text);
+            font-size: 0.8em;
+            width: 80px;
+         }
+         .terminal-input:focus {
+            outline: none;
+            border-color: var(--accent);
+            box-shadow: 0 0 0 1px var(--accent), 0 0 10px var(--accent-glow);
+         }
+         .terminal-btn {
+            padding: 2px 8px !important;
+            font-size: 0.75em !important;
+            background: linear-gradient(180deg, var(--surface), var(--surface-2)) !important;
+            border-color: var(--border) !important;
+            color: var(--text) !important;
+            margin-right: 2px !important;
+         }
+         .terminal-btn:hover {
+            border-color: var(--accent) !important;
+            box-shadow: 0 0 0 1px var(--accent), 0 0 10px var(--accent-glow);
+         }
+         .terminal-session-label {
+            font-size: 0.75em;
+            color: var(--muted);
+         }
+         .terminal-container {
+            flex: 1;
+            padding: 10px;
+            overflow: hidden;
+            background: var(--bg);
+         }
+         .terminal-wrapper {
+            height: 75vh;
+            min-height: 500px;
+            margin-bottom: 20px;
+            display: flex;
+            flex-direction: column;
+         }
+         .terminal-tabs-bar {
+            display: flex;
+            background: linear-gradient(90deg, var(--surface), var(--surface-2));
+            padding: 6px 10px 0 10px;
+            gap: 4px;
+            border-bottom: 1px solid var(--border);
+         }
+         .terminal-tab-item {
+            padding: 6px 15px;
+            background: linear-gradient(180deg, var(--surface), var(--surface-2));
+            color: var(--muted);
+            border-radius: var(--radius-xs) var(--radius-xs) 0 0;
+            font-size: 0.8em;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            border: 1px solid var(--border);
+            border-bottom: none;
+            transition: all 0.2s;
+         }
+         .terminal-tab-item:hover {
+            background: var(--surface);
+            color: var(--text);
+            box-shadow: 0 0 0 1px var(--accent), 0 0 12px var(--accent-glow);
+         }
+         .terminal-tab-item.active {
+            background: var(--bg);
+            color: var(--text);
+            border-color: var(--accent);
+            padding-bottom: 7px;
+            margin-bottom: -1px;
+            box-shadow: 0 0 0 1px var(--accent), 0 0 12px var(--accent-glow);
+         }
+         .tab-close {
+            font-size: 1.2em;
+            line-height: 1;
+            color: var(--muted);
+         }
+         .tab-close:hover {
+            color: #ff7a8a;
+         }
+         .terminal-add-tab-btn {
+            background: transparent !important;
+            border: none !important;
+            color: var(--muted) !important;
+            font-size: 1.2em !important;
+            padding: 0 10px !important;
+            cursor: pointer;
+            margin-right: 0 !important;
+         }
+         .terminal-add-tab-btn:hover {
+            color: var(--text) !important;
+         }
+         .terminal-tabs-container {
+            flex: 1;
+            position: relative;
+            background: var(--bg);
+         }
+         .terminal-tab-content {
+            display: none;
+            height: 100%;
+         }
+         .terminal-tab-content.active {
+            display: block;
+         }
+         #terminal ::-webkit-scrollbar { width: 8px; }
+         #terminal ::-webkit-scrollbar-track { background: var(--bg); }
+         #terminal ::-webkit-scrollbar-thumb { background: var(--border); border-radius: var(--radius-xs); }
+         #terminal ::-webkit-scrollbar-thumb:hover { background: var(--accent); }
+         #terminal { scrollbar-width: thin; scrollbar-color: var(--border) var(--bg); }
+         @media (max-width: 900px) {
+            .terminal-wrapper { height: 60vh; min-height: 420px; }
+            .terminal-header { flex-wrap: wrap; gap: 8px; }
+            .terminal-header > div { width: 100%; }
+         }
+         @media (max-width: 560px) {
+            .terminal-wrapper { height: 56vh; min-height: 360px; }
+            .terminal-header { flex-direction: column; align-items: flex-start; }
+            .terminal-input { width: 100%; }
+            .terminal-tabs-bar { overflow-x: auto; }
+            .terminal-tab-item { flex: 0 0 auto; }
+         }
+"#;
+
 #[derive(Deserialize)]
 pub struct Pagination {
     pub page: Option<usize>,
@@ -48,6 +249,11 @@ pub struct Pagination {
 #[derive(Deserialize)]
 pub struct DiffParams {
     pub mode: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct HooksNotice {
+    pub hooks: Option<String>,
 }
 
 // -----------------------------
@@ -185,94 +391,257 @@ pub fn page(title: &str, style: &str, body: &str) -> Html<String> {
         <link rel='manifest' href='/site.webmanifest' />
     ";
 
-    const COMMON_STYLE: &str = "
+    const COMMON_STYLE: &str = r#"
         :root {
-            --bg: #ffffff;
-            --fg: #000000;
-            --header-bg: #eeeeee;
-            --menu-bg: #f8f8f8;
-            --border: #cccccc;
-            --link: #0000ee;
-            --link-hover: #000088;
-            --meta: #666666;
-            --hover-bg: #f0f0f0;
-            --table-header-bg: #eeeeee;
-            --card-border: #cccccc;
-            --nav-bg: #f8f8f8;
-            --code-bg: #f8f8f8;
-            --hash: #000000;
+            --bg: #0b0e12;
+            --surface: #121826;
+            --surface-2: #1a2232;
+            --fg: #e6edf3;
+            --text: #e6edf3;
+            --muted: #9aa4b2;
+            --meta: #8791a0;
+            --border: #2a3346;
+            --link: #4cc9ff;
+            --link-hover: #7ad9ff;
+            --accent: #4cc9ff;
+            --accent-contrast: #0b0e12;
+            --accent-glow: rgba(76, 201, 255, 0.28);
+            --header-bg: #0e131b;
+            --menu-bg: #0f151f;
+            --menu-overlay: rgba(11, 14, 18, 0.88);
+            --menu-overlay-2: rgba(11, 14, 18, 0.45);
+            --hover-bg: #1b2435;
+            --table-header-bg: #151c2a;
+            --card-bg: #121826;
+            --card-border: #2a3346;
+            --nav-bg: #101724;
+            --code-bg: #0f141f;
+            --hash: #4cc9ff;
+            --shadow: 0 10px 26px rgba(0, 0, 0, 0.45);
+            --radius: 4px;
+            --radius-sm: 3px;
+            --radius-xs: 2px;
+            --content-width: 1200px;
+            --focus-ring: 0 0 0 2px rgba(76, 201, 255, 0.35);
+            --glow-1: rgba(76, 201, 255, 0.12);
+            --glow-2: rgba(76, 201, 255, 0.06);
+            --diff-add: #0f2a22;
+            --diff-add-text: #6ce9a6;
+            --diff-del: #2b1117;
+            --diff-del-text: #ff7a8a;
+            --diff-ghost: #1a2232;
+            --font-body: 'Sora', 'Space Grotesk', sans-serif;
+            --font-display: 'Space Grotesk', 'Sora', sans-serif;
+            --font-mono: 'JetBrains Mono', 'SFMono-Regular', 'Consolas', 'Liberation Mono', monospace;
         }
-        @media (prefers-color-scheme: dark) {
+        @media (prefers-color-scheme: light) {
             :root {
-                --bg: #1a1a1a;
-                --fg: #e0e0e0;
-                --header-bg: #2d2d2d;
-                --menu-bg: #252525;
-                --border: #444444;
-                --link: #5c9eff;
-                --link-hover: #80b3ff;
-                --meta: #999999;
-                --hover-bg: #333333;
-                --table-header-bg: #2d2d2d;
-                --card-border: #444444;
-                --nav-bg: #252525;
-                --code-bg: #2d2d2d;
-                --hash: #ff9900;
+                --bg: #f5f7fb;
+                --surface: #ffffff;
+                --surface-2: #e9eff7;
+                --fg: #0d1422;
+                --text: #0d1422;
+                --muted: #4c5a70;
+                --meta: #56647a;
+                --border: #cbd6e4;
+                --link: #005bff;
+                --link-hover: #006cff;
+                --accent: #005bff;
+                --accent-contrast: #ffffff;
+                --accent-glow: rgba(0, 91, 255, 0.2);
+                --header-bg: #f0f4fa;
+                --menu-bg: #e7eef7;
+                --menu-overlay: rgba(245, 247, 251, 0.7);
+                --menu-overlay-2: rgba(245, 247, 251, 0.35);
+                --hover-bg: #dde6f2;
+                --table-header-bg: #edf2f9;
+                --card-bg: #ffffff;
+                --card-border: #cbd6e4;
+                --nav-bg: #e9eff7;
+                --code-bg: #eef3fa;
+                --hash: #005bff;
+                --shadow: 0 10px 26px rgba(12, 20, 34, 0.12);
+                --focus-ring: 0 0 0 2px rgba(0, 91, 255, 0.25);
+                --glow-1: rgba(0, 91, 255, 0.12);
+                --glow-2: rgba(0, 91, 255, 0.06);
+                --diff-add: #e2f7eb;
+                --diff-add-text: #106b3a;
+                --diff-del: #fde4e7;
+                --diff-del-text: #9a1a2e;
+                --diff-ghost: #edf1f7;
             }
         }
+        * { box-sizing: border-box; }
         body { 
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; 
+            font-family: var(--font-body);
             margin: 0; padding: 0; 
-            background: var(--bg); color: var(--fg); 
-            line-height: 1.5;
+            background-color: var(--bg);
+            background-image:
+                radial-gradient(600px 280px at 8% -10%, var(--glow-1), transparent 60%),
+                radial-gradient(420px 240px at 90% 0%, var(--glow-2), transparent 55%),
+                linear-gradient(180deg, var(--bg) 0%, var(--surface-2) 100%);
+            background-attachment: fixed;
+            color: var(--fg); 
+            line-height: 1.6;
+            -webkit-font-smoothing: antialiased;
+            text-rendering: optimizeLegibility;
         }
-        #header { background: var(--header-bg); border-bottom: 1px solid var(--border); padding: 15px 20px; display: flex; align-items: center; gap: 15px; }
-        #header img { height: 32px; width: 32px; }
-        #header .header-text { display: flex; flex-direction: column; }
-        #header h1 { margin: 0; font-size: 1.4em; line-height: 1.2; }
-        #header .repo-desc { color: var(--meta); font-size: 0.85em; margin-top: 2px; }
-        #menu { background: var(--menu-bg); border-bottom: 1px solid var(--border); padding: 8px 20px; }
-        #menu a { text-decoration: none; color: var(--fg); font-weight: bold; margin-right: 20px; font-size: 0.9em; }
-        #menu a:hover { color: var(--link); }
-        #content { padding: 30px 25px; max-width: 1300px; margin: 0 auto; }
-        table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 0.9em; border: 1px solid var(--border); border-radius: 4px; overflow: hidden; margin-bottom: 20px; }
-        th { background: var(--table-header-bg); text-align: left; padding: 10px; border-bottom: 1px solid var(--border); color: var(--fg); }
-        td { padding: 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
-        tr:last-child td { border-bottom: none; }
-        .hash { font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; color: var(--hash); font-weight: bold; }
-        .age { color: var(--meta); font-size: 0.8em; margin-bottom: 4px; }
-        .author { color: var(--fg); }
-        tr:hover { background: var(--hover-bg); }
+        img { max-width: 100%; }
         a { color: var(--link); text-decoration: none; }
         a:hover { text-decoration: underline; color: var(--link-hover); }
-        h3 { margin-top: 0; border-bottom: 1px solid var(--border); padding-bottom: 10px; margin-bottom: 15px; }
-        pre { background: var(--code-bg); padding: 15px; border-radius: 4px; border: 1px solid var(--border); overflow-x: auto; font-family: monospace; font-size: 0.9em; }
-        .btn { 
-            display: inline-block; 
-            background: var(--header-bg); 
-            border: 1px solid var(--border); 
-            padding: 4px 12px; 
-            border-radius: 4px; 
-            text-decoration: none; 
-            color: var(--fg); 
-            font-size: 0.85em; 
-            margin-right: 10px; 
-            font-weight: bold;
+        h1, h2, h3, h4 { font-family: var(--font-display); font-weight: 600; letter-spacing: 0.01em; }
+        #header { background: linear-gradient(135deg, var(--glow-1), transparent 40%), var(--header-bg); border-bottom: 1px solid var(--border); padding: 22px 24px; display: flex; align-items: center; gap: 16px; position: relative; box-shadow: 0 10px 24px rgba(0, 0, 0, 0.25); }
+        #header h1 { margin: 0; }
+        #header .header-text { display: flex; flex-direction: column; }
+        #header h1 { margin: 0; font-size: 1.6em; line-height: 1.1; }
+        #header .repo-desc { color: var(--muted); font-size: 0.92em; margin-top: 4px; }
+        #menu { 
+            background-color: var(--menu-bg);
+            background-image:
+                linear-gradient(135deg, var(--menu-overlay), var(--menu-overlay-2)),
+                linear-gradient(135deg, transparent, var(--glow-2)),
+                url('https://raw.githubusercontent.com/hackia/lys/refs/heads/main/lys.svg');
+            background-repeat: no-repeat, no-repeat, no-repeat;
+            background-position: center, center, right 24px center;
+            background-size: cover, cover, auto 100%;
+            border-bottom: 1px solid var(--border); 
+            padding: 10px 24px; 
+            display: flex; 
+            flex-wrap: wrap; 
+            gap: 10px; 
+            position: sticky; 
+            top: 0; 
+            z-index: 20; 
+            backdrop-filter: blur(8px); 
         }
-        .btn:hover { background: var(--hover-bg); text-decoration: none; }
-        .tabs { display: flex; border-bottom: 2px solid var(--border); margin-bottom: 20px; gap: 5px; }
-        .tab { padding: 10px 25px; cursor: pointer; border: 1px solid transparent; border-bottom: none; margin-bottom: -2px; border-radius: 6px 6px 0 0; font-size: 0.95em; font-weight: 600; color: var(--meta); transition: all 0.2s; }
+        #menu a { text-decoration: none; color: var(--fg); font-weight: 600; font-size: 0.85em; padding: 6px 12px; border-radius: var(--radius-xs); border: 1px solid var(--border); background: linear-gradient(180deg, var(--surface), var(--surface-2)); transition: box-shadow 0.15s ease, border-color 0.15s ease, background 0.15s ease; }
+        #menu a:hover { color: var(--link); border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), 0 0 16px var(--accent-glow); }
+        #menu a:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+        #content { padding: 32px 24px 60px; max-width: var(--content-width); margin: 0 auto; }
+        #footer { max-width: var(--content-width); margin: 20px auto 50px; padding: 16px 24px; border-top: 1px solid var(--border); color: var(--muted); }
+        .card { background: linear-gradient(180deg, var(--card-bg), var(--surface-2)); border: 1px solid var(--card-border); border-radius: var(--radius); box-shadow: var(--shadow); padding: 16px; }
+        .card.tight { padding: 12px; }
+        .card.table-card { padding: 12px; }
+        .card.table-card table { border: none; box-shadow: none; margin-bottom: 0; }
+        table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 0.92em; border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; margin-bottom: 20px; background: var(--card-bg); box-shadow: var(--shadow); }
+        th { background: var(--table-header-bg); text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); color: var(--muted); font-size: 0.72em; text-transform: uppercase; letter-spacing: 0.06em; }
+        td { padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+        tr:last-child td { border-bottom: none; }
+        .hash { font-family: var(--font-mono); color: var(--hash); font-weight: 600; }
+        .age { color: var(--muted); font-size: 0.8em; margin-bottom: 4px; }
+        .author { color: var(--fg); }
+        tr:hover { background: var(--hover-bg); }
+        h3 { margin-top: 0; border-bottom: 1px solid var(--border); padding-bottom: 10px; margin-bottom: 15px; }
+        pre { background: var(--code-bg); padding: 15px; border-radius: var(--radius-xs); border: 1px solid var(--border); overflow-x: auto; font-family: var(--font-mono); font-size: 0.9em; }
+        code, .markdown-body code { font-family: var(--font-mono); }
+        .btn { display: inline-flex; align-items: center; gap: 6px; background: linear-gradient(180deg, var(--surface), var(--surface-2)); border: 1px solid var(--border); padding: 6px 12px; border-radius: var(--radius-xs); text-decoration: none; color: var(--fg); font-size: 0.85em; margin-right: 8px; font-weight: 600; transition: box-shadow 0.15s ease, border-color 0.15s ease, background 0.15s ease; cursor: pointer; }
+        .btn:hover { background: var(--hover-bg); text-decoration: none; border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), 0 0 14px var(--accent-glow); }
+        .btn:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+        .btn-active { background: var(--accent) !important; color: var(--accent-contrast) !important; border-color: var(--accent) !important; }
+        .btn-ghost { background: transparent; }
+        .tabs { display: flex; border-bottom: 1px solid var(--border); margin-bottom: 20px; gap: 8px; flex-wrap: wrap; }
+        .tab { padding: 8px 16px; cursor: pointer; border: 1px solid transparent; border-radius: var(--radius-xs); font-size: 0.9em; font-weight: 600; color: var(--muted); transition: all 0.2s; }
         .tab:hover { background: var(--hover-bg); color: var(--fg); }
-        .tab.active { background: var(--bg); border: 2px solid var(--border); border-bottom: 2px solid var(--bg); color: var(--link); }
+        .tab.active { background: var(--surface); border-color: var(--accent); color: var(--accent); box-shadow: 0 0 0 1px var(--accent), 0 0 14px var(--accent-glow); }
         .tab-content { display: none; }
         .tab-content.active { display: block; }
-        .markdown-body { font-family: -apple-system, BlinkMacSystemFont, \"Segoe UI\", Helvetica, Arial, sans-serif; font-size: 16px; line-height: 1.5; word-wrap: break-word; }
+        .markdown-body { font-family: var(--font-body); font-size: 16px; line-height: 1.6; word-wrap: break-word; }
         .markdown-body h1, .markdown-body h2, .markdown-body h3 { border-bottom: 1px solid var(--border); padding-bottom: 0.3em; }
-        .markdown-body code { background-color: var(--code-bg); padding: 0.2em 0.4em; border-radius: 6px; font-family: monospace; }
-        .markdown-body pre { padding: 16px; overflow: auto; line-height: 1.45; background-color: var(--code-bg); border-radius: 6px; }
-        .markdown-body blockquote { padding: 0 1em; color: var(--meta); border-left: 0.25em solid var(--border); margin: 0; }
+        .markdown-body code { background-color: var(--code-bg); padding: 0.2em 0.4em; border-radius: var(--radius-xs); }
+        .markdown-body pre { padding: 16px; overflow: auto; line-height: 1.45; background-color: var(--code-bg); border-radius: var(--radius-xs); }
+        .markdown-body blockquote { padding: 0 1em; color: var(--muted); border-left: 0.25em solid var(--border); margin: 0; }
         .markdown-body ul, .markdown-body ol { padding-left: 2em; }
-    ";
+        .commit-list { display: grid; gap: 14px; }
+        .commit-card { background: linear-gradient(180deg, var(--card-bg), var(--surface-2)); border: 1px solid var(--card-border); border-radius: var(--radius); padding: 14px 16px; box-shadow: var(--shadow); display: grid; gap: 8px; }
+        .commit-card:hover { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), 0 0 16px var(--accent-glow); }
+        .commit-meta { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 0.82em; color: var(--muted); }
+        .commit-message { font-size: 1.05em; font-weight: 600; font-family: var(--font-display); }
+        .commit-author { display: flex; align-items: center; gap: 8px; font-size: 0.85em; color: var(--muted); }
+        .pager { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-top: 18px; }
+        .pager-info { color: var(--muted); font-size: 0.85em; }
+        .pager-links { display: flex; gap: 8px; flex-wrap: wrap; }
+        .badge { display: inline-flex; align-items: center; padding: 4px 10px; border-radius: var(--radius-xs); font-size: 0.8em; font-weight: 600; background: var(--accent); color: var(--accent-contrast); margin-right: 6px; }
+        .meta { color: var(--muted); font-size: 0.85em; }
+        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 20px; }
+        .media-card { margin-bottom: 24px; border-radius: var(--radius); overflow: hidden; border: 1px solid var(--border); box-shadow: var(--shadow); background: var(--card-bg); }
+        .media-card:hover { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), 0 0 16px var(--accent-glow); }
+        .media-16x9 { aspect-ratio: 16 / 9; }
+        .file-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 6px; }
+        .file-item a { display: block; padding: 8px 10px; border-radius: var(--radius-xs); border: 1px solid transparent; font-family: var(--font-mono); font-size: 0.9em; }
+        .file-item a:hover { background: var(--hover-bg); border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), 0 0 10px var(--accent-glow); }
+        .panel { display: flex; flex-direction: column; gap: 12px; }
+        .form-inline { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+        .divider { border-top: 1px solid var(--border); padding-top: 12px; margin-top: 4px; }
+        .form-stack { display: flex; flex-direction: column; gap: 16px; }
+        .field label { display: block; font-weight: 600; margin-bottom: 6px; font-size: 0.85em; color: var(--muted); }
+        .form-stack .field input, .form-stack .field textarea, .form-stack .field select { width: 100%; }
+        input[type='text'], input[type='date'], textarea, select { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-xs); padding: 8px 10px; color: var(--fg); font-family: var(--font-body); }
+        textarea { min-height: 90px; }
+        input:focus, textarea:focus, select:focus { outline: none; box-shadow: var(--focus-ring); border-color: var(--accent); }
+        button { font-family: var(--font-body); }
+        .chat-box { height: 420px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 12px; background: var(--code-bg); font-family: var(--font-mono); font-size: 0.9em; margin-bottom: 12px; }
+        .chat-input-row { display: flex; gap: 8px; align-items: flex-end; }
+        .chat-input { width: 100%; resize: none; overflow-y: hidden; line-height: 1.4; }
+        .editor-surface { width: 100%; height: 600px; border: 1px solid var(--border); border-radius: var(--radius-xs); overflow: hidden; }
+        @keyframes float-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+        #header, #menu, #content > :not(script) { animation: float-in 0.5s ease both; }
+        #content > :not(script) { animation-delay: 0.06s; }
+        #content > :not(script):nth-child(2) { animation-delay: 0.12s; }
+        #content > :not(script):nth-child(3) { animation-delay: 0.18s; }
+        @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+        @media (max-width: 1200px) {
+            #content { padding: 28px 20px 50px; }
+        }
+        @media (max-width: 900px) {
+            #header { padding: 20px 18px; }
+            #header { flex-direction: column; align-items: flex-start; }
+            #header h1 { font-size: 1.45em; }
+            #menu { 
+                position: static; 
+                padding-right: 180px;
+                background-size: cover, cover, auto 85%;
+                background-position: center, center, right 14px center;
+            }
+            #menu a { font-size: 0.82em; padding: 6px 10px; }
+            #content { padding: 22px 18px 46px; }
+            .commit-card { padding: 12px; }
+        }
+        @media (max-width: 720px) {
+            #header { padding: 18px 16px; }
+            #header h1 { font-size: 1.32em; }
+            #menu { 
+                gap: 6px; 
+                padding: 8px 12px;
+                padding-right: 130px;
+                background-size: cover, cover, auto 70%;
+                background-position: center, center, right 10px center;
+            }
+            #menu a { font-size: 0.8em; padding: 5px 10px; }
+            #content { padding: 20px 14px 40px; }
+            .stats-grid { grid-template-columns: 1fr; }
+            .pager { flex-direction: column; align-items: flex-start; }
+            .form-inline { flex-direction: column; align-items: stretch; }
+            .form-inline .field { width: 100%; }
+            table { display: block; overflow-x: auto; }
+            th, td { white-space: nowrap; }
+            .editor-surface { height: 420px; }
+        }
+        @media (max-width: 560px) {
+            #menu { 
+                flex-wrap: nowrap; 
+                overflow-x: auto; 
+                -webkit-overflow-scrolling: touch;
+                padding-right: 100px;
+                background-size: cover, cover, auto 60%;
+                background-position: center, center, right 8px center;
+            }
+            #menu a { flex: 0 0 auto; }
+            .tabs { flex-wrap: nowrap; overflow-x: auto; }
+            .tab { flex: 0 0 auto; }
+            h3 { font-size: 1.05em; }
+            .chat-box { height: 320px; }
+        }
+    "#;
 
     let site_title = WEB_TITLE
         .get()
@@ -287,7 +656,7 @@ pub fn page(title: &str, style: &str, body: &str) -> Html<String> {
     let site_documentation = WEB_DOCUMENTATION.get().map(String::as_str).unwrap_or("");
 
     let mut menu_links = String::from(
-        "<a href='/'>Summary</a><a href='/'>Log</a><a href='/rss'>RSS</a><a href='/editor'>Editor</a><a href='/commit/new'>Commit</a><a href='/todo'>Todo</a><a href='/chat'>Chat</a>",
+        "<a href='/'>Summary</a><a href='/'>Log</a><a href='/rss'>RSS</a><a href='/editor'>Editor</a><a href='/terminal'>Terminal</a><a href='/commit/new'>Commit</a><a href='/todo'>Todo</a><a href='/chat'>Chat</a>",
     );
     if !site_homepage.is_empty() {
         menu_links.push_str(&format!(
@@ -303,14 +672,9 @@ pub fn page(title: &str, style: &str, body: &str) -> Html<String> {
     }
 
     let footer_html = if site_footer.is_empty() {
-        String::from(
-            "<div id='footer' style='padding:20px; border-top:1px solid var(--border); margin:30px 25px 0 25px;'><small>&copy; 2026 Lys Inc.</small></div>",
-        )
+        String::from("<div id='footer'><small>&copy; 2026 Lys Inc.</small></div>")
     } else {
-        format!(
-            "<div id='footer' style='padding:20px; border-top:1px solid var(--border); margin:30px 25px 0 25px;'>{}</div>",
-            site_footer
-        )
+        format!("<div id='footer'>{}</div>", site_footer)
     };
 
     Html(format!(
@@ -321,13 +685,15 @@ pub fn page(title: &str, style: &str, body: &str) -> Html<String> {
              <meta name='viewport' content='width=device-width, initial-scale=1'>\
              <title>{}</title>\
              {}\
+             <link rel='preconnect' href='https://fonts.googleapis.com'>\
+             <link rel='preconnect' href='https://fonts.gstatic.com' crossorigin>\
+             <link href='https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Sora:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap' rel='stylesheet'>\
              <link rel='stylesheet' href='https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css' media='(prefers-color-scheme: dark)'>\
              <link rel='stylesheet' href='https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism.min.css' media='(prefers-color-scheme: light)'>\
              <style>{}{}</style>\
            </head>\
            <body>\
              <div id='header'>\
-               <img src='/favicon.svg' alt='Lys Logo'>\
                <div class='header-text'>\
                  <h1>{}</h1>\
                  <div class='repo-desc'>{}</div>\
@@ -422,11 +788,13 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
     {
         if !state.sessions.contains_key(&current_session_id) {
             let (tx, _) = broadcast::channel(100);
+            let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
             state.sessions.insert(
                 current_session_id.clone(),
                 Arc::new(Session {
                     history: Mutex::new(Vec::new()),
                     tx,
+                    cwd: Mutex::new(cwd),
                 }),
             );
         }
@@ -509,9 +877,11 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
                                     current_session_id = new_id;
                                     if !state.sessions.contains_key(&current_session_id) {
                                         let (tx, _) = broadcast::channel(100);
+                                        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
                                         state.sessions.insert(current_session_id.clone(), Arc::new(Session {
                                             history: Mutex::new(Vec::new()),
                                             tx,
+                                            cwd: Mutex::new(cwd),
                                         }));
                                     }
                                     let session = state.sessions.get(&current_session_id).unwrap();
@@ -544,7 +914,11 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
                             }
 
                             // Exécution de la commande
-                            let output = shell.execute_command(input);
+                            let output = {
+                                let session = state.sessions.get(&current_session_id).unwrap();
+                                let mut cwd = session.cwd.lock().unwrap();
+                                shell.execute_command(input, &mut cwd)
+                            };
                             if !output.is_empty() {
                                 let formatted_output = output.replace("\n", "\r\n");
                                 let full_output = format!("lys> {}\r\n{}", input, formatted_output);
@@ -645,7 +1019,9 @@ pub async fn start_server(repo_path: &str, port: u16) {
         .route("/ws", get(ws_handler))
         .route("/ws/chat", get(ws_chat_upgrade))
         .route("/chat", get(show_chat))
+        .route("/terminal", get(show_terminal))
         .route("/commit/new", get(new_commit_form))
+        .route("/hooks/run", post(run_hooks_web))
         .route("/commit/create", post(create_commit))
         .route("/commit/{id}", get(show_commit))
         .route("/commit/{id}/diff", get(show_commit_diff))
@@ -709,13 +1085,11 @@ fn render_commits_list(conn: &Connection, page_num: usize) -> (String, String) {
         let summary = truncate_words(first_line, 100);
 
         rows.push_str(&format!(
-            "<tr>\
-                <td colspan='4'>\
-                    <div class='age'>{} — {}</div>\
-                    <div style='margin: 5px 0;'>{}</div>\
-                    <div class='author' style='font-size: 0.85em;'>{} — <a href='/commit/{id}' class='hash'>{}</a></div>\
-                </td>\
-             </tr>",
+            "<div class='commit-card'>\
+                <div class='commit-meta'>{} <span class='meta'>&middot;</span> {}</div>\
+                <div class='commit-message'>{}</div>\
+                <div class='commit-author'><span>{}</span><span class='meta'>&mdash;</span><a href='/commit/{id}' class='hash'>{}</a></div>\
+             </div>",
             html_escape(&date),
             time_ago(&date),
             html_escape(&summary),
@@ -726,436 +1100,39 @@ fn render_commits_list(conn: &Connection, page_num: usize) -> (String, String) {
     }
 
     let mut nav_html = format!(
-        "<div style='margin-top: 20px; font-size: 0.9em; padding: 10px; background: var(--nav-bg); border: 1px solid var(--border); border-radius: 4px;'>\
-         <div style='margin-bottom: 10px;'>Page {} of {}</div>",
+        "<div class='pager card'>\
+         <div class='pager-info'>Page {} of {}</div>",
         page_num, total_pages
     );
 
     let mut links = Vec::new();
     if page_num > 1 {
         links.push(format!(
-            "<a href='/?page={}' onclick='loadPage(event, {})'>&laquo; Newer</a>",
+            "<a class='btn btn-ghost' href='/?page={}' onclick='loadPage(event, {})'>&laquo; Newer</a>",
             page_num - 1,
             page_num - 1
         ));
     }
     if (page_num as i64) < total_pages {
         links.push(format!(
-            "<a href='/?page={}' onclick='loadPage(event, {})'>Older &raquo;</a>",
+            "<a class='btn btn-ghost' href='/?page={}' onclick='loadPage(event, {})'>Older &raquo;</a>",
             page_num + 1,
             page_num + 1
         ));
     }
 
     if !links.is_empty() {
-        nav_html.push_str(&links.join(" | "));
+        nav_html.push_str("<div class='pager-links'>");
+        nav_html.push_str(&links.join(""));
+        nav_html.push_str("</div>");
     }
     nav_html.push_str("</div>");
 
     (rows, nav_html)
 }
 
-pub async fn api_commits(
-    State(state): State<Arc<AppState>>,
-    Query(pagination): Query<Pagination>,
-) -> impl IntoResponse {
-    let conn = match state.conn.lock() {
-        Ok(g) => g,
-        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "DB lock poisoned").into_response(),
-    };
-
-    let page_num = pagination.page.unwrap_or(1).max(1);
-    let (rows, nav) = render_commits_list(&conn, page_num);
-
-    let html = format!(
-        "<h3 id='latest'>Latest Commits</h3>\
-         <table>{}</table>\
-         {}",
-        rows, nav
-    );
-    Html(html).into_response()
-}
-
-pub async fn idx_commits(
-    State(state): State<Arc<AppState>>,
-    Query(pagination): Query<Pagination>,
-) -> impl IntoResponse {
-    let conn = match state.conn.lock() {
-        Ok(g) => g,
-        Err(_) => return http_error(StatusCode::INTERNAL_SERVER_ERROR, "DB lock poisoned"),
-    };
-
-    let page_num = pagination.page.unwrap_or(1).max(1);
-
-    // Spotify or YouTube Music URL
-    let mut music_embed = String::new();
-    {
-        let mut stmt = conn
-            .prepare("SELECT value FROM config WHERE key = 'spotify_url'")
-            .unwrap();
-        if let Ok(sqlite::State::Row) = stmt.next() {
-            let url: String = stmt.read(0).unwrap();
-            if let Some(embed_url) = get_spotify_embed_url(&url) {
-                music_embed = format!(
-                    "<div style='margin-bottom: 30px; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 12px rgba(0,0,0,0.2);'>\
-                       <iframe src='{}' width='100%' height='352' frameBorder='0' allowfullscreen='' allow='autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture' loading='lazy'></iframe>\
-                     </div>",
-                    embed_url
-                );
-            } else if let Some(embed_url) = get_youtube_embed_url(&url) {
-                music_embed = format!(
-                    "<div style='margin-bottom: 30px; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 12px rgba(0,0,0,0.2);'>\
-                       <iframe width='100%' height='352' src='{}' title='YouTube music player' frameborder='0' allow='accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share' allowfullscreen></iframe>\
-                     </div>",
-                    embed_url
-                );
-            }
-        }
-    }
-
-    // YouTube Video Banner
-    let mut video_banner = String::new();
-    {
-        let mut stmt = conn
-            .prepare("SELECT value FROM config WHERE key = 'video_banner_url'")
-            .unwrap();
-        if let Ok(sqlite::State::Row) = stmt.next() {
-            let url: String = stmt.read(0).unwrap();
-            if let Some(embed_url) = get_youtube_embed_url(&url) {
-                video_banner = format!(
-                    "<div style='margin-bottom: 30px; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 12px rgba(0,0,0,0.2); aspect-ratio: 16 / 9;'>\
-                       <iframe width='100%' height='100%' src='{}' title='YouTube video player' frameborder='0' allow='accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share' allowfullscreen></iframe>\
-                     </div>",
-                    embed_url
-                );
-            }
-        }
-    }
-
-    // Image Banner
-    let mut image_banner = String::new();
-    {
-        let mut stmt = conn
-            .prepare("SELECT value FROM config WHERE key = 'banner_url'")
-            .unwrap();
-        if let Ok(sqlite::State::Row) = stmt.next() {
-            let url: String = stmt.read(0).unwrap();
-            image_banner = format!(
-                "<div style='margin-bottom: 30px; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 12px rgba(0,0,0,0.2);'>\
-                   <img src='{}' style='width: 100%; height: auto; display: block;' alt='Project Banner'>\
-                 </div>",
-                html_escape(&url)
-            );
-        }
-    }
-
-    // Stats
-    let total_commits: i64 = {
-        let mut stmt = conn.prepare("SELECT COUNT(*) FROM commits").unwrap();
-        if let Ok(sqlite::State::Row) = stmt.next() {
-            stmt.read(0).unwrap_or(0)
-        } else {
-            0
-        }
-    };
-
-    let contributors = crate::db::get_unique_contributors(&conn).unwrap_or_default();
-    let contributor_names: Vec<String> = contributors.iter().map(|(n, _)| n.clone()).collect();
-
-    let mut stats_tab =
-        String::from("<div style='display: grid; grid-template-columns: 1fr 1fr; gap: 20px;'>");
-
-    // Left: Author stats table
-    stats_tab.push_str("<div><h3>Commits by Author</h3><table><thead><tr><th>Author</th><th>Commits</th></tr></thead><tbody>");
-    for (name, count) in &contributors {
-        stats_tab.push_str(&format!(
-            "<tr><td>{}</td><td>{}</td></tr>",
-            html_escape(name),
-            count
-        ));
-    }
-    stats_tab.push_str("</tbody></table></div>");
-
-    // Right: Global stats
-    stats_tab.push_str("<div><h3>Global Statistics</h3>");
-    stats_tab.push_str(&format!(
-        "<div style='background: var(--menu-bg); padding: 15px; border: 1px solid var(--border); border-radius: 4px;'>\
-           <div style='display: grid; grid-template-columns: auto 1fr; gap: 10px 20px; font-size: 0.9em;'>\
-             <strong>Total Commits:</strong> <span>{}</span>\
-             <strong>Total Contributors:</strong> <span>{}</span>\
-           </div>\
-         </div>",
-        total_commits, contributors.len()
-    ));
-    stats_tab.push_str("</div></div>");
-
-    let (rows, nav_html) = render_commits_list(&conn, page_num);
-
-    let mut body = String::new();
-    body.push_str("<div class='tabs'>");
-    body.push_str("<div class='tab active' onclick=\"openTab(event, 'tab-log')\">Log</div>");
-    body.push_str(
-        "<div class='tab' onclick=\"openTab(event, 'tab-contributors')\">Contributors</div>",
-    );
-    body.push_str("<div class='tab' onclick=\"openTab(event, 'tab-stats')\">Stats</div>");
-    body.push_str("<div class='tab' onclick=\"openTab(event, 'tab-music')\">Music</div>");
-    body.push_str("</div>");
-
-    body.push_str("<div id='tab-log' class='tab-content active'>");
-    if !image_banner.is_empty() {
-        body.push_str(&image_banner);
-    }
-    if !video_banner.is_empty() {
-        body.push_str(&video_banner);
-    }
-    body.push_str("<h3 id='latest'>Latest Commits</h3>");
-    body.push_str("<table>");
-    body.push_str(&rows);
-    body.push_str("</table>");
-    body.push_str(&nav_html);
-    body.push_str("</div>");
-
-    body.push_str("<div id='tab-music' class='tab-content'>");
-    body.push_str("<h3>Music</h3>");
-    body.push_str(&music_embed);
-    body.push_str("</div>");
-
-    body.push_str("<div id='tab-contributors' class='tab-content'>");
-    body.push_str("<h3>Contributors</h3><ul>");
-    for name in contributor_names {
-        body.push_str(&format!("<li>{}</li>", html_escape(&name)));
-    }
-    body.push_str("</ul></div>");
-
-    body.push_str("<div id='tab-stats' class='tab-content'>");
-    body.push_str(&stats_tab);
-    body.push_str("</div>");
-
-    page("Lys Repository", "", &body).into_response()
-}
-
-// 2. PAGE DE DÉTAIL : CONTENU D'UN COMMIT
-async fn show_commit(
-    State(state): State<Arc<AppState>>,
-    UrlPath(commit_id): UrlPath<i64>,
-) -> impl IntoResponse {
-    let conn = match state.conn.lock() {
-        Ok(g) => g,
-        Err(_) => return http_error(StatusCode::INTERNAL_SERVER_ERROR, "DB lock poisoned"),
-    };
-
-    // Récupérer le tree_hash du commit
-    let mut tree_hash = String::new();
-    let mut title = String::from("Commit not found");
-    let mut author = String::new();
-    let mut date = String::new();
-    let mut hash = String::new();
-
-    {
-        let mut stmt_c = match conn.prepare(
-            "SELECT message, hash, tree_hash, author, timestamp, id FROM commits WHERE id = ?",
-        ) {
-            Ok(s) => s,
-            Err(_) => {
-                return http_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to query commit");
-            }
-        };
-        if stmt_c.bind((1, commit_id)).is_ok() {
-            if let Ok(sqlite::State::Row) = stmt_c.next() {
-                title = stmt_c.read("message").unwrap_or_else(|_| String::from(""));
-                hash = stmt_c.read("hash").unwrap_or_else(|_| String::from(""));
-                tree_hash = stmt_c
-                    .read("tree_hash")
-                    .unwrap_or_else(|_| String::from(""));
-                author = stmt_c.read("author").unwrap_or_else(|_| String::from(""));
-                date = stmt_c
-                    .read("timestamp")
-                    .unwrap_or_else(|_| String::from(""));
-            }
-        }
-    }
-
-    if tree_hash.is_empty() {
-        return http_error(StatusCode::NOT_FOUND, "Commit not found");
-    }
-
-    // Search tags for this commit
-    let mut tags = Vec::new();
-    {
-        let mut stmt_t =
-            match conn.prepare("SELECT key FROM config WHERE key LIKE 'tag_%' AND value = ?") {
-                Ok(s) => s,
-                Err(_) => {
-                    return http_error(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "Failed to prepare tags query",
-                    );
-                }
-            };
-        if stmt_t.bind((1, hash.as_str())).is_ok() {
-            while let Ok(sqlite::State::Row) = stmt_t.next() {
-                if let Ok(tag_key) = stmt_t.read::<String, _>(0) {
-                    tags.push(tag_key.replace("tag_", ""));
-                }
-            }
-        }
-    }
-    let tags_html = if tags.is_empty() {
-        String::new()
-    } else {
-        format!("<tr><td><b>tags</b></td><td>{}</td></tr>",
-                tags.iter().map(|t| format!("<span class='btn' style='margin-bottom:5px; background:var(--link); color:white; border:none;'>{}</span>", html_escape(t))).collect::<Vec<_>>().join(" "))
-    };
-
-    page(
-        &format!("Commit {}", short_hash(&hash)),
-        ".commit-info td { border: none; padding: 4px 12px; }",
-        &format!(
-            "<h3>Commit Details</h3>\
-            <table class='commit-info' style='margin-bottom: 25px; width: 100%; border: 1px solid var(--border); background: var(--menu-bg);'>
-               <tr><td><b>author</b></td><td>{}</td></tr>
-               <tr><td><b>date</b></td><td>{} ({})</td></tr>
-               <tr><td><b>commit</b></td><td class='hash'>{}</td></tr>
-               {}
-               <tr><td><b>tree</b></td><td class='hash'><a href='/commit/{}/tree'>{}</a></td></tr>
-               <tr>
-                 <td><b>actions</b></td>
-                 <td>
-                   <a href='/commit/{}/tree' class='btn'>Browse Tree</a>
-                   <a href='/commit/{}/diff' class='btn'>View Diff</a>
-                   <a href='/' class='btn'>Back to Log</a>
-                 </td>
-               </tr>
-             </table>
-             <div style='background: var(--code-bg); padding: 15px; border: 1px solid var(--border); border-radius: 4px; margin-bottom: 25px;'>\
-               <pre style='margin: 0; white-space: pre-wrap; border: none; padding: 0;'>{}</pre>\
-             </div>",
-            html_escape(&author),
-            html_escape(&date),
-            time_ago(&date),
-            html_escape(&hash),
-            tags_html,
-            commit_id,
-            html_escape(&tree_hash),
-            commit_id,
-            commit_id,
-            html_escape(&title)
-        ),
-    )
-        .into_response()
-}
-
-// 2.1. VUE ARBORESCENTE D'UN COMMIT
-async fn show_commit_tree(
-    State(state): State<Arc<AppState>>,
-    UrlPath(params): UrlPath<std::collections::HashMap<String, String>>,
-) -> impl IntoResponse {
-    let commit_id: i64 = match params.get("id").and_then(|id| id.parse().ok()) {
-        Some(id) => id,
-        None => return http_error(StatusCode::BAD_REQUEST, "Invalid commit ID"),
-    };
-    let path_str = params.get("path").cloned().unwrap_or_default();
-
-    let conn = match state.conn.lock() {
-        Ok(g) => g,
-        Err(_) => return http_error(StatusCode::INTERNAL_SERVER_ERROR, "DB lock poisoned"),
-    };
-
-    // Récupérer le tree_hash du commit
-    let mut root_tree_hash = String::new();
-    let mut commit_hash = String::new();
-    {
-        let mut stmt_c = match conn.prepare("SELECT hash, tree_hash FROM commits WHERE id = ?") {
-            Ok(s) => s,
-            Err(_) => {
-                return http_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to query commit");
-            }
-        };
-        if stmt_c.bind((1, commit_id)).is_ok() {
-            if let Ok(sqlite::State::Row) = stmt_c.next() {
-                commit_hash = stmt_c.read("hash").unwrap_or_else(|_| String::from(""));
-                root_tree_hash = stmt_c
-                    .read("tree_hash")
-                    .unwrap_or_else(|_| String::from(""));
-            }
-        }
-    }
-
-    if root_tree_hash.is_empty() {
-        return http_error(StatusCode::NOT_FOUND, "Commit not found");
-    }
-
-    // Naviguer jusqu'au dossier spécifié par path_str
-    let mut current_tree_hash = root_tree_hash;
-    let components: Vec<&str> = path_str.split('/').filter(|s| !s.is_empty()).collect();
-
-    for comp in &components {
-        let query = "SELECT hash, mode FROM tree_nodes WHERE parent_tree_hash = ? AND name = ?";
-        let mut stmt = match conn.prepare(query) {
-            Ok(s) => s,
-            Err(_) => {
-                return http_error(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Failed to query tree nodes",
-                );
-            }
-        };
-        if let Err(_) = stmt.bind((1, current_tree_hash.as_str())) {
-            return http_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to bind parent hash",
-            );
-        }
-        if let Err(_) = stmt.bind((2, *comp)) {
-            return http_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to bind component name",
-            );
-        }
-
-        if let Ok(sqlite::State::Row) = stmt.next() {
-            let mode: i64 = stmt.read("mode").unwrap_or(0);
-            let is_dir = mode == 16384 || mode == 0o040000 || mode == 0o755;
-            if is_dir {
-                current_tree_hash = stmt.read("hash").unwrap_or_default();
-            } else {
-                return http_error(StatusCode::BAD_REQUEST, "Path is not a directory");
-            }
-        } else {
-            return http_error(StatusCode::NOT_FOUND, "Directory not found");
-        }
-    }
-
-    // Générer les breadcrumbs
-    let mut breadcrumbs = format!("<a href='/commit/{commit_id}/tree'>root</a>");
-    let mut acc_path = String::new();
-    for comp in &components {
-        acc_path.push_str("/");
-        acc_path.push_str(comp);
-        breadcrumbs.push_str(&format!(
-            " / <a href='/commit/{commit_id}/tree{acc_path}'>{}</a>",
-            html_escape(comp)
-        ));
-    }
-
-    let mut tree_html = String::new();
-    tree_html.push_str("<thead><tr><th style='width: 20px;'></th><th>Name</th><th style='text-align: right;'>Hash</th><th style='text-align: left;'>Message</th><th style='text-align: right;'>Age</th><th style='text-align: right;'>Size</th></tr></thead>");
-    let mut summary_html = String::new();
-    if let Err(e) = render_tree_html_flat(
-        &conn,
-        commit_id,
-        &path_str,
-        &current_tree_hash,
-        &mut tree_html,
-        &mut summary_html,
-    ) {
-        return http_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            &format!("Failed to render tree: {}", e),
-        );
-    }
-
-    let terminal_html = format!(
+fn terminal_panel_html() -> String {
+    format!(
         "<div id='terminal-wrapper' class='terminal-wrapper'>
             <div class='terminal-tabs-bar' id='terminal-tabs-bar'>
                 <div class='terminal-tab-item active' id='tab-btn-0' onclick='switchTerminalTab(0)'>
@@ -1175,7 +1152,7 @@ async fn show_commit_tree(
                                         <span class='dot yellow' onclick='minimizePane(0)'></span>
                                         <span class='dot green' onclick='maximizePane(0)'></span>
                                     </div>
-                                    <div class='terminal-title'>Lys Interactive Shell - <span id='pane-title-0'>Pane 0</span></div>
+                                    <div class='terminal-title'>Dev Terminal - <span id='pane-title-0'>Pane 0</span></div>
                                     <div style='display: flex; gap: 10px; align-items: center;'>
                                         <input type='text' id='session-id-0' placeholder='Session Name' value='default' class='terminal-input' onclick='event.stopPropagation()'>
                                         <button class='btn terminal-btn' onclick='event.stopPropagation(); switchSession(0)'>Attach</button>
@@ -1206,27 +1183,27 @@ async fn show_commit_tree(
                     cursorBlink: true,
                     fontSize: 14,
                     lineHeight: 1.2,
-                    fontFamily: 'SFMono-Regular, Consolas, \"Liberation Mono\", Menlo, monospace',
+                    fontFamily: 'JetBrains Mono, SFMono-Regular, Consolas, \"Liberation Mono\", Menlo, monospace',
                     theme: {{
-                        background: '#1a1a1a',
-                        foreground: '#e0e0e0',
-                        cursor: '#ffffff',
-                        selection: 'rgba(255, 255, 255, 0.3)',
-                        black: '#000000',
-                        red: '#e06c75',
-                        green: '#98c379',
-                        yellow: '#d19a66',
-                        blue: '#61afef',
-                        magenta: '#c678dd',
-                        cyan: '#56b6c2',
-                        white: '#abb2bf',
-                        brightBlack: '#5c6370',
-                        brightRed: '#e06c75',
-                        brightGreen: '#98c379',
-                        brightYellow: '#d19a66',
-                        brightBlue: '#61afef',
-                        brightMagenta: '#c678dd',
-                        brightCyan: '#56b6c2',
+                        background: '#0b0e12',
+                        foreground: '#e6edf3',
+                        cursor: '#4cc9ff',
+                        selection: 'rgba(76, 201, 255, 0.25)',
+                        black: '#0b0e12',
+                        red: '#ff5d6c',
+                        green: '#6ce9a6',
+                        yellow: '#ffd166',
+                        blue: '#4cc9ff',
+                        magenta: '#6aa9ff',
+                        cyan: '#55d6ff',
+                        white: '#e6edf3',
+                        brightBlack: '#4b5668',
+                        brightRed: '#ff7a8a',
+                        brightGreen: '#86f7c7',
+                        brightYellow: '#ffe08a',
+                        brightBlue: '#7ad9ff',
+                        brightMagenta: '#8db8ff',
+                        brightCyan: '#8ae7ff',
                         brightWhite: '#ffffff'
                     }}
                 }});
@@ -1312,7 +1289,7 @@ async fn show_commit_tree(
                 p.term.clear();
                 
                 // Show reconnecting status
-                p.term.write('\\r\\n\\x1b[33mConnecting to Lys server...\\x1b[0m\\r\\n');
+                p.term.write('\\r\\n\\x1b[33mConnecting to host shell...\\x1b[0m\\r\\n');
                 
                 let protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
                 p.socket = new WebSocket(protocol + '//' + window.location.host + '/ws');
@@ -1434,13 +1411,13 @@ async fn show_commit_tree(
                                 <span class='dot yellow' onclick='minimizePane(${{id}})'></span>
                                 <span class='dot green' onclick='maximizePane(${{id}})'></span>
                             </div>
-                            <div class='terminal-title'>Lys Interactive Shell - <span id='pane-title-${{id}}'>Pane ${{id}}</span></div>
+                            <div class='terminal-title'>Dev Terminal - <span id='pane-title-${{id}}'>Pane ${{id}}</span></div>
                             <div style='display: flex; gap: 10px; align-items: center;'>
                                 <input type='text' id='session-id-${{id}}' placeholder='Session Name' value='default' class='terminal-input' onclick='event.stopPropagation()'>
                                 <button class='btn terminal-btn' onclick='event.stopPropagation(); switchSession(${{id}})'>Attach</button>
                                 <button class='btn terminal-btn' onclick='event.stopPropagation(); splitVertical(${{id}})'>Split V</button>
                                 <button class='btn terminal-btn' onclick='event.stopPropagation(); splitHorizontal(${{id}})'>Split H</button>
-                                <button class='btn terminal-btn' onclick='event.stopPropagation(); closePane(${{id}})' style='background:#d9534f !important'>&times;</button>
+                                <button class='btn terminal-btn' onclick='event.stopPropagation(); closePane(${{id}})' style='background:#ff5d6c !important'>&times;</button>
                                 <span id='current-session-label-${{id}}' class='terminal-session-label'>Session: default</span>
                             </div>
                         </div>
@@ -1529,7 +1506,7 @@ async fn show_commit_tree(
                                         <span class='dot yellow' onclick='minimizePane(${{paneId}})'></span>
                                         <span class='dot green' onclick='maximizePane(${{paneId}})'></span>
                                     </div>
-                                    <div class='terminal-title'>Lys Interactive Shell - <span id='pane-title-${{paneId}}'>Pane ${{paneId}}</span></div>
+                                    <div class='terminal-title'>Dev Terminal - <span id='pane-title-${{paneId}}'>Pane ${{paneId}}</span></div>
                                     <div style='display: flex; gap: 10px; align-items: center;'>
                                         <input type='text' id='session-id-${{paneId}}' placeholder='Session Name' value='default' class='terminal-input' onclick='event.stopPropagation()'>
                                         <button class='btn terminal-btn' onclick='event.stopPropagation(); switchSession(${{paneId}})'>Attach</button>
@@ -1613,9 +1590,535 @@ async fn show_commit_tree(
                     }}
                 }});
             }});
-            observer.observe(document.getElementById('terminal-tab'), {{ attributes: true }});
+            const terminalTab = document.getElementById('terminal-tab');
+            if (terminalTab) {{
+                observer.observe(terminalTab, {{ attributes: true }});
+            }}
         </script>"
+    )
+}
+
+pub async fn api_commits(
+    State(state): State<Arc<AppState>>,
+    Query(pagination): Query<Pagination>,
+) -> impl IntoResponse {
+    let conn = match state.conn.lock() {
+        Ok(g) => g,
+        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "DB lock poisoned").into_response(),
+    };
+
+    let page_num = pagination.page.unwrap_or(1).max(1);
+    let (rows, nav) = render_commits_list(&conn, page_num);
+
+    let html = format!(
+        "<h3 id='latest'>Latest Commits</h3>\
+         <div class='commit-list'>{}</div>\
+         {}",
+        rows, nav
     );
+    Html(html).into_response()
+}
+
+pub async fn idx_commits(
+    State(state): State<Arc<AppState>>,
+    Query(pagination): Query<Pagination>,
+) -> impl IntoResponse {
+    let conn = match state.conn.lock() {
+        Ok(g) => g,
+        Err(_) => return http_error(StatusCode::INTERNAL_SERVER_ERROR, "DB lock poisoned"),
+    };
+
+    let page_num = pagination.page.unwrap_or(1).max(1);
+
+    // Spotify or YouTube Music URL
+    let mut music_embed = String::new();
+    {
+        let mut stmt = conn
+            .prepare("SELECT value FROM config WHERE key = 'spotify_url'")
+            .unwrap();
+        if let Ok(sqlite::State::Row) = stmt.next() {
+            let url: String = stmt.read(0).unwrap();
+            if let Some(embed_url) = get_spotify_embed_url(&url) {
+                music_embed = format!(
+                    "<div class='media-card'>\
+                       <iframe src='{}' width='100%' height='352' frameBorder='0' allowfullscreen='' allow='autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture' loading='lazy'></iframe>\
+                     </div>",
+                    embed_url
+                );
+            } else if let Some(embed_url) = get_youtube_embed_url(&url) {
+                music_embed = format!(
+                    "<div class='media-card'>\
+                       <iframe width='100%' height='352' src='{}' title='YouTube music player' frameborder='0' allow='accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share' allowfullscreen></iframe>\
+                     </div>",
+                    embed_url
+                );
+            }
+        }
+    }
+
+    // YouTube Video Banner
+    let mut video_banner = String::new();
+    {
+        let mut stmt = conn
+            .prepare("SELECT value FROM config WHERE key = 'video_banner_url'")
+            .unwrap();
+        if let Ok(sqlite::State::Row) = stmt.next() {
+            let url: String = stmt.read(0).unwrap();
+            if let Some(embed_url) = get_youtube_embed_url(&url) {
+                video_banner = format!(
+                    "<div class='media-card media-16x9'>\
+                       <iframe width='100%' height='100%' src='{}' title='YouTube video player' frameborder='0' allow='accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share' allowfullscreen></iframe>\
+                     </div>",
+                    embed_url
+                );
+            }
+        }
+    }
+
+    // Image Banner
+    let mut image_banner = String::new();
+    {
+        let mut stmt = conn
+            .prepare("SELECT value FROM config WHERE key = 'banner_url'")
+            .unwrap();
+        if let Ok(sqlite::State::Row) = stmt.next() {
+            let url: String = stmt.read(0).unwrap();
+            image_banner = format!(
+                "<div class='media-card'>\
+                   <img src='{}' style='width: 100%; height: auto; display: block;' alt='Project Banner'>\
+                 </div>",
+                html_escape(&url)
+            );
+        }
+    }
+
+    // Stats
+    let total_commits: i64 = {
+        let mut stmt = conn.prepare("SELECT COUNT(*) FROM commits").unwrap();
+        if let Ok(sqlite::State::Row) = stmt.next() {
+            stmt.read(0).unwrap_or(0)
+        } else {
+            0
+        }
+    };
+
+    let contributors = crate::db::get_unique_contributors(&conn).unwrap_or_default();
+    let contributor_names: Vec<String> = contributors.iter().map(|(n, _)| n.clone()).collect();
+
+    let mut stats_tab = String::from("<div class='stats-grid'>");
+
+    // Left: Author stats table
+    stats_tab.push_str("<div class='card table-card'><h3>Commits by Author</h3><table><thead><tr><th>Author</th><th>Commits</th></tr></thead><tbody>");
+    for (name, count) in &contributors {
+        stats_tab.push_str(&format!(
+            "<tr><td>{}</td><td>{}</td></tr>",
+            html_escape(name),
+            count
+        ));
+    }
+    stats_tab.push_str("</tbody></table></div>");
+
+    // Right: Global stats
+    stats_tab.push_str("<div class='card'><h3>Global Statistics</h3>");
+    stats_tab.push_str(&format!(
+        "<div style='display: grid; grid-template-columns: auto 1fr; gap: 10px 20px; font-size: 0.9em;'>\
+           <strong>Total Commits:</strong> <span>{}</span>\
+           <strong>Total Contributors:</strong> <span>{}</span>\
+         </div>",
+        total_commits, contributors.len()
+    ));
+    stats_tab.push_str("</div></div>");
+
+    let (rows, nav_html) = render_commits_list(&conn, page_num);
+
+    let mut body = String::new();
+    body.push_str("<div class='tabs'>");
+    body.push_str("<div class='tab active' onclick=\"openTab(event, 'tab-log')\">Log</div>");
+    body.push_str(
+        "<div class='tab' onclick=\"openTab(event, 'tab-contributors')\">Contributors</div>",
+    );
+    body.push_str("<div class='tab' onclick=\"openTab(event, 'tab-stats')\">Stats</div>");
+    body.push_str("<div class='tab' onclick=\"openTab(event, 'tab-music')\">Music</div>");
+    body.push_str("</div>");
+
+    body.push_str("<div id='tab-log' class='tab-content active'>");
+    if !image_banner.is_empty() {
+        body.push_str(&image_banner);
+    }
+    if !video_banner.is_empty() {
+        body.push_str(&video_banner);
+    }
+    body.push_str("<h3 id='latest'>Latest Commits</h3>");
+    body.push_str("<div class='commit-list'>");
+    body.push_str(&rows);
+    body.push_str("</div>");
+    body.push_str(&nav_html);
+    body.push_str("</div>");
+
+    body.push_str("<div id='tab-music' class='tab-content'>");
+    body.push_str("<h3>Music</h3>");
+    body.push_str(&music_embed);
+    body.push_str("</div>");
+
+    body.push_str("<div id='tab-contributors' class='tab-content'>");
+    body.push_str("<h3>Contributors</h3><ul>");
+    for name in contributor_names {
+        body.push_str(&format!("<li>{}</li>", html_escape(&name)));
+    }
+    body.push_str("</ul></div>");
+
+    body.push_str("<div id='tab-stats' class='tab-content'>");
+    body.push_str(&stats_tab);
+    body.push_str("</div>");
+
+    page("Lys Repository", "", &body).into_response()
+}
+
+// 2. PAGE DE DÉTAIL : CONTENU D'UN COMMIT
+async fn show_commit(
+    State(state): State<Arc<AppState>>,
+    UrlPath(commit_id): UrlPath<i64>,
+) -> impl IntoResponse {
+    let conn = match state.conn.lock() {
+        Ok(g) => g,
+        Err(_) => return http_error(StatusCode::INTERNAL_SERVER_ERROR, "DB lock poisoned"),
+    };
+
+    // Récupérer le tree_hash du commit
+    let mut tree_hash = String::new();
+    let mut title = String::from("Commit not found");
+    let mut author = String::new();
+    let mut date = String::new();
+    let mut hash = String::new();
+
+    {
+        let mut stmt_c = match conn.prepare(
+            "SELECT message, hash, tree_hash, author, timestamp, id FROM commits WHERE id = ?",
+        ) {
+            Ok(s) => s,
+            Err(_) => {
+                return http_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to query commit");
+            }
+        };
+        if stmt_c.bind((1, commit_id)).is_ok() {
+            if let Ok(sqlite::State::Row) = stmt_c.next() {
+                title = stmt_c.read("message").unwrap_or_else(|_| String::from(""));
+                hash = stmt_c.read("hash").unwrap_or_else(|_| String::from(""));
+                tree_hash = stmt_c
+                    .read("tree_hash")
+                    .unwrap_or_else(|_| String::from(""));
+                author = stmt_c.read("author").unwrap_or_else(|_| String::from(""));
+                date = stmt_c
+                    .read("timestamp")
+                    .unwrap_or_else(|_| String::from(""));
+            }
+        }
+    }
+
+    if tree_hash.is_empty() {
+        return http_error(StatusCode::NOT_FOUND, "Commit not found");
+    }
+
+    let mut parent_tree_hash: Option<String> = None;
+    {
+        if let Ok(mut stmt_p) =
+            conn.prepare("SELECT tree_hash FROM commits WHERE id < ? ORDER BY id DESC LIMIT 1")
+        {
+            if stmt_p.bind((1, commit_id)).is_ok() {
+                if let Ok(sqlite::State::Row) = stmt_p.next() {
+                    parent_tree_hash = stmt_p.read(0).ok();
+                }
+            }
+        }
+    }
+
+    // Search tags for this commit
+    let mut tags = Vec::new();
+    {
+        let mut stmt_t =
+            match conn.prepare("SELECT key FROM config WHERE key LIKE 'tag_%' AND value = ?") {
+                Ok(s) => s,
+                Err(_) => {
+                    return http_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "Failed to prepare tags query",
+                    );
+                }
+            };
+        if stmt_t.bind((1, hash.as_str())).is_ok() {
+            while let Ok(sqlite::State::Row) = stmt_t.next() {
+                if let Ok(tag_key) = stmt_t.read::<String, _>(0) {
+                    tags.push(tag_key.replace("tag_", ""));
+                }
+            }
+        }
+    }
+    let tags_html = if tags.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "<tr><td><b>tags</b></td><td>{}</td></tr>",
+            tags.iter()
+                .map(|t| format!("<span class='badge'>{}</span>", html_escape(t)))
+                .collect::<Vec<_>>()
+                .join(" ")
+        )
+    };
+
+    let mut current_state = std::collections::HashMap::new();
+    let _ = crate::vcs::flatten_tree(&conn, &tree_hash, PathBuf::new(), &mut current_state);
+    let mut parent_state = std::collections::HashMap::new();
+    if let Some(ref ph) = parent_tree_hash {
+        let _ = crate::vcs::flatten_tree(&conn, ph, PathBuf::new(), &mut parent_state);
+    }
+
+    let mut diff_accordions = String::new();
+    let mut diff_index = 0usize;
+    let mut paths: Vec<_> = current_state.keys().collect();
+    for p in parent_state.keys() {
+        if !current_state.contains_key(p) {
+            paths.push(p);
+        }
+    }
+    paths.sort();
+    paths.dedup();
+
+    for path in paths {
+        let old_info = parent_state.get(path);
+        let new_info = current_state.get(path);
+        match (old_info, new_info) {
+            (Some((old_hash, _)), Some((new_hash, _))) if old_hash != new_hash => {
+                let old_bytes = get_raw_blob(&conn, old_hash);
+                let new_bytes = get_raw_blob(&conn, new_hash);
+                let open_attr = if diff_index == 0 { " open" } else { "" };
+                diff_accordions.push_str(&format!(
+                    "<details class='diff-accordion'{}>\
+                       <summary><span class='diff-tag diff-tag-modified'>Modified</span><span class='diff-path'>{}</span></summary>\
+                       {}\
+                     </details>",
+                    open_attr,
+                    html_escape(&path.display().to_string()),
+                    render_diff(&old_bytes, &new_bytes, "unified")
+                ));
+                diff_index += 1;
+            }
+            (None, Some((new_hash, _))) => {
+                let new_bytes = get_raw_blob(&conn, new_hash);
+                let open_attr = if diff_index == 0 { " open" } else { "" };
+                diff_accordions.push_str(&format!(
+                    "<details class='diff-accordion'{}>\
+                       <summary><span class='diff-tag diff-tag-added'>Added</span><span class='diff-path'>{}</span></summary>\
+                       {}\
+                     </details>",
+                    open_attr,
+                    html_escape(&path.display().to_string()),
+                    render_diff(&[], &new_bytes, "unified")
+                ));
+                diff_index += 1;
+            }
+            (Some((old_hash, _)), None) => {
+                let old_bytes = get_raw_blob(&conn, old_hash);
+                let open_attr = if diff_index == 0 { " open" } else { "" };
+                diff_accordions.push_str(&format!(
+                    "<details class='diff-accordion'{}>\
+                       <summary><span class='diff-tag diff-tag-deleted'>Deleted</span><span class='diff-path'>{}</span></summary>\
+                       {}\
+                     </details>",
+                    open_attr,
+                    html_escape(&path.display().to_string()),
+                    render_diff(&old_bytes, &[], "unified")
+                ));
+                diff_index += 1;
+            }
+            _ => {}
+        }
+    }
+
+    let diff_section = if diff_accordions.is_empty() {
+        "<div class='card'><p class='meta' style='margin:0;'>No file changes.</p></div>"
+            .to_string()
+    } else {
+        format!(
+            "<div class='card' style='margin-bottom: 25px;'>\
+               <h4>File Changes</h4>\
+               {}\
+             </div>",
+            diff_accordions
+        )
+    };
+
+    page(
+        &format!("Commit {}", short_hash(&hash)),
+        ".commit-info { width: 100%; border: none; background: transparent; box-shadow: none; }
+         .commit-info td { border: none; padding: 6px 12px; }
+         .commit-info b { text-transform: uppercase; font-size: 0.75em; letter-spacing: 0.08em; color: var(--muted); }
+         .commit-actions .btn { margin-bottom: 6px; }
+         .code-card pre { margin: 0; white-space: pre-wrap; border: none; padding: 0; }
+         .diff-accordion { border: 1px solid var(--border); border-radius: var(--radius-xs); margin-bottom: 12px; background: var(--code-bg); }
+         .diff-accordion summary { cursor: pointer; padding: 8px 12px; font-family: var(--font-mono); background: var(--surface); border-bottom: 1px solid var(--border); list-style: none; display: flex; align-items: center; gap: 10px; }
+         .diff-accordion summary::-webkit-details-marker { display: none; }
+         .diff-accordion[open] summary { box-shadow: 0 0 0 1px var(--accent), 0 0 12px var(--accent-glow); }
+         .diff-accordion .diff-container { border: none; margin: 0; border-top: 1px solid var(--border); border-radius: 0 0 var(--radius-xs) var(--radius-xs); }
+         .diff-tag { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: var(--radius-xs); font-size: 0.7em; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
+         .diff-tag-added { background: var(--diff-add); color: var(--diff-add-text); border: 1px solid var(--diff-add-text); }
+         .diff-tag-modified { background: var(--hover-bg); color: var(--accent); border: 1px solid var(--accent); }
+         .diff-tag-deleted { background: var(--diff-del); color: var(--diff-del-text); border: 1px solid var(--diff-del-text); }
+         .diff-path { font-family: var(--font-mono); font-size: 0.9em; color: var(--fg); }
+         .diff-added { color: var(--diff-add-text); background-color: var(--diff-add); }
+         .diff-deleted { color: var(--diff-del-text); background-color: var(--diff-del); }
+         .diff-equal { color: var(--fg); }
+         .diff-line { display: block; }
+         .diff-container { font-family: var(--font-mono); font-size: 0.9em; white-space: pre-wrap; background: var(--code-bg); padding: 10px; border: 1px solid var(--border); border-radius: var(--radius-xs); }",
+        &format!(
+            "<h3>Commit Details</h3>\
+            <div class='card' style='margin-bottom: 20px;'>
+              <table class='commit-info'>
+                 <tr><td><b>author</b></td><td>{}</td></tr>
+                 <tr><td><b>date</b></td><td>{} ({})</td></tr>
+                 <tr><td><b>commit</b></td><td class='hash'>{}</td></tr>
+                 {}
+                 <tr><td><b>tree</b></td><td class='hash'><a href='/commit/{}/tree'>{}</a></td></tr>
+                 <tr>
+                   <td><b>actions</b></td>
+                   <td class='commit-actions'>
+                     <a href='/commit/{}/tree' class='btn'>Browse Tree</a>
+                     <a href='/commit/{}/diff' class='btn'>View Diff</a>
+                     <a href='/' class='btn'>Back to Log</a>
+                   </td>
+                 </tr>
+               </table>
+             </div>\
+             {}\
+             <div class='card code-card' style='margin-bottom: 25px;'>\
+               <pre>{}</pre>\
+             </div>",
+            html_escape(&author),
+            html_escape(&date),
+            time_ago(&date),
+            html_escape(&hash),
+            tags_html,
+            commit_id,
+            html_escape(&tree_hash),
+            commit_id,
+            commit_id,
+            diff_section,
+            html_escape(&title)
+        ),
+    )
+        .into_response()
+}
+
+// 2.1. VUE ARBORESCENTE D'UN COMMIT
+async fn show_commit_tree(
+    State(state): State<Arc<AppState>>,
+    UrlPath(params): UrlPath<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let commit_id: i64 = match params.get("id").and_then(|id| id.parse().ok()) {
+        Some(id) => id,
+        None => return http_error(StatusCode::BAD_REQUEST, "Invalid commit ID"),
+    };
+    let path_str = params.get("path").cloned().unwrap_or_default();
+
+    let conn = match state.conn.lock() {
+        Ok(g) => g,
+        Err(_) => return http_error(StatusCode::INTERNAL_SERVER_ERROR, "DB lock poisoned"),
+    };
+
+    // Récupérer le tree_hash du commit
+    let mut root_tree_hash = String::new();
+    let mut commit_hash = String::new();
+    {
+        let mut stmt_c = match conn.prepare("SELECT hash, tree_hash FROM commits WHERE id = ?") {
+            Ok(s) => s,
+            Err(_) => {
+                return http_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to query commit");
+            }
+        };
+        if stmt_c.bind((1, commit_id)).is_ok() {
+            if let Ok(sqlite::State::Row) = stmt_c.next() {
+                commit_hash = stmt_c.read("hash").unwrap_or_else(|_| String::from(""));
+                root_tree_hash = stmt_c
+                    .read("tree_hash")
+                    .unwrap_or_else(|_| String::from(""));
+            }
+        }
+    }
+
+    if root_tree_hash.is_empty() {
+        return http_error(StatusCode::NOT_FOUND, "Commit not found");
+    }
+
+    // Naviguer jusqu'au dossier spécifié par path_str
+    let mut current_tree_hash = root_tree_hash;
+    let components: Vec<&str> = path_str.split('/').filter(|s| !s.is_empty()).collect();
+
+    for comp in &components {
+        let query = "SELECT hash, mode FROM tree_nodes WHERE parent_tree_hash = ? AND name = ?";
+        let mut stmt = match conn.prepare(query) {
+            Ok(s) => s,
+            Err(_) => {
+                return http_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Failed to query tree nodes",
+                );
+            }
+        };
+        if let Err(_) = stmt.bind((1, current_tree_hash.as_str())) {
+            return http_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to bind parent hash",
+            );
+        }
+        if let Err(_) = stmt.bind((2, *comp)) {
+            return http_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to bind component name",
+            );
+        }
+
+        if let Ok(sqlite::State::Row) = stmt.next() {
+            let mode: i64 = stmt.read("mode").unwrap_or(0);
+            let is_dir = mode == 16384 || mode == 0o040000 || mode == 0o755;
+            if is_dir {
+                current_tree_hash = stmt.read("hash").unwrap_or_default();
+            } else {
+                return http_error(StatusCode::BAD_REQUEST, "Path is not a directory");
+            }
+        } else {
+            return http_error(StatusCode::NOT_FOUND, "Directory not found");
+        }
+    }
+
+    // Générer les breadcrumbs
+    let mut breadcrumbs = format!("<a href='/commit/{commit_id}/tree'>root</a>");
+    let mut acc_path = String::new();
+    for comp in &components {
+        acc_path.push_str("/");
+        acc_path.push_str(comp);
+        breadcrumbs.push_str(&format!(
+            " / <a href='/commit/{commit_id}/tree{acc_path}'>{}</a>",
+            html_escape(comp)
+        ));
+    }
+
+    let mut tree_html = String::new();
+    tree_html.push_str("<thead><tr><th style='width: 20px;'></th><th>Name</th><th style='text-align: right;'>Hash</th><th style='text-align: left;'>Message</th><th style='text-align: right;'>Age</th><th style='text-align: right;'>Size</th></tr></thead>");
+    let mut summary_html = String::new();
+    if let Err(e) = render_tree_html_flat(
+        &conn,
+        commit_id,
+        &path_str,
+        &current_tree_hash,
+        &mut tree_html,
+        &mut summary_html,
+    ) {
+        return http_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &format!("Failed to render tree: {}", e),
+        );
+    }
+
+    let terminal_html = terminal_panel_html();
 
     // Special files detection and rendering
     let mut special_content = std::collections::BTreeMap::new();
@@ -1743,190 +2246,24 @@ async fn show_commit_tree(
         </script>
     ";
 
-    page(
-        &format!("Tree - {}", short_hash(&commit_hash)),
-        ".tree-table { width: 100%; border-collapse: collapse; font-family: monospace; border: none; }
+    let mut tree_style = String::from(
+        ".tree-table { width: 100%; border-collapse: collapse; font-family: var(--font-mono); border: none; }
          .tree-table td, .tree-table th { padding: 8px 12px; border: none; border-bottom: 1px solid var(--border); }
          .tree-table tr:last-child td { border-bottom: none; }
          .tree-table tr:hover { background: var(--hover-bg); }
          .icon { margin-right: 8px; }
          .dir { font-weight: bold; }
-         .breadcrumbs { margin-bottom: 20px; font-family: monospace; background: var(--nav-bg); padding: 12px; border: 1px solid var(--border); border-radius: 4px; }
-         .terminal-window {
-            border-radius: 8px;
-            overflow: hidden;
-            border: 1px solid #444;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
-            background: #1a1a1a;
-            height: 100%;
-            display: flex;
-            flex-direction: column;
-         }
-         .terminal-panes {
-            display: flex;
-            flex-direction: column;
-            height: 100%;
-            gap: 10px;
-         }
-         .terminal-pane {
-            flex: 1;
-            min-height: 200px;
-            height: 100%;
-         }
-         .pane-split-v {
-            display: flex;
-            flex-direction: row;
-            flex: 1;
-            gap: 10px;
-            height: 100%;
-         }
-         .pane-split-h {
-            display: flex;
-            flex-direction: column;
-            flex: 1;
-            gap: 10px;
-            height: 100%;
-         }
-         .terminal-header {
-            background: #333;
-            padding: 8px 15px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            border-bottom: 1px solid #444;
-            position: relative;
-         }
-         .terminal-window.active {
-            border-color: var(--link);
-            box-shadow: 0 10px 30px rgba(0,0,0,0.7);
-         }
-         .terminal-window.active .terminal-header {
-            background: #444;
-         }
-         .terminal-dots { display: flex; gap: 6px; }
-         .maximized-pane {
-            position: fixed !important;
-            top: 0 !important;
-            left: 0 !important;
-            width: 100vw !important;
-            height: 100vh !important;
-            z-index: 9999 !important;
-            margin: 0 !important;
-            background: #1a1a1a !important;
-         }
-         .dot { width: 12px; height: 12px; border-radius: 50%; display: inline-block; cursor: pointer; }
-         .dot.red { background: #ff5f56; }
-         .dot.yellow { background: #ffbd2e; }
-         .dot.green { background: #27c93f; }
-         .terminal-title {
-            color: #abb2bf;
-            font-size: 0.8em;
-            font-family: sans-serif;
-         }
-         .terminal-input {
-            padding: 3px 8px;
-            border-radius: 4px;
-            border: 1px solid #555;
-            background: #222;
-            color: #eee;
-            font-size: 0.8em;
-            width: 80px;
-         }
-         .terminal-btn {
-            padding: 2px 8px !important;
-            font-size: 0.75em !important;
-            background: #444 !important;
-            border-color: #555 !important;
-            color: #eee !important;
-            margin-right: 2px !important;
-         }
-         .terminal-session-label {
-            font-size: 0.75em;
-            color: #888;
-         }
-         .terminal-container {
-            flex: 1;
-            padding: 10px;
-            overflow: hidden;
-         }
-         .terminal-wrapper {
-            height: 75vh;
-            min-height: 500px;
-            margin-bottom: 20px;
-            display: flex;
-            flex-direction: column;
-         }
-         .terminal-tabs-bar {
-            display: flex;
-            background: #252525;
-            padding: 5px 10px 0 10px;
-            gap: 2px;
-            border-bottom: 1px solid #444;
-         }
-         .terminal-tab-item {
-            padding: 6px 15px;
-            background: #333;
-            color: #888;
-            border-radius: 6px 6px 0 0;
-            font-size: 0.8em;
-            cursor: pointer;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            border: 1px solid #444;
-            border-bottom: none;
-            transition: all 0.2s;
-         }
-         .terminal-tab-item:hover {
-            background: #444;
-            color: #eee;
-         }
-         .terminal-tab-item.active {
-            background: #1a1a1a;
-            color: #eee;
-            border-color: #555;
-            padding-bottom: 7px;
-            margin-bottom: -1px;
-         }
-         .tab-close {
-            font-size: 1.2em;
-            line-height: 1;
-            color: #666;
-         }
-         .tab-close:hover {
-            color: #ff5f56;
-         }
-         .terminal-add-tab-btn {
-            background: transparent !important;
-            border: none !important;
-            color: #888 !important;
-            font-size: 1.2em !important;
-            padding: 0 10px !important;
-            cursor: pointer;
-         }
-         .terminal-add-tab-btn:hover {
-            color: #eee !important;
-         }
-         .terminal-tabs-container {
-            flex: 1;
-            position: relative;
-            background: #1a1a1a;
-         }
-         .terminal-tab-content {
-            display: none;
-            height: 100%;
-         }
-         .terminal-tab-content.active {
-            display: block;
-         }
-         #terminal ::-webkit-scrollbar { width: 8px; }
-         #terminal ::-webkit-scrollbar-track { background: #1a1a1a; }
-         #terminal ::-webkit-scrollbar-thumb { background: #444; border-radius: 4px; }
-         #terminal ::-webkit-scrollbar-thumb:hover { background: #555; }
-         #terminal { scrollbar-width: thin; scrollbar-color: #444 #1a1a1a; }",
+         .breadcrumbs { margin-bottom: 20px; font-family: var(--font-mono); }
+         .tree-summary { margin-bottom: 12px; font-size: 0.85em; color: var(--muted); }",
+    );
+    tree_style.push_str(TERMINAL_STYLE);
+
+    page(
+        &format!("Tree - {}", short_hash(&commit_hash)),
+        &tree_style,
         &format!(
             "<h3>Tree View</h3>\
-             <div class='breadcrumbs'>{}</div>\
+             <div class='breadcrumbs card'>{}</div>\
              {}\
              {}",
             breadcrumbs,
@@ -1984,9 +2321,7 @@ fn render_tree_html_flat(
     }
 
     let summary_html = format!(
-        "<div style='margin-bottom: 15px; font-size: 0.85em; color: var(--meta);'>\
-            Summary: {} directories, {} files ({} bytes)\
-         </div>",
+        "<div class='tree-summary'>Summary: {} directories, {} files ({} bytes)</div>",
         dir_count, file_count, total_size
     );
     summary_out.push_str(&summary_html);
@@ -2118,9 +2453,9 @@ async fn show_chat() -> impl IntoResponse {
         .unwrap_or_else(|| "web".into());
     let body = format!("
       <h3>Team Chat</h3>
-      <div id='chat-box' style='height: 420px; overflow-y: auto; border:1px solid var(--border); border-radius:4px; padding:10px; background: var(--code-bg); font-family: monospace; font-size: 0.9em; margin-bottom:10px;'></div>
-      <div style='display:flex; gap:8px; align-items: flex-end;'>
-        <textarea id='message' placeholder='Type a message and press Enter' rows='1' style='flex:1; padding:8px; border:1px solid var(--border); background:var(--bg); color:var(--fg); resize: none; overflow-y: hidden; line-height: 1.4;'></textarea>
+      <div id='chat-box' class='chat-box'></div>
+      <div class='chat-input-row'>
+        <textarea id='message' class='chat-input' placeholder='Type a message and press Enter' rows='1'></textarea>
       </div>
       <script>
         (function(){{
@@ -2207,6 +2542,11 @@ async fn show_chat() -> impl IntoResponse {
       </script>
     ", username = username);
     page("Team Chat", "", &body).into_response()
+}
+
+async fn show_terminal() -> impl IntoResponse {
+    let body = format!("<h3>Terminal</h3>{}", terminal_panel_html());
+    page("Terminal", TERMINAL_STYLE, &body).into_response()
 }
 
 async fn ws_chat_upgrade(
@@ -2412,19 +2752,20 @@ async fn show_commit_diff(
 
     page(
         &format!("Diff - {}", short_hash(&commit_hash)),
-        ".diff-added { color: #28a745; background-color: #e6ffec; display: block; }
-         .diff-deleted { color: #dc3545; background-color: #ffeef0; display: block; }
-         .diff-equal { color: var(--fg); display: block; }
-         .diff-container { font-family: monospace; font-size: 0.9em; white-space: pre-wrap; background: var(--code-bg); padding: 10px; border: 1px solid var(--border); border-radius: 4px; margin-top: 5px; }
-         .diff-ss-table { width: 100%; border-collapse: collapse; table-layout: fixed; background: var(--code-bg); border: 1px solid var(--border); border-radius: 4px; font-family: monospace; font-size: 0.9em; }
+        ".diff-added { color: var(--diff-add-text); background-color: var(--diff-add); }
+         .diff-deleted { color: var(--diff-del-text); background-color: var(--diff-del); }
+         .diff-equal { color: var(--fg); }
+         .diff-line { display: block; }
+         .diff-container { font-family: var(--font-mono); font-size: 0.9em; white-space: pre-wrap; background: var(--code-bg); padding: 10px; border: 1px solid var(--border); border-radius: var(--radius-xs); margin-top: 5px; }
+         .diff-ss-table { width: 100%; border-collapse: collapse; table-layout: fixed; background: var(--code-bg); border: 1px solid var(--border); border-radius: var(--radius-xs); font-family: var(--font-mono); font-size: 0.9em; }
          .diff-ss-table td { padding: 2px 5px; vertical-align: top; border: 1px solid var(--border); overflow-wrap: break-word; white-space: pre-wrap; }
          .diff-ss-left { width: 50%; }
          .diff-ss-right { width: 50%; }
          .diff-line-num { width: 40px; color: var(--meta); text-align: right; user-select: none; border-right: 1px solid var(--border); }
-         .diff-ghost { color: var(--meta); background: var(--hover-bg); }
-         .btn-active { background: var(--link) !important; color: white !important; border-color: var(--link) !important; }
+         .diff-ghost { color: var(--muted); background: var(--diff-ghost); }
+         .btn-active { background: var(--accent) !important; color: var(--accent-contrast) !important; border-color: var(--accent) !important; }
          .copy-btn { float: right; padding: 2px 8px; font-size: 0.8em; margin-top: -2px; cursor: pointer; }
-         .diff-file-header { background: var(--header-bg); padding: 8px 12px; border: 1px solid var(--border); border-bottom: none; border-radius: 4px 4px 0 0; margin-top: 20px; font-family: monospace; }
+         .diff-file-header { background: var(--header-bg); padding: 8px 12px; border: 1px solid var(--border); border-bottom: none; border-radius: var(--radius-xs) var(--radius-xs) 0 0; margin-top: 20px; font-family: var(--font-mono); }
          .diff-container { margin-top: 0 !important; border-top-left-radius: 0 !important; border-top-right-radius: 0 !important; }",
         &format!(
             "<div style='margin-bottom: 20px;'>\
@@ -2593,7 +2934,7 @@ fn render_diff(old: &[u8], new: &[u8], mode: &str) -> String {
             similar::ChangeTag::Equal => (" ", "diff-equal"),
         };
         out.push_str(&format!(
-            "<span class='{}'>{}{}</span>",
+            "<span class='diff-line {}'>{}{}</span>",
             class,
             sign,
             html_escape(&change.to_string())
@@ -2896,18 +3237,19 @@ async fn editor_list() -> impl IntoResponse {
 
     let mut body = String::from("
         <h3>Editor - Select a file</h3>
-        <div style='margin-bottom: 20px; padding: 15px; border: 1px solid var(--border); border-radius: 4px; background: var(--header-bg); display: flex; flex-direction: column; gap: 15px;'>
-            <form action='/editor/new' method='post' style='display: flex; gap: 8px; align-items: center;'>
-                <label for='path' style='font-weight: bold; font-size: 0.9em; min-width: 80px;'>New File:</label>
-                <input type='text' id='path' name='path' placeholder='folder/file.txt' required style='padding: 6px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--fg); flex: 1;'>
+        <div class='card panel editor-panel' style='margin-bottom: 20px;'>
+            <form action='/editor/new' method='post' class='form-inline'>
+                <label for='path' style='font-weight: 600; font-size: 0.9em; min-width: 80px;'>New File:</label>
+                <input type='text' id='path' name='path' placeholder='folder/file.txt' required style='flex: 1; min-width: 200px;'>
                 <button type='submit' class='btn btn-active' style='margin-right: 0;'>Create</button>
             </form>
-            <div style='display: flex; gap: 8px; align-items: center; border-top: 1px solid var(--border); padding-top: 15px;'>
-                <label for='search' style='font-weight: bold; font-size: 0.9em; min-width: 80px;'>Search:</label>
-                <input type='text' id='search' placeholder='Filter files...' style='padding: 6px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--fg); flex: 1;'>
+            <div class='form-inline divider'>
+                <label for='search' style='font-weight: 600; font-size: 0.9em; min-width: 80px;'>Search:</label>
+                <input type='text' id='search' placeholder='Filter files...' style='flex: 1; min-width: 200px;'>
             </div>
         </div>
-        <ul id='file-list'>");
+        <div class='card'>
+          <ul id='file-list' class='file-list'>");
     for f in files {
         body.push_str(&format!(
             "<li class='file-item'><a href='/editor/{}'>{}</a></li>",
@@ -2917,6 +3259,7 @@ async fn editor_list() -> impl IntoResponse {
     }
     body.push_str(
         "</ul>
+        </div>
         <script>
             const searchInput = document.getElementById('search');
             const fileList = document.getElementById('file-list');
@@ -2990,16 +3333,20 @@ async fn editor_edit(UrlPath(path): UrlPath<String>) -> impl IntoResponse {
 
     match std::fs::read_to_string(&full_path) {
         Ok(content) => {
+            let terminal_html = terminal_panel_html();
             let body = format!(
                 "<h3>Editing: {}</h3>\
-                 <div id='editor' style='width: 100%; height: 600px; border: 1px solid var(--border); border-radius: 4px;'>{}</div>\
+                 <div id='editor' class='editor-surface'>{}</div>\
                  <form id='editor-form' action='/editor/{}' method='post'>\
                    <input type='hidden' name='content' id='content-hidden'>\
-                   <div style='margin-top: 20px;'>\
+                   <div class='form-inline' style='margin-top: 20px;'>\
                      <button type='submit' class='btn btn-active'>Save Changes</button>\
                      <a href='/editor' class='btn'>Cancel</a>\
                    </div>\
                  </form>\
+                 <h3 style='margin-top: 30px;'>Dev Terminal</h3>\
+                 <div class='meta' style='margin-bottom: 10px;'>Connected to the host shell. Use <code>cd</code> to change directories.</div>\
+                 {}\
                  <script src='https://cdnjs.cloudflare.com/ajax/libs/ace/1.32.7/ace.js'></script>\
                  <script src='https://cdnjs.cloudflare.com/ajax/libs/ace/1.32.7/ext-language_tools.min.js'></script>\
                  <script src='https://cdnjs.cloudflare.com/ajax/libs/ace/1.32.7/ext-modelist.min.js'></script>\
@@ -3028,9 +3375,10 @@ async fn editor_edit(UrlPath(path): UrlPath<String>) -> impl IntoResponse {
                 html_escape(&path),
                 html_escape(&content),
                 html_escape(&path),
+                terminal_html,
                 html_escape(&path)
             );
-            page(&format!("Editing {}", path), "", &body).into_response()
+            page(&format!("Editing {}", path), TERMINAL_STYLE, &body).into_response()
         }
         Err(_) => http_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to read file"),
     }
@@ -3055,7 +3403,28 @@ async fn editor_save(
         .unwrap()
 }
 
-async fn new_commit_form(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+async fn run_hooks_web() -> impl IntoResponse {
+    if !Path::new("lys").exists() {
+        return http_error(StatusCode::NOT_FOUND, "No lys file found at repository root");
+    }
+    match crate::utils::run_hooks() {
+        Ok(_) => Response::builder()
+            .status(StatusCode::SEE_OTHER)
+            .header("Location", "/commit/new?hooks=ok")
+            .body(axum::body::Body::empty())
+            .unwrap(),
+        Err(_) => Response::builder()
+            .status(StatusCode::SEE_OTHER)
+            .header("Location", "/commit/new?hooks=err")
+            .body(axum::body::Body::empty())
+            .unwrap(),
+    }
+}
+
+async fn new_commit_form(
+    State(state): State<Arc<AppState>>,
+    Query(notice): Query<HooksNotice>,
+) -> impl IntoResponse {
     let conn = match state.conn.lock() {
         Ok(g) => g,
         Err(_) => return http_error(StatusCode::INTERNAL_SERVER_ERROR, "DB lock poisoned"),
@@ -3069,16 +3438,16 @@ async fn new_commit_form(State(state): State<Arc<AppState>>) -> impl IntoRespons
     };
 
     let mut status_html = String::from(
-        "<div style='margin-bottom: 20px; padding: 10px; background: var(--menu-bg); border: 1px solid var(--border); font-family: monospace; font-size: 0.85em;'>",
+        "<div class='card' style='margin-bottom: 20px; font-family: var(--font-mono); font-size: 0.85em;'>",
     );
     if status.is_empty() {
         status_html.push_str("No changes to commit.");
     } else {
         for s in &status {
             let (prefix, color, path) = match s {
-                crate::vcs::FileStatus::New(p) => ("+", "#28a745", p),
-                crate::vcs::FileStatus::Modified(p, _) => ("~", "#d4a017", p),
-                crate::vcs::FileStatus::Deleted(p, _) => ("-", "#dc3545", p),
+                crate::vcs::FileStatus::New(p) => ("+", "#6ce9a6", p),
+                crate::vcs::FileStatus::Modified(p, _) => ("~", "#ffd166", p),
+                crate::vcs::FileStatus::Deleted(p, _) => ("-", "#ff5d6c", p),
                 _ => continue,
             };
             status_html.push_str(&format!(
@@ -3091,36 +3460,308 @@ async fn new_commit_form(State(state): State<Arc<AppState>>) -> impl IntoRespons
     }
     status_html.push_str("</div>");
 
+    let hook_notice_html = match notice.hooks.as_deref() {
+        Some("ok") => "<div class='card hook-note hook-note-ok'>Hooks executed successfully.</div>"
+            .to_string(),
+        Some("err") => "<div class='card hook-note hook-note-err'>Hooks failed. Check server logs.</div>"
+            .to_string(),
+        _ => String::new(),
+    };
+    let hook_action_html = if Path::new("lys").exists() {
+        "<div class='card hook-action' style='margin-bottom: 20px;'>\
+           <div class='hook-action-text'>Detected <span class='hash'>lys</span> at repo root.</div>\
+           <form action='/hooks/run' method='post'>\
+             <button type='submit' class='btn btn-active'>Run Lys Tests</button>\
+           </form>\
+         </div>"
+            .to_string()
+    } else {
+        String::new()
+    };
+
+    let mut head_state = std::collections::HashMap::new();
+    let _ = crate::vcs::get_head_state(&conn, &branch).map(|s| head_state = s);
+
+    let mut diff_accordions = String::new();
+    let mut diff_index = 0usize;
+    for s in &status {
+        match s {
+            crate::vcs::FileStatus::Modified(path, _) => {
+                let old_hash = head_state
+                    .get(path)
+                    .map(|(h, _)| h.clone())
+                    .unwrap_or_default();
+                let old_bytes = if old_hash.is_empty() {
+                    Vec::new()
+                } else {
+                    get_raw_blob(&conn, &old_hash)
+                };
+                let new_path = Path::new(".").join(path);
+                let new_bytes = std::fs::read(&new_path).unwrap_or_default();
+                let open_attr = if diff_index == 0 { " open" } else { "" };
+                diff_accordions.push_str(&format!(
+                    "<details class='diff-accordion'{}>\
+                       <summary><span class='diff-tag diff-tag-modified'>Modified</span><span class='diff-path'>{}</span></summary>\
+                       {}\
+                     </details>",
+                    open_attr,
+                    html_escape(&path.display().to_string()),
+                    render_diff(&old_bytes, &new_bytes, "unified")
+                ));
+                diff_index += 1;
+            }
+            crate::vcs::FileStatus::New(path) => {
+                let new_path = Path::new(".").join(path);
+                let new_bytes = std::fs::read(&new_path).unwrap_or_default();
+                let open_attr = if diff_index == 0 { " open" } else { "" };
+                diff_accordions.push_str(&format!(
+                    "<details class='diff-accordion'{}>\
+                       <summary><span class='diff-tag diff-tag-added'>Added</span><span class='diff-path'>{}</span></summary>\
+                       {}\
+                     </details>",
+                    open_attr,
+                    html_escape(&path.display().to_string()),
+                    render_diff(&[], &new_bytes, "unified")
+                ));
+                diff_index += 1;
+            }
+            crate::vcs::FileStatus::Deleted(path, _) => {
+                let old_hash = head_state
+                    .get(path)
+                    .map(|(h, _)| h.clone())
+                    .unwrap_or_default();
+                let old_bytes = if old_hash.is_empty() {
+                    Vec::new()
+                } else {
+                    get_raw_blob(&conn, &old_hash)
+                };
+                let open_attr = if diff_index == 0 { " open" } else { "" };
+                diff_accordions.push_str(&format!(
+                    "<details class='diff-accordion'{}>\
+                       <summary><span class='diff-tag diff-tag-deleted'>Deleted</span><span class='diff-path'>{}</span></summary>\
+                       {}\
+                     </details>",
+                    open_attr,
+                    html_escape(&path.display().to_string()),
+                    render_diff(&old_bytes, &[], "unified")
+                ));
+                diff_index += 1;
+            }
+            _ => {}
+        }
+    }
+
+    let diff_section = if diff_accordions.is_empty() {
+        "<div class='card' style='margin-bottom: 20px;'><p class='meta' style='margin:0;'>No file changes.</p></div>"
+            .to_string()
+    } else {
+        format!(
+            "<div class='card' style='margin-bottom: 20px;'>\
+               <div style='display:flex; align-items:center; justify-content: space-between; gap: 12px; flex-wrap: wrap;'>\
+                 <h4 style='margin:0;'>Working Tree Diff</h4>\
+                 <div class='diff-tools'>\
+                   <button type='button' class='btn btn-ghost' onclick='toggleDiffAccordions(true)'>Open All</button>\
+                   <button type='button' class='btn btn-ghost' onclick='toggleDiffAccordions(false)'>Close All</button>\
+                 </div>\
+               </div>\
+               {}\
+             </div>\
+             <script>\
+               function toggleDiffAccordions(open) {{\
+                 document.querySelectorAll('.diff-accordion').forEach(d => {{ d.open = open; }});\
+               }}\
+             </script>",
+            diff_accordions
+        )
+    };
+
     let body = format!(
         "<h3>New Commit</h3>\
          {}\
-         <form action='/commit/create' method='post' style='display: flex; flex-direction: column; gap: 15px;'>\
-           <div>\
-             <label style='display: block; font-weight: bold; margin-bottom: 5px;'>Summary:</label>\
-             <input type='text' name='summary' required style='width: 100%; padding: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--fg);'>\
+         {}\
+         {}\
+         {}\
+         <form action='/commit/create' method='post' class='form-stack' id='commit-form' novalidate>\
+           <div class='field'>\
+             <label for='commit-summary'>Summary:</label>\
+             <input type='text' id='commit-summary' name='summary' required minlength='50' maxlength='82' data-min-alnum='50'>\
+             <div class='field-error' data-error-for='commit-summary'></div>\
+             <div class='field-meta'>\
+               <span class='field-count' data-count-for='commit-summary'></span>\
+               <span class='field-alnum' data-alnum-for='commit-summary'></span>\
+             </div>\
            </div>\
-           <div>\
-             <label style='display: block; font-weight: bold; margin-bottom: 5px;'>Why (Reason for change):</label>\
-             <textarea name='why' required style='width: 100%; height: 80px; padding: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--fg);'></textarea>\
+           <div class='field'>\
+             <label for='commit-why'>Why (Reason for change):</label>\
+             <textarea id='commit-why' name='why' required minlength='50' data-min-alnum='50'></textarea>\
+             <div class='field-error' data-error-for='commit-why'></div>\
+             <div class='field-meta'>\
+               <span class='field-count' data-count-for='commit-why'></span>\
+               <span class='field-alnum' data-alnum-for='commit-why'></span>\
+             </div>\
            </div>\
-           <div>\
-             <label style='display: block; font-weight: bold; margin-bottom: 5px;'>How (Technical details):</label>\
-             <textarea name='how' required style='width: 100%; height: 80px; padding: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--fg);'></textarea>\
+           <div class='field'>\
+             <label for='commit-how'>How (Technical details):</label>\
+             <textarea id='commit-how' name='how' required minlength='50' data-min-alnum='50'></textarea>\
+             <div class='field-error' data-error-for='commit-how'></div>\
+             <div class='field-meta'>\
+               <span class='field-count' data-count-for='commit-how'></span>\
+               <span class='field-alnum' data-alnum-for='commit-how'></span>\
+             </div>\
            </div>\
-           <div>\
-             <label style='display: block; font-weight: bold; margin-bottom: 5px;'>Outcome (Result of changes):</label>\
-             <textarea name='outcome' required style='width: 100%; height: 80px; padding: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--fg);'></textarea>\
+           <div class='field'>\
+             <label for='commit-outcome'>Outcome (Result of changes):</label>\
+             <textarea id='commit-outcome' name='outcome' required minlength='50' data-min-alnum='50'></textarea>\
+             <div class='field-error' data-error-for='commit-outcome'></div>\
+             <div class='field-meta'>\
+               <span class='field-count' data-count-for='commit-outcome'></span>\
+               <span class='field-alnum' data-alnum-for='commit-outcome'></span>\
+             </div>\
            </div>\
-           <div style='margin-top: 10px;'>\
+           <div class='form-inline'>\
              <button type='submit' class='btn btn-active' {}>Commit Changes</button>\
              <a href='/' class='btn'>Cancel</a>\
            </div>\
-         </form>",
+         </form>\
+         <script>\
+           (function() {{\
+             const form = document.getElementById('commit-form');\
+             if (!form) return;\
+             const fields = Array.from(form.querySelectorAll('input[required], textarea[required]'));\
+             const showError = (field, message) => {{\
+               const target = form.querySelector(\".field-error[data-error-for='\" + field.id + \"']\");\
+               if (target) target.textContent = message;\
+               field.classList.toggle('field-invalid', Boolean(message));\
+             }};\
+             const updateCounters = (field) => {{\
+               const value = field.value || '';\
+               const minAttr = field.getAttribute('minlength');\
+               const min = minAttr ? parseInt(minAttr, 10) : 0;\
+               const maxAttr = field.getAttribute('maxlength');\
+               const max = maxAttr ? parseInt(maxAttr, 10) : 0;\
+               const countEl = form.querySelector(\".field-count[data-count-for='\" + field.id + \"']\");\
+               if (countEl) {{\
+                 let text = 'Chars: ' + value.length;\
+                 if (max) text += '/' + max;\
+                 if (min) text += ' (min ' + min + ')';\
+                 countEl.textContent = text;\
+               }}\
+               const minAlnumAttr = field.getAttribute('data-min-alnum');\
+               const minAlnum = minAlnumAttr ? parseInt(minAlnumAttr, 10) : 0;\
+               const alnumCount = (value.match(/[A-Za-z0-9]/g) || []).length;\
+               const alnumEl = form.querySelector(\".field-alnum[data-alnum-for='\" + field.id + \"']\");\
+               if (alnumEl) {{\
+                 let text = 'Alnum: ' + alnumCount;\
+                 if (minAlnum) text += '/' + minAlnum;\
+                 alnumEl.textContent = text;\
+               }}\
+             }};\
+             const stateClasses = ['field-state-min-cyan', 'field-state-min-blue', 'field-state-max-yellow', 'field-state-max-orange'];\
+             const setState = (field, stateClass) => {{\
+               stateClasses.forEach((c) => field.classList.remove(c));\
+               if (stateClass) field.classList.add(stateClass);\
+             }};\
+             const validateField = (field) => {{\
+               updateCounters(field);\
+               const value = (field.value || '').trim();\
+               if (!value) {{\
+                 showError(field, 'This field is required.');\
+                 setState(field, null);\
+                 return false;\
+               }}\
+               const minAttr = field.getAttribute('minlength');\
+               const min = minAttr ? parseInt(minAttr, 10) : 0;\
+               if (min && value.length < min) {{\
+                 showError(field, 'Minimum ' + min + ' characters.');\
+                 setState(field, null);\
+                 return false;\
+               }}\
+               const maxAttr = field.getAttribute('maxlength');\
+               const max = maxAttr ? parseInt(maxAttr, 10) : 0;\
+               if (max && value.length > max) {{\
+                 showError(field, 'Maximum ' + max + ' characters.');\
+                 setState(field, null);\
+                 return false;\
+               }}\
+               const minAlnumAttr = field.getAttribute('data-min-alnum');\
+               const minAlnum = minAlnumAttr ? parseInt(minAlnumAttr, 10) : 0;\
+               if (minAlnum) {{\
+                 const alnumCount = (value.match(/[A-Za-z0-9]/g) || []).length;\
+                 if (alnumCount < minAlnum) {{\
+                   showError(field, 'Minimum ' + minAlnum + ' alphanumeric characters.');\
+                   setState(field, null);\
+                   return false;\
+                 }}\
+               }}\
+               showError(field, '');\
+               if (max && value.length >= max - 5) {{\
+                 setState(field, 'field-state-max-orange');\
+               }} else if (max && value.length >= max - 15) {{\
+                 setState(field, 'field-state-max-yellow');\
+               }} else if (min && value.length <= min + 5) {{\
+                 setState(field, 'field-state-min-cyan');\
+               }} else if (min && value.length <= min + 15) {{\
+                 setState(field, 'field-state-min-blue');\
+               }} else {{\
+                 setState(field, null);\
+               }}\
+               return true;\
+             }};\
+             fields.forEach((field) => {{\
+               updateCounters(field);\
+               field.addEventListener('input', () => validateField(field));\
+               field.addEventListener('blur', () => validateField(field));\
+             }});\
+             form.addEventListener('submit', (e) => {{\
+               let ok = true;\
+               fields.forEach((field) => {{\
+                 if (!validateField(field)) ok = false;\
+               }});\
+               if (!ok) e.preventDefault();\
+             }});\
+           }})();\
+         </script>",
+        hook_notice_html,
+        hook_action_html,
         status_html,
+        diff_section,
         if status.is_empty() { "disabled" } else { "" }
     );
 
-    page("New Commit", "", &body).into_response()
+    page(
+        "New Commit",
+        ".field-error { color: #ff7a8a; font-size: 0.78em; min-height: 1em; margin-top: 4px; }\
+         .field-invalid { border-color: #ff7a8a !important; box-shadow: 0 0 0 1px #ff7a8a, 0 0 10px rgba(255, 122, 138, 0.3); }\
+         .field-state-min-cyan { border-color: #55d6ff !important; box-shadow: 0 0 0 1px #55d6ff, 0 0 10px rgba(85, 214, 255, 0.25); }\
+         .field-state-min-blue { border-color: #4cc9ff !important; box-shadow: 0 0 0 1px #4cc9ff, 0 0 10px rgba(76, 201, 255, 0.22); }\
+         .field-state-max-yellow { border-color: #ffd166 !important; box-shadow: 0 0 0 1px #ffd166, 0 0 10px rgba(255, 209, 102, 0.25); }\
+         .field-state-max-orange { border-color: #ff9f43 !important; box-shadow: 0 0 0 1px #ff9f43, 0 0 10px rgba(255, 159, 67, 0.25); }\
+         .field-meta { display: flex; gap: 12px; font-size: 0.75em; color: var(--muted); margin-top: 4px; }\
+         .field-count, .field-alnum { font-family: var(--font-mono); }\
+         .hook-action { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }\
+         .hook-action-text { color: var(--muted); font-size: 0.9em; }\
+         .hook-note { margin-bottom: 12px; font-size: 0.9em; }\
+         .hook-note-ok { border-color: rgba(108, 233, 166, 0.6); }\
+         .hook-note-err { border-color: rgba(255, 122, 138, 0.6); }\
+         .diff-accordion { border: 1px solid var(--border); border-radius: var(--radius-xs); margin-bottom: 12px; background: var(--code-bg); }\
+         .diff-accordion summary { cursor: pointer; padding: 8px 12px; font-family: var(--font-mono); background: var(--surface); border-bottom: 1px solid var(--border); list-style: none; display: flex; align-items: center; gap: 10px; }\
+         .diff-accordion summary::-webkit-details-marker { display: none; }\
+         .diff-accordion[open] summary { box-shadow: 0 0 0 1px var(--accent), 0 0 12px var(--accent-glow); }\
+         .diff-accordion .diff-container { border: none; margin: 0; border-top: 1px solid var(--border); border-radius: 0 0 var(--radius-xs) var(--radius-xs); }\
+         .diff-tag { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: var(--radius-xs); font-size: 0.7em; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }\
+         .diff-tag-added { background: var(--diff-add); color: var(--diff-add-text); border: 1px solid var(--diff-add-text); }\
+         .diff-tag-modified { background: var(--hover-bg); color: var(--accent); border: 1px solid var(--accent); }\
+         .diff-tag-deleted { background: var(--diff-del); color: var(--diff-del-text); border: 1px solid var(--diff-del-text); }\
+         .diff-path { font-family: var(--font-mono); font-size: 0.9em; color: var(--fg); }\
+         .diff-added { color: var(--diff-add-text); background-color: var(--diff-add); }\
+         .diff-deleted { color: var(--diff-del-text); background-color: var(--diff-del); }\
+         .diff-equal { color: var(--fg); }\
+         .diff-line { display: block; }\
+         .diff-container { font-family: var(--font-mono); font-size: 0.9em; white-space: pre-wrap; background: var(--code-bg); padding: 10px; border: 1px solid var(--border); border-radius: var(--radius-xs); }\
+         .diff-tools { display: inline-flex; gap: 8px; }",
+        &body,
+    )
+    .into_response()
 }
 
 async fn create_commit(
@@ -3143,10 +3784,44 @@ async fn create_commit(
         return http_error(StatusCode::BAD_REQUEST, "No changes to commit");
     }
 
+    let summary = form.summary.trim();
+    let why = form.why.trim();
+    let how = form.how.trim();
+    let outcome = form.outcome.trim();
+    let min_len = 50usize;
+    let min_alnum = 50usize;
+    let max_summary = 82usize;
+    let too_short = |s: &str| s.chars().count() < min_len;
+    let too_few_alnum = |s: &str| s.chars().filter(|c| c.is_ascii_alphanumeric()).count() < min_alnum;
+    if summary.is_empty() || why.is_empty() || how.is_empty() || outcome.is_empty() {
+        return http_error(
+            StatusCode::BAD_REQUEST,
+            "Summary, Why, How, and Outcome are required",
+        );
+    }
+    if too_short(summary) || too_short(why) || too_short(how) || too_short(outcome) {
+        return http_error(
+            StatusCode::BAD_REQUEST,
+            "Each section must be at least 50 characters",
+        );
+    }
+    if summary.chars().count() > max_summary {
+        return http_error(
+            StatusCode::BAD_REQUEST,
+            "Summary must be 82 characters or less",
+        );
+    }
+    if too_few_alnum(summary) || too_few_alnum(why) || too_few_alnum(how) || too_few_alnum(outcome) {
+        return http_error(
+            StatusCode::BAD_REQUEST,
+            "Each section must include at least 50 alphanumeric characters (A-Z, a-z, 0-9)",
+        );
+    }
+
     // Construction du message formaté (on émule Commit::Display)
     let message = format!(
         "{}\n\n{}\n\n{}\n\n{}",
-        form.summary, form.why, form.how, form.outcome
+        summary, why, how, outcome
     );
 
     let author = crate::commit::author();
@@ -3233,20 +3908,20 @@ async fn todo_list(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 
     let body = format!(
         "<h3>Todo List</h3>\
-         <div style='margin-bottom: 30px; background: var(--menu-bg); padding: 20px; border: 1px solid var(--border); border-radius: 8px;'>\
+         <div class='card' style='margin-bottom: 30px;'>\
            <h4>Add New Task</h4>\
-           <form action='/todo/add' method='post' style='display: flex; gap: 20px; align-items: flex-end; flex-wrap: wrap;'>\
-             <div style='flex: 1; min-width: 200px;'>\
-               <label style='display:block; font-size:0.8em; margin-bottom:5px;'>Title</label>\
-               <input type='text' name='title' required style='width:100%; padding:8px; border:1px solid var(--border); border-radius:4px; background: var(--bg); color: var(--fg);'>\
+           <form action='/todo/add' method='post' class='form-inline' style='align-items: flex-end;'>\
+             <div class='field' style='flex: 1; min-width: 200px;'>\
+               <label>Title</label>\
+               <input type='text' name='title' required>\
              </div>\
-             <div>\
-               <label style='display:block; font-size:0.8em; margin-bottom:5px;'>Assigned to</label>\
-               <input type='text' name='assigned_to' placeholder='Me' style='padding:8px; border:1px solid var(--border); border-radius:4px; background: var(--bg); color: var(--fg);'>\
+             <div class='field'>\
+               <label>Assigned to</label>\
+               <input type='text' name='assigned_to' placeholder='Me'>\
              </div>\
-             <div>\
-               <label style='display:block; font-size:0.8em; margin-bottom:5px;'>Due Date</label>\
-               <input type='date' name='due_date' style='padding:8px; border:1px solid var(--border); border-radius:4px; background: var(--bg); color: var(--fg);'>\
+             <div class='field'>\
+               <label>Due Date</label>\
+               <input type='date' name='due_date'>\
              </div>\
              <button type='submit' class='btn btn-active' style='height:38px;'>Add Todo</button>\
            </form>\
@@ -3269,10 +3944,10 @@ async fn todo_list(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 
     page(
         "Todo List",
-        ".todo-status { padding: 2px 8px; border-radius: 4px; font-size: 0.8em; font-weight: bold; }\
-         .todo-pending { background: #6c757d; color: white; }\
-         .todo-progress { background: #ffc107; color: black; }\
-         .todo-done { background: #28a745; color: white; text-decoration: line-through; opacity: 0.7; }\
+        ".todo-status { padding: 2px 10px; border-radius: var(--radius-xs); font-size: 0.75em; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }\
+         .todo-pending { background: var(--hover-bg); color: var(--muted); border: 1px solid var(--border); }\
+         .todo-progress { background: #ffd166; color: #0b0e12; }\
+         .todo-done { background: #6ce9a6; color: #0b0e12; text-decoration: line-through; opacity: 0.85; }\
          h4 { margin-top: 0; margin-bottom: 15px; }",
         &body
     ).into_response()
