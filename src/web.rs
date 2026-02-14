@@ -178,9 +178,9 @@ fn time_ago(timestamp: &str) -> String {
 pub fn page(title: &str, style: &str, body: &str) -> Html<String> {
     let favicon_links = "
         <link rel='icon' type='image/png' href='/favicon-96x96.png' sizes='96x96' />
-        <link rel='icon' type='image/svg+xml' href='/favicon.svg' />
+        <link rel='icon' type='image/svg+xml' href='/favicon.svg' sizes='any' />
         <link rel='shortcut icon' href='/favicon.ico' />
-        <link rel='apple-touch-icon' sizes='180x180' href='/apple-touch-icon.png' />
+        <link rel='apple-touch-icon' sizes='180x180' href='/web-app-manifest-192x192.png' />
         <meta name='apple-mobile-web-app-title' content='lys' />
         <link rel='manifest' href='/site.webmanifest' />
     ";
@@ -226,9 +226,11 @@ pub fn page(title: &str, style: &str, body: &str) -> Html<String> {
             background: var(--bg); color: var(--fg); 
             line-height: 1.5;
         }
-        #header { background: var(--header-bg); border-bottom: 1px solid var(--border); padding: 15px 20px; }
-        #header h1 { margin: 0; font-size: 1.4em; }
-        #header .repo-desc { color: var(--meta); font-size: 0.85em; margin-top: 4px; }
+        #header { background: var(--header-bg); border-bottom: 1px solid var(--border); padding: 15px 20px; display: flex; align-items: center; gap: 15px; }
+        #header img { height: 32px; width: 32px; }
+        #header .header-text { display: flex; flex-direction: column; }
+        #header h1 { margin: 0; font-size: 1.4em; line-height: 1.2; }
+        #header .repo-desc { color: var(--meta); font-size: 0.85em; margin-top: 2px; }
         #menu { background: var(--menu-bg); border-bottom: 1px solid var(--border); padding: 8px 20px; }
         #menu a { text-decoration: none; color: var(--fg); font-weight: bold; margin-right: 20px; font-size: 0.9em; }
         #menu a:hover { color: var(--link); }
@@ -325,8 +327,11 @@ pub fn page(title: &str, style: &str, body: &str) -> Html<String> {
            </head>\
            <body>\
              <div id='header'>\
-               <h1>{}</h1>\
-               <div class='repo-desc'>{}</div>\
+               <img src='/favicon.svg' alt='Lys Logo'>\
+               <div class='header-text'>\
+                 <h1>{}</h1>\
+                 <div class='repo-desc'>{}</div>\
+               </div>\
              </div>\
              <div id='menu'>\
                {}\
@@ -656,7 +661,7 @@ pub async fn start_server(repo_path: &str, port: u16) {
         .route("/raw/{hash}", get(download_raw)) // <-- new: reliable way to view binary / huge files
         .route("/upload/{hash}", post(upload_atom))
         .route("/api/commits", get(api_commits))
-        .fallback_service(tower_http::services::ServeDir::new("src"))
+        .fallback_service(tower_http::services::ServeDir::new("."))
         .with_state(shared_state);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], port));

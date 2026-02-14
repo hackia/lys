@@ -2,34 +2,35 @@
 
 [![Rust](https://github.com/hackia/lys/actions/workflows/rust.yml/badge.svg)](https://github.com/hackia/lys/actions/workflows/rust.yml)
 
-
-<img src="https://github.com/hackia/lys/blob/main/lys.svg" alt="Lys Logo" width="250" align="right"/>
+<img src="lys.svg" alt="Lys Logo" width="250" align="right" />
 
 Lys is a **secure, local-first Version Control System (VCS)** designed for privacy, performance, and modern developer
 workflows. Written in Rust, it combines robust versioning with integrated tools for team collaboration.
 
 ## Key Features
 
-- **Secure by Design**: Ed25519 identity keys for cryptographically signing every commit.
-- **Git Integration**: Seamlessly `import` or `clone` existing Git repositories into Lys.
-- **Modern Workflow**: Built-in support for `feat`, `hotfix`, and `tag` management.
-- **Integrated Tools**:
-    - **Interactive Shell**: Type `lys` without arguments to enter an interactive shell with history (`~/.lys-history`).
-    - **Todo Manager**: Track project tasks directly within the VCS.
-    - **Team Chat**: Communicate with your team without leaving your terminal.
-    - **Advanced Web Interface**:
-        - Visualize your repository, commits, and diffs.
-        - **Integrated Terminal**: A powerful web-based terminal with multi-tab support, window splits (
-          horizontal/vertical), and persistent sessions (tmux/screen style).
-        - **Music Integration**: Personalize your dashboard with your favorite albums from **Spotify** or **YouTube
-          Music**.
-        - **Personalized Banner**: Showcase your project with a **YouTube video** or a **custom image banner** directly
-          on the home page.
-- **Mounting**: Mount specific versions or the current HEAD to a directory as a virtual filesystem.
-- **Decentralized**: `push` and `pull` to remote architects, or `sync` to physical destinations like USB drives.
-- **TUI Support**: Includes `syl`, a beautiful terminal user interface for managing your work.
+-   **Secure by Design**: Every commit is cryptographically signed using **Ed25519** identity keys.
+-   **Git Integration**: Seamlessly `import` or `clone` existing Git repositories into Lys.
+-   **Modern Workflow**: Built-in support for `feat` and `hotfix` branches, following best practices for software delivery.
+-   **Integrated Tools**:
+    -   **Interactive Shell**: Type `lys` without arguments to enter a specialized REPL with history and tab-completion.
+    -   **Todo Manager**: Integrated task tracking with due dates and assignments.
+    -   **Team Chat**: Localized communication for your team without leaving the terminal.
+    -   **Beautiful TUI**: Includes `syl`, a comprehensive terminal user interface for repository management.
+-   **Advanced Web Interface**:
+    -   **Visualization**: Browse repository history, tree structure, and high-quality diffs.
+    -   **Web Terminal**: Multi-tab support, window splits, and persistent sessions.
+    -   **Personalization**: Custom titles, banners (images or YouTube), and music (Spotify/YouTube Music).
+-   **Virtual Filesystem**: Mount specific versions or branches to your filesystem for easy browsing.
+-   **Decentralized**: Sync with "Remote Architects" or physical destinations like USB drives for air-gapped backups.
 
 ## Installation
+
+```bash
+cargo install lys
+```
+
+### From Source
 
 ```bash
 git clone https://github.com/hackia/lys.git
@@ -37,83 +38,67 @@ cd lys
 cargo install --path .
 ```
 
-This will install both `lys` (CLI) and `syl` (TUI).
+This will install both the `lys` CLI and the `syl` TUI.
 
 ## Quick Start
 
 ```bash
-# Initialize a new project
+# Initialize a new project interactively
+lys new
+
+# Or initialize the current directory
 lys init
 
-# Add and commit changes
+# Record your first changes
 lys commit
 
-# Check status and logs
-lys status
-lys log
-
-# Launch the TUI
+# Launch the TUI for a visual overview
 syl
+
+# Start the web interface on port 3000
+lys web --port 3000
 ```
 
 ## CLI Usage
 
-```text
-Usage: lys [COMMAND]
+### Core Commands
+-   `init` / `new`: Initialize or create projects (with language templates).
+-   `status` / `log` / `diff`: Inspect current state and history.
+-   `commit`: Record changes (requires non-empty `syl` message).
+-   `branch` / `checkout`: Manage and switch between branches.
+-   `feat` / `hotfix`: Specialized branch management for features and fixes.
+-   `tag`: Manage version labels.
 
-Commands:
-  init      Initialize current directory
-  new       Create a new lys project
-  verify    Check repository integrity and missing blobs
-  summary   Show working directory infos
-  status    Show changes in working directory
-  push      Push local commits to a remote architect
-  pull      Pull commits from a remote architect
-  prune     Maintain repository health by removing old history
-  shell     Open a temporary shell with the code mounted
-  mount     Mount a specific version or the current head to a directory
-  tree      Show repository structure
-  import    Import a Git repository into Lys
-  keygen    Generate Ed25519 identity keys for signing commits
-  serve     Start the Silex Node (Daemon) to receive atoms
-  audit     Verify integrity of commit signatures
-  log       Show commit logs
-  diff      Show changes between working tree and last commit
-  clone     Clone a Git repository into a new lys repository
-  health    Check the source code
-  todo      Manage project tasks
-  commit    Record changes to the repository
-  restore   Discard changes in working directory
-  chat      Chat with the team
-  sync      Backup repository to a destination (USB, Drive...)
-  branch    Create a new branch
-  checkout  Switch branches or restore working tree files
-  feat      Manage feature branches
-  hotfix    Manage hotfix branches
-  tag       Manage version tags
-  web       Start the web interface
-  spotify   Set the Music album/track to display on the home page
-  video     Set the YouTube video banner to display on the home page
-  banner    Set the image banner to display on the home page
-```
+### Advanced Tools
+-   `todo`: Manage tasks (`lys todo add`, `lys todo list`, `lys todo close`).
+-   `chat`: Team communication (`lys chat send "Hello"`, `lys chat list`).
+-   `web`: Start and configure the web dashboard.
+-   `mount` / `shell`: Interact with the repository as a virtual filesystem.
+-   `sync`: Backup to physical destinations.
+-   `push` / `pull`: Remote synchronization with Architects.
+
+### Security
+-   `keygen`: Generate your Ed25519 identity keys.
+-   `audit`: Verify the integrity of all commit signatures in history.
+-   `verify`: Check repository integrity and missing data blobs.
 
 ## Project Structure
 
 ```text
 .
 ├── src/
-│   ├── main.rs        # Core CLI logic (lys)
+│   ├── main.rs        # Core CLI and command dispatcher
 │   ├── bin/
-│   │   └── syl.rs     # TUI application (syl)
-│   ├── shell.rs       # Interactive REPL shell logic
-│   ├── vcs.rs         # Version control engine
-│   ├── crypto.rs      # Ed25519 signing and hashing
-│   ├── todo.rs        # Task management logic
-│   ├── chat.rs        # Team chat implementation
-│   ├── mount.rs       # Filesystem mounting logic
-│   └── web.rs         # Web interface server
-├── Cargo.toml         # Project dependencies
-└── README.md          # You are here
+│   │   └── syl.rs     # TUI application
+│   ├── vcs.rs         # Version control engine (Merkle-tree based)
+│   ├── crypto.rs      # Ed25519 signing and auditing
+│   ├── web.rs         # Axum-based web interface and terminal
+│   ├── shell.rs       # Interactive REPL implementation
+│   ├── todo.rs        # Integrated task management
+│   ├── chat.rs        # Team chat logic
+│   └── mount.rs       # FUSE-based filesystem mounting
+├── Cargo.toml         # Manifest and dependencies
+└── README.md          # Documentation
 ```
 
 ## License
