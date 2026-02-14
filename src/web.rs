@@ -359,9 +359,29 @@ fn get_youtube_embed_url(url: &str) -> Option<String> {
 }
 
 fn time_ago(timestamp: &str) -> String {
-    let dt = match DateTime::parse_from_rfc3339(timestamp) {
-        Ok(d) => d.with_timezone(&Utc),
-        Err(_) => return String::new(),
+    let ts = timestamp.trim();
+    if ts.is_empty() {
+        return String::new();
+    }
+    let dt = if let Ok(d) = DateTime::parse_from_rfc3339(ts) {
+        d.with_timezone(&Utc)
+    } else if let Ok(d) = chrono::DateTime::parse_from_str(ts, "%Y-%m-%d %H:%M:%S %z") {
+        d.with_timezone(&Utc)
+    } else if let Ok(d) = chrono::DateTime::parse_from_str(ts, "%Y-%m-%d %H:%M:%S %:z") {
+        d.with_timezone(&Utc)
+    } else if let Ok(d) = chrono::NaiveDateTime::parse_from_str(ts, "%Y-%m-%d %H:%M:%S%.f") {
+        DateTime::<Utc>::from_naive_utc_and_offset(d, Utc)
+    } else if let Ok(d) = chrono::NaiveDateTime::parse_from_str(ts, "%Y-%m-%d %H:%M:%S") {
+        DateTime::<Utc>::from_naive_utc_and_offset(d, Utc)
+    } else if ts.len() >= 19 {
+        let prefix = &ts[..19];
+        if let Ok(d) = chrono::NaiveDateTime::parse_from_str(prefix, "%Y-%m-%d %H:%M:%S") {
+            DateTime::<Utc>::from_naive_utc_and_offset(d, Utc)
+        } else {
+            return String::new();
+        }
+    } else {
+        return String::new();
     };
     let now = Utc::now();
     let diff = now.signed_duration_since(dt);
@@ -1790,10 +1810,11 @@ async fn show_commit(
     let mut author = String::new();
     let mut date = String::new();
     let mut hash = String::new();
+    let mut parent_hash = String::new();
 
     {
         let mut stmt_c = match conn.prepare(
-            "SELECT message, hash, tree_hash, author, timestamp, id FROM commits WHERE id = ?",
+            "SELECT message, hash, tree_hash, author, timestamp, parent_hash, id FROM commits WHERE id = ?",
         ) {
             Ok(s) => s,
             Err(_) => {
@@ -1811,6 +1832,7 @@ async fn show_commit(
                 date = stmt_c
                     .read("timestamp")
                     .unwrap_or_else(|_| String::from(""));
+                parent_hash = stmt_c.read("parent_hash").unwrap_or_else(|_| String::from(""));
             }
         }
     }
@@ -1820,14 +1842,20 @@ async fn show_commit(
     }
 
     let mut parent_tree_hash: Option<String> = None;
-    {
-        if let Ok(mut stmt_p) =
-            conn.prepare("SELECT tree_hash FROM commits WHERE id < ? ORDER BY id DESC LIMIT 1")
-        {
-            if stmt_p.bind((1, commit_id)).is_ok() {
+    if !parent_hash.is_empty() {
+        if let Ok(mut stmt_p) = conn.prepare("SELECT tree_hash FROM commits WHERE hash = ?") {
+            if stmt_p.bind((1, parent_hash.as_str())).is_ok() {
                 if let Ok(sqlite::State::Row) = stmt_p.next() {
                     parent_tree_hash = stmt_p.read(0).ok();
                 }
+            }
+        }
+    } else if let Ok(mut stmt_p) =
+        conn.prepare("SELECT tree_hash FROM commits WHERE id < ? ORDER BY id DESC LIMIT 1")
+    {
+        if stmt_p.bind((1, commit_id)).is_ok() {
+            if let Ok(sqlite::State::Row) = stmt_p.next() {
+                parent_tree_hash = stmt_p.read(0).ok();
             }
         }
     }
@@ -1873,7 +1901,6 @@ async fn show_commit(
     }
 
     let mut diff_accordions = String::new();
-    let mut diff_index = 0usize;
     let mut paths: Vec<_> = current_state.keys().collect();
     for p in parent_state.keys() {
         if !current_state.contains_key(p) {
@@ -1890,7 +1917,7 @@ async fn show_commit(
             (Some((old_hash, _)), Some((new_hash, _))) if old_hash != new_hash => {
                 let old_bytes = get_raw_blob(&conn, old_hash);
                 let new_bytes = get_raw_blob(&conn, new_hash);
-                let open_attr = if diff_index == 0 { " open" } else { "" };
+                let open_attr = " open";
                 diff_accordions.push_str(&format!(
                     "<details class='diff-accordion'{}>\
                        <summary><span class='diff-tag diff-tag-modified'>Modified</span><span class='diff-path'>{}</span></summary>\
@@ -1900,11 +1927,10 @@ async fn show_commit(
                     html_escape(&path.display().to_string()),
                     render_diff(&old_bytes, &new_bytes, "unified")
                 ));
-                diff_index += 1;
             }
             (None, Some((new_hash, _))) => {
                 let new_bytes = get_raw_blob(&conn, new_hash);
-                let open_attr = if diff_index == 0 { " open" } else { "" };
+                let open_attr = " open";
                 diff_accordions.push_str(&format!(
                     "<details class='diff-accordion'{}>\
                        <summary><span class='diff-tag diff-tag-added'>Added</span><span class='diff-path'>{}</span></summary>\
@@ -1914,11 +1940,10 @@ async fn show_commit(
                     html_escape(&path.display().to_string()),
                     render_diff(&[], &new_bytes, "unified")
                 ));
-                diff_index += 1;
             }
             (Some((old_hash, _)), None) => {
                 let old_bytes = get_raw_blob(&conn, old_hash);
-                let open_attr = if diff_index == 0 { " open" } else { "" };
+                let open_attr = " open";
                 diff_accordions.push_str(&format!(
                     "<details class='diff-accordion'{}>\
                        <summary><span class='diff-tag diff-tag-deleted'>Deleted</span><span class='diff-path'>{}</span></summary>\
@@ -1928,7 +1953,6 @@ async fn show_commit(
                     html_escape(&path.display().to_string()),
                     render_diff(&old_bytes, &[], "unified")
                 ));
-                diff_index += 1;
             }
             _ => {}
         }
@@ -1940,9 +1964,20 @@ async fn show_commit(
     } else {
         format!(
             "<div class='card' style='margin-bottom: 25px;'>\
-               <h4>File Changes</h4>\
+               <div style='display:flex; align-items:center; justify-content: space-between; gap: 12px; flex-wrap: wrap;'>\
+                 <h4 style='margin:0;'>File Changes</h4>\
+                 <div class='diff-tools'>\
+                   <button type='button' class='btn btn-ghost' onclick='toggleCommitDiffAccordions(true)'>Open All</button>\
+                   <button type='button' class='btn btn-ghost' onclick='toggleCommitDiffAccordions(false)'>Close All</button>\
+                 </div>\
+               </div>\
                {}\
-             </div>",
+             </div>\
+             <script>\
+               function toggleCommitDiffAccordions(open) {{\
+                 document.querySelectorAll('.diff-accordion').forEach(d => {{ d.open = open; }});\
+               }}\
+             </script>",
             diff_accordions
         )
     };
@@ -1957,6 +1992,8 @@ async fn show_commit(
          .diff-accordion { border: 1px solid var(--border); border-radius: var(--radius-xs); margin-bottom: 12px; background: var(--code-bg); }
          .diff-accordion summary { cursor: pointer; padding: 8px 12px; font-family: var(--font-mono); background: var(--surface); border-bottom: 1px solid var(--border); list-style: none; display: flex; align-items: center; gap: 10px; }
          .diff-accordion summary::-webkit-details-marker { display: none; }
+         .diff-accordion summary::after { content: '>'; margin-left: auto; color: var(--muted); transform: rotate(0deg); transition: transform 0.15s ease; }
+         .diff-accordion[open] summary::after { transform: rotate(90deg); color: var(--fg); }
          .diff-accordion[open] summary { box-shadow: 0 0 0 1px var(--accent), 0 0 12px var(--accent-glow); }
          .diff-accordion .diff-container { border: none; margin: 0; border-top: 1px solid var(--border); border-radius: 0 0 var(--radius-xs) var(--radius-xs); }
          .diff-tag { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: var(--radius-xs); font-size: 0.7em; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
@@ -2345,7 +2382,7 @@ fn render_tree_html_flat(
              FROM manifest m \
              JOIN commits c ON c.id = m.commit_id \
              WHERE m.file_path = ?1 AND c.id <= ?2 \
-ss             ORDER BY c.timestamp DESC LIMIT 1"
+             ORDER BY c.timestamp DESC LIMIT 1"
         };
         let mut stmt = match conn.prepare(base_sql) {
             Ok(s) => s,
@@ -2647,7 +2684,7 @@ async fn show_commit_diff(
     let mut parent_tree_hash: Option<String> = None;
 
     {
-        let mut stmt = match conn.prepare("SELECT hash, tree_hash, id FROM commits WHERE id = ?") {
+        let mut stmt = match conn.prepare("SELECT hash, tree_hash, parent_hash, id FROM commits WHERE id = ?") {
             Ok(s) => s,
             Err(_) => {
                 return http_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to query commit");
@@ -2662,9 +2699,18 @@ async fn show_commit_diff(
         if let Ok(sqlite::State::Row) = stmt.next() {
             commit_hash = stmt.read("hash").unwrap_or_default();
             tree_hash = stmt.read("tree_hash").unwrap_or_default();
+            let parent_hash: String = stmt.read("parent_hash").unwrap_or_default();
             let current_db_id: i64 = stmt.read("id").unwrap_or(0);
 
-            if let Ok(mut stmt_p) =
+            if !parent_hash.is_empty() {
+                if let Ok(mut stmt_p) = conn.prepare("SELECT tree_hash FROM commits WHERE hash = ?") {
+                    if stmt_p.bind((1, parent_hash.as_str())).is_ok() {
+                        if let Ok(sqlite::State::Row) = stmt_p.next() {
+                            parent_tree_hash = stmt_p.read(0).ok();
+                        }
+                    }
+                }
+            } else if let Ok(mut stmt_p) =
                 conn.prepare("SELECT tree_hash FROM commits WHERE id < ? ORDER BY id DESC LIMIT 1")
             {
                 if stmt_p.bind((1, current_db_id)).is_ok() {

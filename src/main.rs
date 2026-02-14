@@ -766,8 +766,81 @@ pub fn execute_matches(app: clap::ArgMatches) -> Result<(), Error> {
             let repo_name = extract_repo_name(url);
             let target_dir = current_dir()?.join(&repo_name);
             // On passe le nouveau paramètre à ta fonction
-            import::import_from_git(url, &target_dir, depth, only_recent).expect("failed");
+            import::import_from_git(url, &target_dir, depth, only_recent, false, false)
+                .expect("failed");
             ok("ready");
+            Ok(())
+        }
+        Some(("pull", _)) => {
+            let current_dir = current_dir()?;
+            if !Path::new(".git").exists() {
+                return Err(Error::other("No .git directory found. This is not a Git-backed repo."));
+            }
+            let conn = connect_lys(&current_dir).map_err(|e| Error::other(e.to_string()))?;
+            let branch = get_current_branch(&conn).map_err(|e| Error::other(e.to_string()))?;
+            if branch != "origin" {
+                return Err(Error::other(
+                    "You must be on the 'origin' branch to pull from Git.",
+                ));
+            }
+            let status_list = vcs::status(&conn, current_dir.to_str().unwrap(), &branch)
+                .map_err(|e| Error::other(e.to_string()))?;
+            if !status_list.is_empty() {
+                return Err(Error::other(
+                    "Working tree has changes. Commit or stash before pulling.",
+                ));
+            }
+
+            let git_status = Cmd::new("git")
+                .arg("pull")
+                .arg("--ff-only")
+                .current_dir(&current_dir)
+                .status()?;
+            if !git_status.success() {
+                return Err(Error::other("git pull failed"));
+            }
+
+            let repo = git2::Repository::open(&current_dir)
+                .map_err(|e| Error::other(e.to_string()))?;
+            let head_oid = repo
+                .head()
+                .ok()
+                .and_then(|h| h.target())
+                .ok_or_else(|| Error::other("Unable to resolve Git HEAD"))?;
+            let head_str = head_oid.to_string();
+
+            let last_oid = {
+                let mut stmt = conn
+                    .prepare("SELECT value FROM config WHERE key = 'git_origin_head'")
+                    .map_err(|e| Error::other(e.to_string()))?;
+                if let Ok(State::Row) = stmt.next() {
+                    stmt.read::<String, _>("value").ok()
+                } else {
+                    None
+                }
+            };
+
+            if let Some(last) = last_oid {
+                if last == head_str {
+                    ok("Already up to date.");
+                    return Ok(());
+                }
+                import::import_updates_from_repo(&current_dir, &current_dir, &last, "origin")
+                    .map_err(|e| Error::other(e.to_string()))?;
+            } else {
+                ok("No previous Git head found. Recording current HEAD.");
+            }
+
+            let mut stmt = conn
+                .prepare(
+                    "INSERT INTO config (key, value) VALUES ('git_origin_head', ?) \
+                     ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                )
+                .map_err(|e| Error::other(e.to_string()))?;
+            stmt.bind((1, head_str.as_str()))
+                .map_err(|e| Error::other(e.to_string()))?;
+            stmt.next().map_err(|e| Error::other(e.to_string()))?;
+            ok("Git pull + Lys sync complete.");
             Ok(())
         }
         Some(("mount", sub_args)) => {
@@ -819,11 +892,10 @@ pub fn execute_matches(app: clap::ArgMatches) -> Result<(), Error> {
                 return Ok(());
             }
 
-            // 3. Créer le dossier
+            // 3. Cloner et importer en conservant .git
             ok("Creation of the repository");
-            std::fs::create_dir(&target_path)?;
-            // Appel avec le nouveau paramètre
-            import::import_from_git(url, &target_path, depth, false).expect("failed to clone");
+            import::import_from_git(url, &target_path, depth, false, true, true)
+                .expect("failed to clone");
             ok("ready");
             Ok(())
         }

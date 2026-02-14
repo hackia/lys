@@ -432,13 +432,26 @@ pub fn get_unique_contributors(conn: &Connection) -> Result<Vec<(String, i64)>, 
 // Dans src/db.rs
 pub fn insert_blob_with_conn(conn: &Connection, hash: &str, content: &[u8]) -> Result<(), Error> {
     let compressed = compress(content); // Ta fonction de compression existante
-    let mut stmt =
-        conn.prepare("INSERT OR IGNORE INTO store.blobs (hash, content, size) VALUES (?, ?, ?)")?;
-    stmt.bind((1, hash))?;
-    stmt.bind((2, &compressed[..]))?;
-    stmt.bind((3, content.len() as i64))?;
-    stmt.next()?;
-    Ok(())
+    let insert = |sql: &str| -> Result<(), Error> {
+        let mut stmt = conn.prepare(sql)?;
+        stmt.bind((1, hash))?;
+        stmt.bind((2, &compressed[..]))?;
+        stmt.bind((3, content.len() as i64))?;
+        stmt.next()?;
+        Ok(())
+    };
+
+    match insert("INSERT OR IGNORE INTO store.blobs (hash, content, size) VALUES (?, ?, ?)") {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let msg = e.to_string();
+            if msg.contains("store.blobs") || msg.contains("unknown database store") {
+                insert("INSERT OR IGNORE INTO blobs (hash, content, size) VALUES (?, ?, ?)")
+            } else {
+                Err(e)
+            }
+        }
+    }
 }
 
 // À ajouter dans src/db.rs

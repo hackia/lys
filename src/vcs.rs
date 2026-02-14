@@ -267,25 +267,45 @@ pub fn ls_tree(
 }
 
 fn time_ago_cli(timestamp: &str) -> String {
-    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(timestamp) {
-        let dt = dt.with_timezone(&chrono::Utc);
-        let now = chrono::Utc::now();
-        let diff = now.signed_duration_since(dt);
-        if diff.num_seconds() < 60 {
-            format!("{}s ago", diff.num_seconds())
-        } else if diff.num_minutes() < 60 {
-            format!("{}m ago", diff.num_minutes())
-        } else if diff.num_hours() < 24 {
-            format!("{}h ago", diff.num_hours())
-        } else if diff.num_days() < 30 {
-            format!("{}d ago", diff.num_days())
-        } else if diff.num_days() < 365 {
-            format!("{}mo ago", diff.num_days() / 30)
+    let ts = timestamp.trim();
+    if ts.is_empty() {
+        return String::new();
+    }
+    let dt = if let Ok(d) = chrono::DateTime::parse_from_rfc3339(ts) {
+        d.with_timezone(&chrono::Utc)
+    } else if let Ok(d) = chrono::DateTime::parse_from_str(ts, "%Y-%m-%d %H:%M:%S %z") {
+        d.with_timezone(&chrono::Utc)
+    } else if let Ok(d) = chrono::DateTime::parse_from_str(ts, "%Y-%m-%d %H:%M:%S %:z") {
+        d.with_timezone(&chrono::Utc)
+    } else if let Ok(d) = chrono::NaiveDateTime::parse_from_str(ts, "%Y-%m-%d %H:%M:%S%.f") {
+        chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(d, chrono::Utc)
+    } else if let Ok(d) = chrono::NaiveDateTime::parse_from_str(ts, "%Y-%m-%d %H:%M:%S") {
+        chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(d, chrono::Utc)
+    } else if ts.len() >= 19 {
+        let prefix = &ts[..19];
+        if let Ok(d) = chrono::NaiveDateTime::parse_from_str(prefix, "%Y-%m-%d %H:%M:%S") {
+            chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(d, chrono::Utc)
         } else {
-            format!("{}y ago", diff.num_days() / 365)
+            return String::new();
         }
     } else {
-        String::new()
+        return String::new();
+    };
+
+    let now = chrono::Utc::now();
+    let diff = now.signed_duration_since(dt);
+    if diff.num_seconds() < 60 {
+        format!("{}s ago", diff.num_seconds())
+    } else if diff.num_minutes() < 60 {
+        format!("{}m ago", diff.num_minutes())
+    } else if diff.num_hours() < 24 {
+        format!("{}h ago", diff.num_hours())
+    } else if diff.num_days() < 30 {
+        format!("{}d ago", diff.num_days())
+    } else if diff.num_days() < 365 {
+        format!("{}mo ago", diff.num_days() / 30)
+    } else {
+        format!("{}y ago", diff.num_days() / 365)
     }
 }
 
@@ -717,24 +737,33 @@ pub fn commit_manual(
     } else {
         String::from("")
     };
+    let parent_ref = if parent_hash.is_empty() {
+        None
+    } else {
+        Some(parent_hash.as_str())
+    };
+    let (id, _) = commit_manual_with_parent(conn, message, author, timestamp, tree_hash, parent_ref)?;
+    Ok(id)
+}
 
-    let commit_data = format!("{parent_hash}{author}{message}{timestamp}{tree_hash}");
+pub fn commit_manual_with_parent(
+    conn: &Connection,
+    message: &str,
+    author: &str,
+    timestamp: i64,
+    tree_hash: &str,
+    parent_hash: Option<&str>,
+) -> Result<(i64, String), sqlite::Error> {
+    let parent_for_hash = parent_hash.unwrap_or("");
+    let commit_data = format!("{parent_for_hash}{author}{message}{timestamp}{tree_hash}");
     let lys_hash = blake3::hash(commit_data.as_bytes()).to_hex().to_string();
 
-    // AJOUT DE tree_hash DANS LA REQUÊTE
     let query = "INSERT INTO commits (hash, parent_hash, tree_hash, author, message, timestamp) 
                  VALUES (?, ?, ?, ?, ?, datetime(?, 'unixepoch'))";
     let mut stmt = conn.prepare(query)?;
     stmt.bind((1, lys_hash.as_str()))?;
-    stmt.bind((
-        2,
-        if parent_hash.is_empty() {
-            None
-        } else {
-            Some(parent_hash.as_str())
-        },
-    ))?;
-    stmt.bind((3, tree_hash))?; // Bind de la valeur
+    stmt.bind((2, parent_hash))?;
+    stmt.bind((3, tree_hash))?;
     stmt.bind((4, author))?;
     stmt.bind((5, message))?;
     stmt.bind((6, timestamp))?;
@@ -743,7 +772,8 @@ pub fn commit_manual(
     let id_query = "SELECT last_insert_rowid()";
     let mut stmt_id = conn.prepare(id_query)?;
     stmt_id.next()?;
-    stmt_id.read(0)
+    let id = stmt_id.read(0)?;
+    Ok((id, lys_hash))
 }
 
 pub fn tag_create(conn: &Connection, name: &str, message: Option<&str>) -> Result<(), IoError> {
