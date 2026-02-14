@@ -278,6 +278,17 @@ struct NewFileForm {
 }
 
 #[derive(Deserialize)]
+struct DeletePathForm {
+    path: String,
+}
+
+#[derive(Deserialize)]
+struct RestoreForm {
+    path: String,
+    overwrite: Option<String>,
+}
+
+#[derive(Deserialize)]
 struct TodoForm {
     title: String,
     assigned_to: Option<String>,
@@ -303,6 +314,30 @@ fn html_escape(s: &str) -> String {
         }
     }
     out
+}
+
+fn is_safe_relative_path(path: &str) -> bool {
+    if path.is_empty() {
+        return false;
+    }
+    let p = Path::new(path);
+    if p.is_absolute() {
+        return false;
+    }
+    for comp in p.components() {
+        match comp {
+            std::path::Component::ParentDir
+            | std::path::Component::RootDir
+            | std::path::Component::Prefix(_) => return false,
+            std::path::Component::Normal(os) => {
+                if os == ".lys" {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+    }
+    true
 }
 
 fn truncate_words(text: &str, limit: usize) -> String {
@@ -559,6 +594,9 @@ pub fn page(title: &str, style: &str, body: &str) -> Html<String> {
         .btn:focus-visible { outline: none; box-shadow: var(--focus-ring); }
         .btn-active { background: var(--accent) !important; color: var(--accent-contrast) !important; border-color: var(--accent) !important; }
         .btn-ghost { background: transparent; }
+        .btn-danger { background: var(--diff-del); color: var(--diff-del-text); border-color: var(--diff-del-text); }
+        .btn-restore { background: var(--diff-add); color: var(--diff-add-text); border-color: var(--diff-add-text); }
+        .btn-sm { padding: 4px 8px; font-size: 0.75em; }
         .tabs { display: flex; border-bottom: 1px solid var(--border); margin-bottom: 20px; gap: 8px; flex-wrap: wrap; }
         .tab { padding: 8px 16px; cursor: pointer; border: 1px solid transparent; border-radius: var(--radius-xs); font-size: 0.9em; font-weight: 600; color: var(--muted); transition: all 0.2s; }
         .tab:hover { background: var(--hover-bg); color: var(--fg); }
@@ -587,7 +625,9 @@ pub fn page(title: &str, style: &str, body: &str) -> Html<String> {
         .media-card:hover { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), 0 0 16px var(--accent-glow); }
         .media-16x9 { aspect-ratio: 16 / 9; }
         .file-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 6px; }
-        .file-item a { display: block; padding: 8px 10px; border-radius: var(--radius-xs); border: 1px solid transparent; font-family: var(--font-mono); font-size: 0.9em; }
+        .file-item { display: flex; align-items: center; gap: 8px; }
+        .file-item form { margin: 0; }
+        .file-item a { flex: 1; display: block; padding: 8px 10px; border-radius: var(--radius-xs); border: 1px solid transparent; font-family: var(--font-mono); font-size: 0.9em; }
         .file-item a:hover { background: var(--hover-bg); border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), 0 0 10px var(--accent-glow); }
         .panel { display: flex; flex-direction: column; gap: 12px; }
         .form-inline { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
@@ -1045,11 +1085,14 @@ pub async fn start_server(repo_path: &str, port: u16) {
         .route("/commit/create", post(create_commit))
         .route("/commit/{id}", get(show_commit))
         .route("/commit/{id}/diff", get(show_commit_diff))
+        .route("/working/restore", post(restore_working_deleted))
         .route("/commit/{id}/tree", get(show_commit_tree))
         .route("/commit/{id}/tree/{*path}", get(show_commit_tree))
         .route("/editor", get(editor_list))
         .route("/editor/new", post(editor_new))
+        .route("/editor/delete", post(editor_delete_form))
         .route("/editor/{*path}", get(editor_edit).post(editor_save))
+        .route("/editor/delete/{*path}", post(editor_delete_path))
         .route("/todo", get(todo_list))
         .route("/todo/add", post(todo_add))
         .route("/todo/update/{id}/{status}", post(todo_update))
@@ -2001,6 +2044,8 @@ async fn show_commit(
          .diff-tag-modified { background: var(--hover-bg); color: var(--accent); border: 1px solid var(--accent); }
          .diff-tag-deleted { background: var(--diff-del); color: var(--diff-del-text); border: 1px solid var(--diff-del-text); }
          .diff-path { font-family: var(--font-mono); font-size: 0.9em; color: var(--fg); }
+         .diff-actions { margin-left: auto; display: inline-flex; gap: 6px; align-items: center; }
+         .diff-actions form { margin: 0; }
          .diff-added { color: var(--diff-add-text); background-color: var(--diff-add); }
          .diff-deleted { color: var(--diff-del-text); background-color: var(--diff-del); }
          .diff-equal { color: var(--fg); }
@@ -2043,6 +2088,85 @@ async fn show_commit(
         ),
     )
         .into_response()
+}
+
+async fn restore_working_deleted(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Form(form): axum::extract::Form<RestoreForm>,
+) -> impl IntoResponse {
+    let path = form.path.trim().trim_start_matches('/');
+    if !is_safe_relative_path(path) {
+        return http_error(StatusCode::BAD_REQUEST, "Invalid path");
+    }
+
+    let conn = match state.conn.lock() {
+        Ok(g) => g,
+        Err(_) => return http_error(StatusCode::INTERNAL_SERVER_ERROR, "DB lock poisoned"),
+    };
+
+    let branch = crate::db::get_current_branch(&conn).unwrap_or_else(|_| "main".to_string());
+    let head_state = match crate::vcs::get_head_state(&conn, &branch) {
+        Ok(s) => s,
+        Err(_) => {
+            return http_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to load HEAD state",
+            )
+        }
+    };
+
+    let path_buf = PathBuf::from(path);
+    let blob_hash = match head_state.get(&path_buf).map(|(h, _)| h.clone()) {
+        Some(h) if !h.is_empty() => h,
+        _ => return http_error(StatusCode::NOT_FOUND, "File not found in HEAD"),
+    };
+
+    let bytes = match get_raw_blob_opt(&conn, &blob_hash) {
+        Some(b) => b,
+        None => return http_error(StatusCode::NOT_FOUND, "Blob not found"),
+    };
+
+    let full_path = Path::new(".").join(path);
+    let wants_overwrite = matches!(form.overwrite.as_deref(), Some("1"));
+    if full_path.exists() && !wants_overwrite {
+        let body = format!(
+            "<h3>Overwrite existing file?</h3>\
+             <div class='card' style='margin-bottom: 18px;'>\
+               <p class='meta' style='margin:0;'>\
+                 The file <span class='hash'>{}</span> already exists. Overwrite it with the version from HEAD?\
+               </p>\
+             </div>\
+             <form action='/working/restore' method='post' class='form-inline'>\
+               <input type='hidden' name='path' value='{}'>\
+               <input type='hidden' name='overwrite' value='1'>\
+               <button type='submit' class='btn btn-danger'>Overwrite</button>\
+               <a href='/commit/new' class='btn'>Cancel</a>\
+             </form>",
+            html_escape(path),
+            html_escape(path)
+        );
+        return page("Confirm overwrite", "", &body).into_response();
+    }
+    if let Some(parent) = full_path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            return http_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("Failed to create directories: {}", e),
+            );
+        }
+    }
+    if let Err(e) = std::fs::write(&full_path, bytes) {
+        return http_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &format!("Failed to restore file: {}", e),
+        );
+    }
+
+    Response::builder()
+        .status(StatusCode::SEE_OTHER)
+        .header("Location", "/commit/new")
+        .body(axum::body::Body::empty())
+        .unwrap()
 }
 
 // 2.1. VUE ARBORESCENTE D'UN COMMIT
@@ -2836,17 +2960,21 @@ async fn show_commit_diff(
     ).into_response()
 }
 
-fn get_raw_blob(conn: &Connection, hash: &str) -> Vec<u8> {
+fn get_raw_blob_opt(conn: &Connection, hash: &str) -> Option<Vec<u8>> {
     if let Ok(mut stmt) = conn.prepare("SELECT content FROM store.blobs WHERE hash = ?") {
         if stmt.bind((1, hash)).is_ok() {
             if let Ok(sqlite::State::Row) = stmt.next() {
                 if let Ok(content) = stmt.read::<Vec<u8>, _>(0) {
-                    return decompress(&content);
+                    return Some(decompress(&content));
                 }
             }
         }
     }
-    Vec::new()
+    None
+}
+
+fn get_raw_blob(conn: &Connection, hash: &str) -> Vec<u8> {
+    get_raw_blob_opt(conn, hash).unwrap_or_default()
 }
 
 fn render_diff(old: &[u8], new: &[u8], mode: &str) -> String {
@@ -3293,12 +3421,22 @@ async fn editor_list() -> impl IntoResponse {
                 <label for='search' style='font-weight: 600; font-size: 0.9em; min-width: 80px;'>Search:</label>
                 <input type='text' id='search' placeholder='Filter files...' style='flex: 1; min-width: 200px;'>
             </div>
+            <form action='/editor/delete' method='post' class='form-inline divider' onsubmit=\"return confirm('Delete this path? This action cannot be undone.');\">
+                <label for='delete-path' style='font-weight: 600; font-size: 0.9em; min-width: 80px;'>Delete:</label>
+                <input type='text' id='delete-path' name='path' placeholder='folder/or/file' required style='flex: 1; min-width: 200px;'>
+                <button type='submit' class='btn btn-danger'>Delete</button>
+            </form>
         </div>
         <div class='card'>
           <ul id='file-list' class='file-list'>");
     for f in files {
         body.push_str(&format!(
-            "<li class='file-item'><a href='/editor/{}'>{}</a></li>",
+            "<li class='file-item'><a href='/editor/{}'>{}</a>\
+               <form action='/editor/delete/{}' method='post' onsubmit=\"return confirm('Delete this file?');\">\
+                 <button type='submit' class='btn btn-danger btn-sm'>Delete</button>\
+               </form>\
+             </li>",
+            html_escape(&f),
             html_escape(&f),
             html_escape(&f)
         ));
@@ -3390,6 +3528,9 @@ async fn editor_edit(UrlPath(path): UrlPath<String>) -> impl IntoResponse {
                      <a href='/editor' class='btn'>Cancel</a>\
                    </div>\
                  </form>\
+                 <form action='/editor/delete/{}' method='post' class='form-inline' style='margin-top: 10px;' onsubmit=\"return confirm('Delete this file?');\">\
+                   <button type='submit' class='btn btn-danger'>Delete File</button>\
+                 </form>\
                  <h3 style='margin-top: 30px;'>Dev Terminal</h3>\
                  <div class='meta' style='margin-bottom: 10px;'>Connected to the host shell. Use <code>cd</code> to change directories.</div>\
                  {}\
@@ -3417,9 +3558,10 @@ async fn editor_edit(UrlPath(path): UrlPath<String>) -> impl IntoResponse {
                    document.getElementById('editor-form').onsubmit = function() {{\
                      document.getElementById('content-hidden').value = editor.getValue();\
                    }};\
-                 </script>",
+                </script>",
                 html_escape(&path),
                 html_escape(&content),
+                html_escape(&path),
                 html_escape(&path),
                 terminal_html,
                 html_escape(&path)
@@ -3445,6 +3587,47 @@ async fn editor_save(
     Response::builder()
         .status(StatusCode::SEE_OTHER)
         .header("Location", format!("/editor/{}", path))
+        .body(axum::body::Body::empty())
+        .unwrap()
+}
+
+fn delete_repo_path(path: &str) -> Result<(), String> {
+    let cleaned = path.trim().trim_start_matches('/').to_string();
+    if !is_safe_relative_path(&cleaned) {
+        return Err("Invalid path".to_string());
+    }
+    let full_path = Path::new(".").join(&cleaned);
+    if !full_path.exists() {
+        return Err("Path not found".to_string());
+    }
+    if full_path.is_dir() {
+        std::fs::remove_dir_all(&full_path).map_err(|e| e.to_string())?;
+    } else {
+        std::fs::remove_file(&full_path).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+async fn editor_delete_form(
+    axum::extract::Form(form): axum::extract::Form<DeletePathForm>,
+) -> impl IntoResponse {
+    if let Err(msg) = delete_repo_path(&form.path) {
+        return http_error(StatusCode::BAD_REQUEST, &msg);
+    }
+    Response::builder()
+        .status(StatusCode::SEE_OTHER)
+        .header("Location", "/editor")
+        .body(axum::body::Body::empty())
+        .unwrap()
+}
+
+async fn editor_delete_path(UrlPath(path): UrlPath<String>) -> impl IntoResponse {
+    if let Err(msg) = delete_repo_path(&path) {
+        return http_error(StatusCode::BAD_REQUEST, &msg);
+    }
+    Response::builder()
+        .status(StatusCode::SEE_OTHER)
+        .header("Location", "/editor")
         .body(axum::body::Body::empty())
         .unwrap()
 }
@@ -3584,10 +3767,18 @@ async fn new_commit_form(
                 let open_attr = if diff_index == 0 { " open" } else { "" };
                 diff_accordions.push_str(&format!(
                     "<details class='diff-accordion'{}>\
-                       <summary><span class='diff-tag diff-tag-deleted'>Deleted</span><span class='diff-path'>{}</span></summary>\
+                       <summary><span class='diff-tag diff-tag-deleted'>Deleted</span><span class='diff-path'>{}</span>\
+                         <span class='diff-actions'>\
+                           <form action='/working/restore' method='post' onsubmit=\\\"return confirm('Restore deleted file from HEAD?');\\\">\
+                             <input type='hidden' name='path' value='{}'>\
+                             <button type='submit' class='btn btn-restore btn-sm'>Restore</button>\
+                           </form>\
+                         </span>\
+                       </summary>\
                        {}\
                      </details>",
                     open_attr,
+                    html_escape(&path.display().to_string()),
                     html_escape(&path.display().to_string()),
                     render_diff(&old_bytes, &[], "unified")
                 ));
@@ -3799,6 +3990,8 @@ async fn new_commit_form(
          .diff-tag-modified { background: var(--hover-bg); color: var(--accent); border: 1px solid var(--accent); }\
          .diff-tag-deleted { background: var(--diff-del); color: var(--diff-del-text); border: 1px solid var(--diff-del-text); }\
          .diff-path { font-family: var(--font-mono); font-size: 0.9em; color: var(--fg); }\
+         .diff-actions { margin-left: auto; display: inline-flex; gap: 6px; align-items: center; }\
+         .diff-actions form { margin: 0; }\
          .diff-added { color: var(--diff-add-text); background-color: var(--diff-add); }\
          .diff-deleted { color: var(--diff-del-text); background-color: var(--diff-del); }\
          .diff-equal { color: var(--fg); }\
