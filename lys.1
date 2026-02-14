@@ -49,7 +49,7 @@ Import a Git repository into Lys. \fIurl\fR is the Git repository URL. \fB--rece
 Generate Ed25519 identity keys for signing commits.
 .TP
 \fBserve\fR [\fB-p\fR \fIport\fR]
-Start the Lys Node (Daemon) to receive atoms. Default port is 3000.
+Start the Silex Node (Daemon) to receive atoms. Default port is 3000.
 .TP
 \fBaudit\fR
 Verify the integrity of commit signatures.
@@ -97,7 +97,113 @@ Manage hotfix branches. Subcommands: \fBstart\fR, \fBfinish\fR.
 Manage version tags. Subcommands: \fBcreate\fR, \fBlist\fR.
 .TP
 \fBweb\fR [\fB-p\fR \fIport\fR]
-Start the web interface. Default port is 3000.
+Start the web interface. Default port is 3000. Optional content: \fB--spotify\fR, \fB--video\fR, \fB--banner\fR, \fB--title\fR, \fB--subtitle\fR, \fB--footer\fR, \fB--homepage\fR, \fB--documentation\fR.
+.TP
+\fBspotify\fR \fIurl\fR
+Set the Music album/track to display on the home page.
+.TP
+\fBvideo\fR \fIurl\fR
+Set the YouTube video banner to display on the home page.
+.TP
+\fBbanner\fR \fIurl\fR
+Set the image banner to display on the home page.
+.SH EXAMPLES
+.TP
+Initialize a repository and check status:
+.EX
+lys init
+lys status
+.EE
+.TP
+Create a new project with the interactive wizard:
+.EX
+lys new
+.EE
+.TP
+Verify repository integrity (quick and deep):
+.EX
+lys verify
+lys verify --deep
+.EE
+.TP
+Show a colored tree:
+.EX
+lys tree true
+.EE
+.TP
+View logs with pagination:
+.EX
+lys log -p 2 -n 50
+.EE
+.TP
+Commit changes:
+.EX
+lys commit
+.EE
+.TP
+Restore a file from the last commit:
+.EX
+lys restore src/main.rs
+.EE
+.TP
+Create and switch branches:
+.EX
+lys branch feature/login
+lys checkout feature/login
+.EE
+.TP
+Feature and hotfix flows:
+.EX
+lys feat start new-api
+lys feat finish new-api
+lys hotfix start urgent-fix
+lys hotfix finish urgent-fix
+.EE
+.TP
+Tag management:
+.EX
+lys tag create v0.2.0 -m "First release"
+lys tag list
+.EE
+.TP
+Import or clone a Git repository:
+.EX
+lys import https://github.com/org/repo.git --recent
+lys clone https://github.com/org/repo.git repo-copy -d 200
+.EE
+.TP
+Open a temporary shell or mount a ref:
+.EX
+lys shell
+lys shell v0.2.0
+lys mount /mnt/lys_project --ref v0.2.0
+.EE
+.TP
+Start the daemon and the web UI:
+.EX
+lys serve -p 3000
+lys web -p 8080 --title "Lys" --subtitle "Local-first VCS"
+.EE
+.TP
+Set homepage media assets:
+.EX
+lys spotify https://open.spotify.com/track/...
+lys video https://youtube.com/watch?v=...
+lys banner https://example.com/banner.png
+.EE
+.TP
+Task and chat utilities:
+.EX
+lys todo add "Ship v0.2.0" -u saigo -d 2026-03-01
+lys todo list
+lys chat send "Ready for review?"
+lys chat list
+.EE
+.TP
+Backup the repository:
+.EX
+lys sync /Volumes/BackupDrive
+.EE
 .SH ENVIRONMENT
 .TP
 .B PAGER
