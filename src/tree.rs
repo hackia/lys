@@ -104,6 +104,10 @@ pub fn list_files(root_path: &Path, max_files: usize) -> Vec<String> {
     files
 }
 
+pub fn ls_files(root_path: &Path) -> Vec<String> {
+    list_files(root_path, usize::MAX)
+}
+
 fn print_node(
     node: &TreeNode,
     prefix: &str,

@@ -3,11 +3,12 @@ use crate::utils::ok;
 use chrono::Utc;
 use clap::{Arg, ArgAction, Command};
 use serde::{Deserialize, Serialize};
-use std::fs::{self, File, create_dir_all, read_to_string};
-use std::io::{Error, ErrorKind, Read, Write};
+use std::fs::{self, create_dir_all, read_to_string, File};
+use std::io::{Error, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
-use uuid::Uuid;
+use tempfile::NamedTempFile;
+use zstd::stream::{decode_all, encode_all};
 
 #[path = "../crypto.rs"]
 mod crypto;
@@ -23,6 +24,8 @@ pub mod vcs {
 
 #[path = "../utils.rs"]
 mod utils;
+#[path = "../tree.rs"]
+mod tree;
 
 /// A constant array `INSTALL_HOOKS` that defines the file paths for a sequence of
 /// installation hook scripts. These scripts are executed at different stages of
@@ -134,54 +137,129 @@ pub struct Syl {
 }
 
 #[derive(Serialize, Deserialize)]
-struct UvdSignature {
-    version: u8,
-    hash: String,
-    timestamp: i64,
-    nonce: String,
-    block_hash: String,
+struct UvdMetadata {
+    timestamp: u64,
+    prev_block_hash: Option<String>,
+    content_hash: String,
     signature: String,
 }
 
-fn decompress_archive(archive_path: &Path) -> Result<PathBuf, Error> {
-    let archive_str = archive_path
-        .to_str()
-        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "Archive path must be valid UTF-8"))?;
-    let extract_dir = match archive_path.file_stem() {
-        Some(stem) => archive_path.with_file_name(stem),
-        None => {
+#[derive(Serialize)]
+struct UvdMetadataUnsigned {
+    timestamp: u64,
+    prev_block_hash: Option<String>,
+    content_hash: String,
+}
+
+fn metadata_hash(unsigned: &UvdMetadataUnsigned) -> Result<String, Error> {
+    let bytes = serde_json::to_vec(unsigned)
+        .map_err(|e| Error::new(ErrorKind::InvalidData, e.to_string()))?;
+    Ok(blake3::hash(&bytes).to_hex().to_string())
+}
+
+fn validate_archive_path(archive: &Path) -> Result<(), Error> {
+    match archive.extension().and_then(|ext| ext.to_str()) {
+        Some("syl") => {}
+        _ => {
             return Err(Error::new(
                 ErrorKind::InvalidInput,
-                "Archive path must have a file name",
+                "Archive must have .syl extension",
             ));
         }
-    };
+    }
 
-    create_dir_all(&extract_dir)?;
+    if !archive.exists() {
+        return Err(Error::new(ErrorKind::NotFound, "Archive not found"));
+    }
 
-    let extract_str = extract_dir.to_str().ok_or_else(|| {
-        Error::new(
-            ErrorKind::InvalidInput,
-            "Extraction path must be valid UTF-8",
-        )
-    })?;
+    Ok(())
+}
 
-    let status = ProcessCommand::new("tar")
-        .args(["-xf", archive_str, "-C", extract_str])
-        .status()?;
+fn fail_and_delete<T>(archive: &Path, message: &str) -> Result<T, Error> {
+    let _ = fs::remove_file(archive);
+    Err(Error::new(ErrorKind::Other, message))
+}
 
-    if !status.success() {
+fn read_uvd_footer(file: &mut File) -> Result<(UvdMetadata, u64), Error> {
+    let file_len = file.metadata()?.len();
+    if file_len < 4 {
         return Err(Error::new(
-            ErrorKind::Other,
-            format!(
-                "Failed to extract archive {} (tar exit code: {:?})",
-                archive_path.display(),
-                status.code()
-            ),
+            ErrorKind::InvalidData,
+            "Archive footer is missing",
         ));
     }
 
-    Ok(extract_dir)
+    file.seek(SeekFrom::End(-4))?;
+    let mut len_buf = [0u8; 4];
+    file.read_exact(&mut len_buf)?;
+    let json_len = u32::from_le_bytes(len_buf) as u64;
+    if json_len == 0 || json_len > file_len - 4 {
+        return Err(Error::new(
+            ErrorKind::InvalidData,
+            "Invalid metadata length",
+        ));
+    }
+
+    let json_start = file_len - 4 - json_len;
+    if json_start > usize::MAX as u64 {
+        return Err(Error::new(
+            ErrorKind::InvalidData,
+            "Archive is too large",
+        ));
+    }
+
+    file.seek(SeekFrom::Start(json_start))?;
+    let mut json_bytes = vec![0u8; json_len as usize];
+    file.read_exact(&mut json_bytes)?;
+    let metadata: UvdMetadata = serde_json::from_slice(&json_bytes)
+        .map_err(|e| Error::new(ErrorKind::InvalidData, e.to_string()))?;
+
+    Ok((metadata, json_start))
+}
+
+fn read_and_verify_uvd(archive: &Path) -> Result<Vec<u8>, Error> {
+    validate_archive_path(archive)?;
+
+    let mut file = File::open(archive)?;
+    let (metadata, data_len) = read_uvd_footer(&mut file)?;
+
+    if metadata.signature.trim().is_empty() {
+        return fail_and_delete(archive, "Signature payload is missing signature");
+    }
+
+    let now = Utc::now().timestamp();
+    let now = if now < 0 { 0 } else { now as u64 };
+    if metadata.timestamp > now {
+        return fail_and_delete(archive, "Timestamp is in the future");
+    }
+
+    let unsigned = UvdMetadataUnsigned {
+        timestamp: metadata.timestamp,
+        prev_block_hash: metadata.prev_block_hash.clone(),
+        content_hash: metadata.content_hash.clone(),
+    };
+    let unsigned_hash = metadata_hash(&unsigned)?;
+
+    let root_path = std::env::current_dir()?;
+    match verify_signature(&root_path, &unsigned_hash, metadata.signature.trim()) {
+        Ok(true) => {}
+        Ok(false) => {
+            return fail_and_delete(archive, "Archive signature verification failed");
+        }
+        Err(e) => {
+            return Err(Error::new(ErrorKind::Other, e));
+        }
+    }
+
+    file.seek(SeekFrom::Start(0))?;
+    let mut archive_data = vec![0u8; data_len as usize];
+    file.read_exact(&mut archive_data)?;
+    let content_hash = blake3::hash(&archive_data).to_hex().to_string();
+    if content_hash != metadata.content_hash {
+        return fail_and_delete(archive, "Archive hash does not match metadata");
+    }
+
+    Ok(archive_data)
 }
 
 fn create_hooks() -> Result<(), Error> {
@@ -230,6 +308,44 @@ fn create_hooks() -> Result<(), Error> {
     Ok(())
 }
 
+fn copy_repo_tree_into_uvd() -> Result<(), Error> {
+    let repo_root = std::env::current_dir()?;
+    let tree_dir = repo_root.join("uvd").join("tree");
+
+    if tree_dir.exists() {
+        fs::remove_dir_all(&tree_dir)?;
+    }
+    create_dir_all(&tree_dir)?;
+
+    let files = tree::ls_files(&repo_root);
+    for rel_path in files {
+        let rel_path = PathBuf::from(rel_path);
+        if rel_path.starts_with(Path::new(".git")) {
+            continue;
+        }
+        if rel_path.starts_with(Path::new("uvd").join("tree")) {
+            continue;
+        }
+
+        let src_path = repo_root.join(&rel_path);
+        let dest_path = tree_dir.join(rel_path);
+        if let Some(parent) = dest_path.parent() {
+            create_dir_all(parent)?;
+        }
+        fs::copy(src_path, dest_path)?;
+    }
+
+    Ok(())
+}
+
+fn cleanup_uvd_tree() -> Result<(), Error> {
+    let tree_dir = Path::new("uvd").join("tree");
+    if tree_dir.exists() {
+        fs::remove_dir_all(&tree_dir)?;
+    }
+    Ok(())
+}
+
 pub fn create_uvd() -> Result<(), Error> {
     create_hooks()?;
     let toml = read_to_string("syl.toml")?;
@@ -247,6 +363,7 @@ pub fn create_uvd() -> Result<(), Error> {
     }
 
     File::create("uvd/uvd.json")?.write_all(serde_json::to_string(&syl)?.as_bytes())?;
+    copy_repo_tree_into_uvd()?;
 
     let output_dir = syl.output.as_deref().unwrap_or(".");
     if output_dir != "." {
@@ -261,9 +378,14 @@ pub fn create_uvd() -> Result<(), Error> {
         let _ = fs::remove_file(&archive_path);
     }
 
+    let tar_path = NamedTempFile::new()?.into_temp_path();
+    let tar_path_str = tar_path
+        .to_str()
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "Temporary path invalid"))?;
+
     // 1. Création de l'archive tar
     let status = ProcessCommand::new("tar")
-        .args(["-cf", archive_path.to_str().unwrap(), "uvd"])
+        .args(["-cf", tar_path_str, "uvd"])
         .status()?;
 
     if !status.success() {
@@ -277,44 +399,56 @@ pub fn create_uvd() -> Result<(), Error> {
         ));
     }
 
-    // 2. Signature de l'archive
-    // On calcule le hash Blake3 du fichier tar généré
-    let mut file = File::open(&archive_path)?;
-    let mut buffer = Vec::new();
-    file.read_to_end(&mut buffer)?;
-    let hash = blake3::hash(&buffer).to_hex().to_string();
+    // 2. Compression zstd
+    let mut tar_buffer = Vec::new();
+    File::open(&tar_path)?.read_to_end(&mut tar_buffer)?;
+    let archive_data = encode_all(&tar_buffer[..], 0)?;
+
+    // 3. Hash du contenu compressé
+    let content_hash = blake3::hash(&archive_data).to_hex().to_string();
 
     let timestamp = Utc::now().timestamp();
-    let nonce = Uuid::new_v4().to_string();
-    let block_input = format!("{hash}:{timestamp}:{nonce}");
-    let block_hash = blake3::hash(block_input.as_bytes()).to_hex().to_string();
+    let timestamp = if timestamp < 0 { 0 } else { timestamp as u64 };
+    let unsigned = UvdMetadataUnsigned {
+        timestamp,
+        prev_block_hash: None,
+        content_hash: content_hash.clone(),
+    };
+    let unsigned_hash = metadata_hash(&unsigned)?;
 
-    // On signe le block hash (inspiré blockchain)
+    // 4. Signature des métadonnées
     let root_path = std::env::current_dir()?;
-    match sign_message(&root_path, &block_hash) {
-        Ok(signature) => {
-            // On crée un fichier de signature
-            let sig_file = format!("{}.sig", archive_path.display());
-            let payload = UvdSignature {
-                version: 1,
-                hash,
-                timestamp,
-                nonce,
-                block_hash,
-                signature,
-            };
-            File::create(sig_file)?
-                .write_all(serde_json::to_string_pretty(&payload)?.as_bytes())?;
-            println!(
-                "Archive {} created and signed successfully.",
-                archive_path.display()
-            );
-        }
-        Err(e) => {
-            println!("Warning: Could not sign the archive ({e}).");
-            println!("Please ensure an identity key is generated using 'lys keygen'.");
-        }
+    let signature = sign_message(&root_path, &unsigned_hash)
+        .map_err(|e| Error::new(ErrorKind::Other, e))?;
+
+    let metadata = UvdMetadata {
+        timestamp,
+        prev_block_hash: None,
+        content_hash,
+        signature,
+    };
+    let metadata_bytes = serde_json::to_vec(&metadata)
+        .map_err(|e| Error::new(ErrorKind::InvalidData, e.to_string()))?;
+
+    if metadata_bytes.len() > u32::MAX as usize {
+        return Err(Error::new(
+            ErrorKind::InvalidData,
+            "Metadata size exceeds limit",
+        ));
     }
+
+    // 5. Écriture finale: [archive_data][metadata_json][u32 length]
+    let mut out = File::create(&archive_path)?;
+    out.write_all(&archive_data)?;
+    out.write_all(&metadata_bytes)?;
+    out.write_all(&(metadata_bytes.len() as u32).to_le_bytes())?;
+    out.sync_all()?;
+    cleanup_uvd_tree()?;
+
+    println!(
+        "Archive {} created and signed successfully.",
+        archive_path.display()
+    );
     Ok(())
 }
 
@@ -364,105 +498,58 @@ pub fn main() -> Result<(), Error> {
 }
 
 fn verify_uvd(archive: &PathBuf) -> Result<(), Error> {
-    if let Some(ext) = archive.extension() {
-        if ext != "syl" {
-            return Err(Error::new(
-                ErrorKind::InvalidInput,
-                "Archive must have .syl extension",
-            ));
-        }
-    } else {
-        return Err(Error::new(
-            ErrorKind::InvalidInput,
-            "Archive must have .syl extension",
-        ));
-    }
-
-    if !archive.exists() {
-        return Err(Error::new(ErrorKind::NotFound, "Archive not found"));
-    }
-
-    let sig_path = PathBuf::from(format!("{}.sig", archive.display()));
-    if !sig_path.exists() {
-        return Err(Error::new(ErrorKind::NotFound, "Signature file not found"));
-    }
-
-    let mut file = File::open(archive)?;
-    let mut buffer = Vec::new();
-    file.read_to_end(&mut buffer)?;
-    let hash = blake3::hash(&buffer).to_hex().to_string();
-
-    let signature_raw = read_to_string(&sig_path)?;
-    let signature_raw = signature_raw.trim();
-    if signature_raw.is_empty() {
-        return Err(Error::new(
-            ErrorKind::InvalidData,
-            "Signature file is empty",
-        ));
-    }
-
-    let root_path = std::env::current_dir()?;
-    if let Ok(payload) = serde_json::from_str::<UvdSignature>(signature_raw) {
-        if payload.signature.trim().is_empty() {
-            return Err(Error::new(
-                ErrorKind::InvalidData,
-                "Signature payload is missing signature",
-            ));
-        }
-        if payload.hash != hash {
-            return Err(Error::new(
-                ErrorKind::InvalidData,
-                "Archive hash does not match signature payload",
-            ));
-        }
-        let block_input = format!("{}:{}:{}", payload.hash, payload.timestamp, payload.nonce);
-        let expected_block_hash = blake3::hash(block_input.as_bytes()).to_hex().to_string();
-        if payload.block_hash != expected_block_hash {
-            return Err(Error::new(
-                ErrorKind::InvalidData,
-                "Block hash does not match signature payload",
-            ));
-        }
-
-        match verify_signature(&root_path, &payload.block_hash, &payload.signature) {
-            Ok(true) => {
-                ok("Archive signature verified.");
-                Ok(())
-            }
-            Ok(false) => Err(Error::new(
-                ErrorKind::Other,
-                "Archive signature verification failed",
-            )),
-            Err(e) => Err(Error::new(ErrorKind::Other, e)),
-        }
-    } else {
-        match verify_signature(&root_path, &hash, signature_raw) {
-            Ok(true) => {
-                ok("Archive signature verified (legacy format).");
-                Ok(())
-            }
-            Ok(false) => Err(Error::new(
-                ErrorKind::Other,
-                "Archive signature verification failed",
-            )),
-            Err(e) => Err(Error::new(ErrorKind::Other, e)),
-        }
-    }
+    let _ = read_and_verify_uvd(archive)?;
+    ok("Archive signature verified.");
+    Ok(())
 }
-fn extract_uvd(archive: &PathBuf) -> Result<(), Error> {
-    if let Some(ext) = archive.extension() {
-        if ext != "syl" {
+
+fn verify_and_unpack(archive: &Path) -> Result<PathBuf, Error> {
+    let archive_data = read_and_verify_uvd(archive)?;
+    let tar_data = decode_all(&archive_data[..])?;
+
+    let extract_dir = match archive.file_stem() {
+        Some(stem) => archive.with_file_name(stem),
+        None => {
             return Err(Error::new(
                 ErrorKind::InvalidInput,
-                "Archive must have .syl extension",
+                "Archive path must have a file name",
             ));
         }
-        decompress_archive(&archive)?;
-        ok("Archive extracted successfully.");
-        return Ok(());
+    };
+    create_dir_all(&extract_dir)?;
+
+    let tar_path = NamedTempFile::new()?.into_temp_path();
+    fs::write(&tar_path, &tar_data)?;
+    let tar_path_str = tar_path
+        .to_str()
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "Temporary path invalid"))?;
+
+    let extract_str = extract_dir.to_str().ok_or_else(|| {
+        Error::new(
+            ErrorKind::InvalidInput,
+            "Extraction path must be valid UTF-8",
+        )
+    })?;
+
+    let status = ProcessCommand::new("tar")
+        .args(["-xf", tar_path_str, "-C", extract_str])
+        .status()?;
+    if !status.success() {
+        return Err(Error::new(
+            ErrorKind::Other,
+            format!(
+                "Failed to extract archive {} (tar exit code: {:?})",
+                archive.display(),
+                status.code()
+            ),
+        ));
     }
-    Err(Error::new(
-        ErrorKind::InvalidInput,
-        "Archive must have .syl extension",
-    ))
+
+    Ok(extract_dir)
+}
+
+fn extract_uvd(archive: &PathBuf) -> Result<(), Error> {
+    let _ = verify_and_unpack(archive)?;
+    ok("Archive extracted successfully.");
+    Ok(())
 }
