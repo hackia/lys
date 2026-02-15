@@ -1,10 +1,11 @@
 use crate::crypto::sign_message;
-use clap::Command;
+use clap::{Arg, ArgAction, Command};
 use serde::{Deserialize, Serialize};
-use std::fs::{self, create_dir_all, read_to_string, File};
+use std::fs::{self, File, create_dir_all, read_to_string};
 use std::io::{Error, ErrorKind, Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
+use crate::utils::ok;
 
 #[path = "../crypto.rs"]
 mod crypto;
@@ -129,6 +130,48 @@ pub struct Syl {
     pub replaces: Vec<String>,
     pub output: Option<String>,
 }
+
+fn decompress_archive(archive_path: &Path) -> Result<PathBuf, Error> {
+    let archive_str = archive_path
+        .to_str()
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "Archive path must be valid UTF-8"))?;
+    let extract_dir = match archive_path.file_stem() {
+        Some(stem) => archive_path.with_file_name(stem),
+        None => {
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                "Archive path must have a file name",
+            ));
+        }
+    };
+
+    create_dir_all(&extract_dir)?;
+
+    let extract_str = extract_dir.to_str().ok_or_else(|| {
+        Error::new(
+            ErrorKind::InvalidInput,
+            "Extraction path must be valid UTF-8",
+        )
+    })?;
+
+    let status = ProcessCommand::new("tar")
+        .args(["-xf", archive_str, "-C", extract_str])
+        .status()?;
+
+    if !status.success() {
+        return Err(Error::new(
+            ErrorKind::Other,
+            format!(
+                "Failed to extract archive {} (tar exit code: {:?})",
+                archive_path.display(),
+                status.code()
+            ),
+        ));
+    }
+
+    Ok(extract_dir)
+}
+
 fn create_hooks() -> Result<(), Error> {
     for hook in &INSTALL_HOOKS {
         if !Path::new(hook).exists() {
@@ -159,9 +202,13 @@ fn create_hooks() -> Result<(), Error> {
             create_dir_all(Path::new(hook).parent().unwrap())?;
             let mut f = File::create(hook)?;
             if hook.ends_with("dmg.sh") {
-                f.write_all(b"#!/bin/sh\n# Script to build DMG for macOS\necho \"Building DMG...\"\n")?;
+                f.write_all(
+                    b"#!/bin/sh\n# Script to build DMG for macOS\necho \"Building DMG...\"\n",
+                )?;
             } else if hook.ends_with("exe.sh") {
-                f.write_all(b"#!/bin/sh\n# Script to build EXE for Windows\necho \"Building EXE...\"\n")?;
+                f.write_all(
+                    b"#!/bin/sh\n# Script to build EXE for Windows\necho \"Building EXE...\"\n",
+                )?;
             } else {
                 f.write_all(b"#!/bin/sh")?;
             }
@@ -204,11 +251,7 @@ pub fn create_uvd() -> Result<(), Error> {
 
     // 1. Création de l'archive tar
     let status = ProcessCommand::new("tar")
-        .args([
-            "-cf",
-            archive_path.to_str().unwrap(),
-            "uvd",
-        ])
+        .args(["-cf", archive_path.to_str().unwrap(), "uvd"])
         .status()?;
 
     if !status.success() {
@@ -246,7 +289,6 @@ pub fn create_uvd() -> Result<(), Error> {
             println!("Please ensure an identity key is generated using 'lys keygen'.");
         }
     }
-
     Ok(())
 }
 
@@ -254,6 +296,16 @@ fn cli() -> Command {
     Command::new("syl")
         .about("Universal Verified Disc (UVD) manager")
         .subcommand(Command::new("create").about("Generate a new signed UVD archive"))
+        .subcommand(
+            Command::new("extract")
+                .about("Extract a signed UVD archive")
+                .arg(
+                    Arg::new("archive")
+                        .required(true)
+                        .action(ArgAction::Set)
+                        .help("Archive to extract"),
+                ),
+        )
 }
 
 pub fn main() -> Result<(), Error> {
@@ -263,9 +315,29 @@ pub fn main() -> Result<(), Error> {
         Some(("create", _)) => {
             create_uvd()?;
         }
+        Some(("extract", a)) => {
+            let archive_path = a.get_one::<String>("archive").unwrap();
+            let p = Path::new(&archive_path);
+            extract_uvd(&p.to_path_buf())?;
+        }
         _ => {
             let _ = cli().print_help();
         }
     }
     Ok(())
+}
+
+fn extract_uvd(archive: &PathBuf) -> Result<(), Error> {
+    if let Some(ext) = archive.extension() {
+        if ext != "syl" {
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                "Archive must have .syl extension",
+            ));
+        }
+        decompress_archive(&archive)?;
+        ok("Archive extracted successfully.");
+        return Ok(());
+    }
+    Err(Error::new(ErrorKind::InvalidInput, "Archive must have .syl extension"))
 }
