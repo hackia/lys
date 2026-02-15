@@ -1,5 +1,4 @@
 target/
-.lys/
 .idea/
 breathes
-dist/hamon/
+dist/
