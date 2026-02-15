@@ -1,11 +1,13 @@
-use crate::crypto::sign_message;
+use crate::crypto::{sign_message, verify_signature};
 use crate::utils::ok;
+use chrono::Utc;
 use clap::{Arg, ArgAction, Command};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, create_dir_all, read_to_string};
 use std::io::{Error, ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
+use uuid::Uuid;
 
 #[path = "../crypto.rs"]
 mod crypto;
@@ -129,6 +131,16 @@ pub struct Syl {
     pub conflicts: Vec<String>,
     pub replaces: Vec<String>,
     pub output: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct UvdSignature {
+    version: u8,
+    hash: String,
+    timestamp: i64,
+    nonce: String,
+    block_hash: String,
+    signature: String,
 }
 
 fn decompress_archive(archive_path: &Path) -> Result<PathBuf, Error> {
@@ -272,13 +284,27 @@ pub fn create_uvd() -> Result<(), Error> {
     file.read_to_end(&mut buffer)?;
     let hash = blake3::hash(&buffer).to_hex().to_string();
 
-    // On signe le hash
+    let timestamp = Utc::now().timestamp();
+    let nonce = Uuid::new_v4().to_string();
+    let block_input = format!("{hash}:{timestamp}:{nonce}");
+    let block_hash = blake3::hash(block_input.as_bytes()).to_hex().to_string();
+
+    // On signe le block hash (inspiré blockchain)
     let root_path = std::env::current_dir()?;
-    match sign_message(&root_path, &hash) {
+    match sign_message(&root_path, &block_hash) {
         Ok(signature) => {
             // On crée un fichier de signature
             let sig_file = format!("{}.sig", archive_path.display());
-            File::create(sig_file)?.write_all(signature.as_bytes())?;
+            let payload = UvdSignature {
+                version: 1,
+                hash,
+                timestamp,
+                nonce,
+                block_hash,
+                signature,
+            };
+            File::create(sig_file)?
+                .write_all(serde_json::to_string_pretty(&payload)?.as_bytes())?;
             println!(
                 "Archive {} created and signed successfully.",
                 archive_path.display()
@@ -294,8 +320,13 @@ pub fn create_uvd() -> Result<(), Error> {
 
 fn cli() -> Command {
     Command::new("syl")
-        .about("Universal Verified Disc (UVD) manager")
+        .about("Universal Verified Disc manager")
         .subcommand(Command::new("create").about("Generate a new signed UVD archive"))
+        .subcommand(
+            Command::new("verify")
+                .about("Verify a signed UVD archive")
+                .arg(Arg::new("archive").required(true).action(ArgAction::Set)),
+        )
         .subcommand(
             Command::new("extract")
                 .about("Extract a signed UVD archive")
@@ -320,6 +351,11 @@ pub fn main() -> Result<(), Error> {
             let p = Path::new(&archive_path);
             extract_uvd(&p.to_path_buf())?;
         }
+        Some(("verify", a)) => {
+            let archive_path = a.get_one::<String>("archive").unwrap();
+            let p = Path::new(&archive_path);
+            verify_uvd(&p.to_path_buf())?;
+        }
         _ => {
             cli().print_help().expect("Failed to print help");
         }
@@ -327,6 +363,92 @@ pub fn main() -> Result<(), Error> {
     Ok(())
 }
 
+fn verify_uvd(archive: &PathBuf) -> Result<(), Error> {
+    if let Some(ext) = archive.extension() {
+        if ext != "syl" {
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                "Archive must have .syl extension",
+            ));
+        }
+    } else {
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            "Archive must have .syl extension",
+        ));
+    }
+
+    if !archive.exists() {
+        return Err(Error::new(ErrorKind::NotFound, "Archive not found"));
+    }
+
+    let sig_path = PathBuf::from(format!("{}.sig", archive.display()));
+    if !sig_path.exists() {
+        return Err(Error::new(ErrorKind::NotFound, "Signature file not found"));
+    }
+
+    let mut file = File::open(archive)?;
+    let mut buffer = Vec::new();
+    file.read_to_end(&mut buffer)?;
+    let hash = blake3::hash(&buffer).to_hex().to_string();
+
+    let signature_raw = read_to_string(&sig_path)?;
+    let signature_raw = signature_raw.trim();
+    if signature_raw.is_empty() {
+        return Err(Error::new(
+            ErrorKind::InvalidData,
+            "Signature file is empty",
+        ));
+    }
+
+    let root_path = std::env::current_dir()?;
+    if let Ok(payload) = serde_json::from_str::<UvdSignature>(signature_raw) {
+        if payload.signature.trim().is_empty() {
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                "Signature payload is missing signature",
+            ));
+        }
+        if payload.hash != hash {
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                "Archive hash does not match signature payload",
+            ));
+        }
+        let block_input = format!("{}:{}:{}", payload.hash, payload.timestamp, payload.nonce);
+        let expected_block_hash = blake3::hash(block_input.as_bytes()).to_hex().to_string();
+        if payload.block_hash != expected_block_hash {
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                "Block hash does not match signature payload",
+            ));
+        }
+
+        match verify_signature(&root_path, &payload.block_hash, &payload.signature) {
+            Ok(true) => {
+                ok("Archive signature verified.");
+                Ok(())
+            }
+            Ok(false) => Err(Error::new(
+                ErrorKind::Other,
+                "Archive signature verification failed",
+            )),
+            Err(e) => Err(Error::new(ErrorKind::Other, e)),
+        }
+    } else {
+        match verify_signature(&root_path, &hash, signature_raw) {
+            Ok(true) => {
+                ok("Archive signature verified (legacy format).");
+                Ok(())
+            }
+            Ok(false) => Err(Error::new(
+                ErrorKind::Other,
+                "Archive signature verification failed",
+            )),
+            Err(e) => Err(Error::new(ErrorKind::Other, e)),
+        }
+    }
+}
 fn extract_uvd(archive: &PathBuf) -> Result<(), Error> {
     if let Some(ext) = archive.extension() {
         if ext != "syl" {
