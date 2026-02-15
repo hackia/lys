@@ -1,450 +1,271 @@
-use crossterm::event::{self, Event, KeyCode, KeyEventKind};
-use ratatui::layout::{Alignment, Constraint, Layout};
-use ratatui::prelude::CrosstermBackend;
-use ratatui::prelude::Terminal;
-use ratatui::style::Stylize;
-use ratatui::text::{Line, Text};
-use ratatui::widgets::{Block, Borders, Paragraph};
-use std::io::{Result, Stdout};
+use crate::crypto::sign_message;
+use clap::Command;
+use serde::{Deserialize, Serialize};
+use std::fs::{self, create_dir_all, read_to_string, File};
+use std::io::{Error, ErrorKind, Read, Write};
+use std::path::Path;
+use std::process::Command as ProcessCommand;
 
-pub struct App {
-    pub should_quit: bool,
-    pub help_mode: bool,
-    pub editor_mode: bool,
-    pub web_mode: bool,
-    pub commit_mode: bool,
-    pub todo_mode: bool,
-    pub chat_mode: bool,
-    pub files_mode: bool,
-    pub timeline_mode: bool,
-    pub logs_mode: bool,
-    pub shell_mode: bool,
-    pub health_mode: bool,
+#[path = "../crypto.rs"]
+mod crypto;
+
+pub mod vcs {
+    pub enum FileStatus {
+        New(std::path::PathBuf),
+        Modified(std::path::PathBuf, i64),
+        Deleted(std::path::PathBuf, i64),
+        Unchanged,
+    }
 }
 
-fn help(t: &mut Terminal<CrosstermBackend<Stdout>>) {
-    let text = Text::from(vec![
-        Line::from("F1   => Show help".white()),
-        Line::from("F2   => Launch editor".white()),
-        Line::from("F3   => Search on web".white()),
-        Line::from("F4   => Exit syl".white()),
-        Line::from("F5   => Commit".white()),
-        Line::from("F6   => Manage todos".white()),
-        Line::from("F7   => Chat".white()),
-        Line::from("F8   => Show tree".white()),
-        Line::from("F9   => Show timeline".white()),
-        Line::from("F10  => Show logs".white()),
-        Line::from("F11  => Shell".white()),
-        Line::from("F12  => Check the code's health".white()),
-    ]);
-    assert!(
-        t.draw(|f| {
-            f.render_widget(
-                Paragraph::new(text).block(
-                    Block::default()
-                        .title_top(" Help ")
-                        .title_alignment(Alignment::Center)
-                        .borders(Borders::all()),
-                ),
-                f.area(),
-            );
-        })
-        .is_ok()
-    );
-}
-fn editor(t: &mut Terminal<CrosstermBackend<Stdout>>) {
-    loop {
-        assert!(
-            t.draw(|f| {
-                let l = Layout::default()
-                    .constraints([Constraint::Length(3)])
-                    .direction(ratatui::layout::Direction::Horizontal)
-                    .split(f.area());
-                f.render_widget(Paragraph::new("Search"), l[0]);
-            })
-            .is_ok()
-        );
+#[path = "../utils.rs"]
+mod utils;
 
-        match event::read().expect("failed to read keyboard") {
-            Event::Key(key_event) if key_event.kind == KeyEventKind::Press => {
-                match key_event.code {
-                    KeyCode::Esc => break,
-                    _ => continue,
-                }
+/// A constant array `INSTALL_HOOKS` that defines the file paths for a sequence of
+/// installation hook scripts. These scripts are executed at different stages of
+/// the installation process.
+///
+/// # Elements:
+/// - `"uvd/hooks/install/prepare.sh"`: Script executed to prepare for the installation.
+/// - `"uvd/hooks/install/pre.sh"`: Script executed before the main installation begins.
+/// - `"uvd/hooks/install/install.sh"`: The main script responsible for the actual installation process.
+/// - `"uvd/hooks/install/post.sh"`: Script executed after the installation process is complete.
+///
+/// This array ensures that the hooks are run in the correct order, allowing for
+/// a modular and well-structured installation flow.
+/// # Usage
+/// This constant can be used to retrieve or iterate through the file paths of the
+/// install hook scripts to manage uninstallation logic programmatically.
+///
+/// # Example
+/// ```
+/// for hook in &INSTALL_HOOKS {
+///     println!("Executing install hook: {hook}");
+/// }
+/// ```
+///
+/// # Note
+/// Ensure all scripts exist and are executable to avoid errors during the uninstallation process.
+pub const INSTALL_HOOKS: [&str; 4] = [
+    "uvd/hooks/install/prepare.sh",
+    "uvd/hooks/install/pre.sh",
+    "uvd/hooks/install/install.sh",
+    "uvd/hooks/install/post.sh",
+];
+
+/// A constant array of strings representing the file paths to the uninstall hook scripts.
+///
+/// These scripts are executed during the uninstallation process of an application or service.
+/// Each script serves a specific purpose in the uninstall lifecycle:
+///
+/// - `"uvd/hooks/uninstall/prepare.sh"`: A script to prepare the environment for uninstallation.
+/// - `"uvd/hooks/uninstall/pre.sh"`: A script to execute any pre-uninstallation steps.
+/// - `"uvd/hooks/uninstall/uninstall.sh"`: The main uninstallation script.
+/// - `"uvd/hooks/uninstall/post.sh"`: A script to perform any post-uninstallation cleanup or finalization.
+///
+/// # Usage
+/// This constant can be used to retrieve or iterate through the file paths of the
+/// uninstall hook scripts to manage uninstallation logic programmatically.
+///
+/// # Example
+/// ```
+/// for hook in &UNINSTALL_HOOKS {
+///     println!("Executing uninstall hook: {}", hook);
+/// }
+/// ```
+///
+/// # Note
+/// Ensure all scripts exist and are executable to avoid errors during the uninstallation process.
+pub const UNINSTALL_HOOKS: [&str; 4] = [
+    "uvd/hooks/uninstall/prepare.sh",
+    "uvd/hooks/uninstall/pre.sh",
+    "uvd/hooks/uninstall/uninstall.sh",
+    "uvd/hooks/uninstall/post.sh",
+];
+
+/// A constant array `UPDATE_HOOKS` containing the file paths of upgrade hook scripts.
+///
+/// These scripts are executed sequentially during the upgrade process to ensure proper preparation,
+/// execution, and finalization of the upgrade. The array includes the following hooks:
+///
+/// - `"uvd/hooks/upgrade/prepare.sh"`: A script for preparing the environment or system before the upgrade.
+/// - `"uvd/hooks/upgrade/pre.sh"`: A script that runs pre-upgrade tasks.
+/// - `"uvd/hooks/upgrade/upgrade.sh"`: The main script responsible for performing the upgrade.
+/// - `"uvd/hooks/upgrade/post.sh"`: A script for post-upgrade cleanup or finalization tasks.
+///
+/// The paths in this array are relative to the application's root directory, and it is assumed
+/// that these scripts are present and executable in their respective locations.
+///
+/// # Example
+/// ```rust
+/// for hook in &UPDATE_HOOKS {
+///     println!("Executing hook script: {hook}");
+/// }
+/// ```
+pub const UPDATE_HOOKS: [&str; 4] = [
+    "uvd/hooks/upgrade/prepare.sh",
+    "uvd/hooks/upgrade/pre.sh",
+    "uvd/hooks/upgrade/upgrade.sh",
+    "uvd/hooks/upgrade/post.sh",
+];
+
+pub const PKG_HOOKS: [&str; 2] = ["uvd/hooks/package/dmg.sh", "uvd/hooks/package/exe.sh"];
+
+#[derive(Serialize, Deserialize)]
+pub struct Syl {
+    pub name: String,
+    pub author: String,
+    pub description: String,
+    pub version: String,
+    pub arch: String,
+    pub homepage: String,
+    pub repository: String,
+    pub license: String,
+    pub icon: Option<String>,
+    pub provides: Vec<String>,
+    pub optional: Vec<String>,
+    pub depends: Vec<String>,
+    pub conflicts: Vec<String>,
+    pub replaces: Vec<String>,
+    pub output: Option<String>,
+}
+fn create_hooks() -> Result<(), Error> {
+    for hook in &INSTALL_HOOKS {
+        if !Path::new(hook).exists() {
+            create_dir_all(Path::new(hook).parent().unwrap())?;
+            let mut f = File::create(hook)?;
+            f.write_all(b"#!/bin/sh")?;
+            f.sync_all()?;
+        }
+    }
+    for hook in &UNINSTALL_HOOKS {
+        if !Path::new(hook).exists() {
+            create_dir_all(Path::new(hook).parent().unwrap())?;
+            let mut f = File::create(hook)?;
+            f.write_all(b"#!/bin/sh")?;
+            f.sync_all()?;
+        }
+    }
+    for hook in &UPDATE_HOOKS {
+        if !Path::new(hook).exists() {
+            create_dir_all(Path::new(hook).parent().unwrap())?;
+            let mut f = File::create(hook)?;
+            f.write_all(b"#!/bin/sh")?;
+            f.sync_all()?;
+        }
+    }
+    for hook in &PKG_HOOKS {
+        if !Path::new(hook).exists() {
+            create_dir_all(Path::new(hook).parent().unwrap())?;
+            let mut f = File::create(hook)?;
+            if hook.ends_with("dmg.sh") {
+                f.write_all(b"#!/bin/sh\n# Script to build DMG for macOS\necho \"Building DMG...\"\n")?;
+            } else if hook.ends_with("exe.sh") {
+                f.write_all(b"#!/bin/sh\n# Script to build EXE for Windows\necho \"Building EXE...\"\n")?;
+            } else {
+                f.write_all(b"#!/bin/sh")?;
             }
-            _ => continue,
+            f.sync_all()?;
         }
     }
+    Ok(())
 }
 
-fn web(t: &mut Terminal<CrosstermBackend<Stdout>>) {
-    assert!(
-        t.draw(|f| {
-            f.render_widget(
-                Block::default()
-                    .title_top(" Web ")
-                    .title_alignment(Alignment::Center)
-                    .borders(Borders::all()),
-                f.area(),
-            );
-        })
-        .is_ok()
-    );
-}
+pub fn create_uvd() -> Result<(), Error> {
+    create_hooks()?;
+    let toml = read_to_string("syl.toml")?;
+    let syl: Syl = toml::from_str(&toml).expect("Failed to parse syl.toml");
 
-fn commit(t: &mut Terminal<CrosstermBackend<Stdout>>) {
-    assert!(
-        t.draw(|f| {
-            f.render_widget(
-                Block::default()
-                    .title_top(" Commit ")
-                    .title_alignment(Alignment::Center)
-                    .borders(Borders::all()),
-                f.area(),
-            );
-        })
-        .is_ok()
-    );
-}
-
-fn tree(t: &mut Terminal<CrosstermBackend<Stdout>>) {
-    assert!(
-        t.draw(|f| {
-            f.render_widget(
-                Block::default()
-                    .title_top(" Tree ")
-                    .title_alignment(Alignment::Center)
-                    .borders(Borders::all()),
-                f.area(),
-            );
-        })
-        .is_ok()
-    );
-}
-
-fn todos(t: &mut Terminal<CrosstermBackend<Stdout>>) {
-    assert!(
-        t.draw(|f| {
-            f.render_widget(
-                Block::default()
-                    .title_top(" Todos ")
-                    .title_alignment(Alignment::Center)
-                    .borders(Borders::all()),
-                f.area(),
-            );
-        })
-        .is_ok()
-    );
-}
-
-fn timeline(t: &mut Terminal<CrosstermBackend<Stdout>>) {
-    assert!(
-        t.draw(|f| {
-            f.render_widget(
-                Block::default()
-                    .title_top(" Timeline ")
-                    .title_alignment(Alignment::Center)
-                    .borders(Borders::all()),
-                f.area(),
-            );
-        })
-        .is_ok()
-    );
-}
-
-fn shell(t: &mut Terminal<CrosstermBackend<Stdout>>) {
-    assert!(
-        t.draw(|f| {
-            f.render_widget(
-                Block::default()
-                    .title_top(" Shell ")
-                    .title_alignment(Alignment::Center)
-                    .borders(Borders::all()),
-                f.area(),
-            );
-        })
-        .is_ok()
-    );
-}
-
-fn logs(t: &mut Terminal<CrosstermBackend<Stdout>>) {
-    assert!(
-        t.draw(|f| {
-            f.render_widget(
-                Block::default()
-                    .title_top(" Logs ")
-                    .title_alignment(Alignment::Center)
-                    .borders(Borders::all()),
-                f.area(),
-            );
-        })
-        .is_ok()
-    );
-}
-fn ui(t: &mut Terminal<CrosstermBackend<Stdout>>) {
-    assert!(
-        t.draw(|f| {
-            f.render_widget(
-                Block::default()
-                    .title_top(" Syl ")
-                    .title_alignment(Alignment::Center)
-                    .borders(Borders::all()),
-                f.area(),
-            );
-        })
-        .is_ok()
-    );
-}
-fn chat(t: &mut Terminal<CrosstermBackend<Stdout>>) {
-    assert!(
-        t.draw(|f| {
-            f.render_widget(
-                Block::default()
-                    .title_top(" Chat ")
-                    .title_alignment(Alignment::Center)
-                    .borders(Borders::all()),
-                f.area(),
-            );
-        })
-        .is_ok()
-    );
-}
-
-fn main() -> Result<()> {
-    let mut terminal = ratatui::init();
-
-    let mut app = App {
-        should_quit: false,
-        help_mode: false,
-        editor_mode: false,
-        web_mode: false,
-        commit_mode: false,
-        todo_mode: false,
-        chat_mode: false,
-        files_mode: false,
-        timeline_mode: false,
-        logs_mode: false,
-        shell_mode: false,
-        health_mode: false,
-    };
-    loop {
-        if app.should_quit {
-            break;
-        } else if app.help_mode {
-            help(&mut terminal);
-        } else if app.editor_mode {
-            editor(&mut terminal);
-        } else if app.web_mode {
-            web(&mut terminal);
-        } else if app.commit_mode {
-            commit(&mut terminal);
-        } else if app.timeline_mode {
-            timeline(&mut terminal);
-        } else if app.todo_mode {
-            todos(&mut terminal);
-        } else if app.chat_mode {
-            chat(&mut terminal);
-        } else if app.shell_mode {
-            shell(&mut terminal);
-        } else if app.files_mode {
-            tree(&mut terminal);
-        } else if app.logs_mode {
-            logs(&mut terminal);
-        } else if app.health_mode {
-            ui(&mut terminal);
-        } else {
-            ui(&mut terminal);
-        }
-
-        match crossterm::event::read()? {
-            Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
-                KeyCode::F(1) => {
-                    app.should_quit = false;
-                    app.help_mode = true;
-                    app.editor_mode = false;
-                    app.web_mode = false;
-                    app.commit_mode = false;
-                    app.todo_mode = false;
-                    app.chat_mode = false;
-                    app.files_mode = false;
-                    app.timeline_mode = false;
-                    app.logs_mode = false;
-                    app.shell_mode = false;
-                    app.health_mode = false;
-                }
-                KeyCode::F(2) => {
-                    app.should_quit = false;
-                    app.help_mode = false;
-                    app.editor_mode = true;
-                    app.web_mode = false;
-                    app.commit_mode = false;
-                    app.todo_mode = false;
-                    app.chat_mode = false;
-                    app.files_mode = false;
-                    app.timeline_mode = false;
-                    app.logs_mode = false;
-                    app.shell_mode = false;
-                    app.health_mode = false;
-                }
-
-                KeyCode::F(3) => {
-                    app.should_quit = false;
-                    app.help_mode = false;
-                    app.editor_mode = false;
-                    app.web_mode = true;
-                    app.commit_mode = false;
-                    app.todo_mode = false;
-                    app.chat_mode = false;
-                    app.files_mode = false;
-                    app.timeline_mode = false;
-                    app.logs_mode = false;
-                    app.shell_mode = false;
-                    app.health_mode = false;
-                }
-                KeyCode::F(4) => {
-                    app.should_quit = true;
-                    app.help_mode = false;
-                    app.editor_mode = false;
-                    app.web_mode = false;
-                    app.commit_mode = false;
-                    app.todo_mode = false;
-                    app.chat_mode = false;
-                    app.files_mode = false;
-                    app.timeline_mode = false;
-                    app.logs_mode = false;
-                    app.shell_mode = false;
-                    app.health_mode = false;
-                }
-                KeyCode::F(5) => {
-                    app.should_quit = false;
-                    app.help_mode = false;
-                    app.editor_mode = false;
-                    app.web_mode = false;
-                    app.commit_mode = true;
-                    app.todo_mode = false;
-                    app.chat_mode = false;
-                    app.files_mode = false;
-                    app.timeline_mode = false;
-                    app.logs_mode = false;
-                    app.shell_mode = false;
-                    app.health_mode = false;
-                }
-                KeyCode::F(6) => {
-                    app.should_quit = false;
-                    app.help_mode = false;
-                    app.editor_mode = false;
-                    app.web_mode = false;
-                    app.commit_mode = false;
-                    app.todo_mode = true;
-                    app.chat_mode = false;
-                    app.files_mode = false;
-                    app.timeline_mode = false;
-                    app.logs_mode = false;
-                    app.shell_mode = false;
-                    app.health_mode = false;
-                }
-                KeyCode::F(7) => {
-                    app.should_quit = false;
-                    app.help_mode = false;
-                    app.editor_mode = false;
-                    app.web_mode = false;
-                    app.commit_mode = false;
-                    app.todo_mode = false;
-                    app.chat_mode = true;
-                    app.files_mode = false;
-                    app.timeline_mode = false;
-                    app.logs_mode = false;
-                    app.shell_mode = false;
-                    app.health_mode = false;
-                }
-                KeyCode::F(8) => {
-                    app.should_quit = false;
-                    app.help_mode = false;
-                    app.editor_mode = false;
-                    app.web_mode = false;
-                    app.commit_mode = false;
-                    app.todo_mode = false;
-                    app.chat_mode = false;
-                    app.files_mode = true;
-                    app.timeline_mode = false;
-                    app.logs_mode = false;
-                    app.shell_mode = false;
-                    app.health_mode = false;
-                }
-                KeyCode::F(9) => {
-                    app.should_quit = false;
-                    app.help_mode = false;
-                    app.editor_mode = false;
-                    app.web_mode = false;
-                    app.commit_mode = false;
-                    app.todo_mode = false;
-                    app.chat_mode = false;
-                    app.files_mode = false;
-                    app.timeline_mode = true;
-                    app.logs_mode = false;
-                    app.shell_mode = false;
-                    app.health_mode = false;
-                }
-                KeyCode::F(10) => {
-                    app.should_quit = false;
-                    app.help_mode = false;
-                    app.editor_mode = false;
-                    app.web_mode = false;
-                    app.commit_mode = false;
-                    app.todo_mode = false;
-                    app.chat_mode = false;
-                    app.files_mode = false;
-                    app.timeline_mode = false;
-                    app.logs_mode = true;
-                    app.shell_mode = false;
-                    app.health_mode = false;
-                }
-                KeyCode::F(11) => {
-                    app.should_quit = false;
-                    app.help_mode = false;
-                    app.editor_mode = false;
-                    app.web_mode = false;
-                    app.commit_mode = false;
-                    app.todo_mode = false;
-                    app.chat_mode = false;
-                    app.files_mode = false;
-                    app.timeline_mode = false;
-                    app.logs_mode = false;
-                    app.shell_mode = true;
-                    app.health_mode = false;
-                }
-                KeyCode::F(12) => {
-                    app.should_quit = false;
-                    app.help_mode = false;
-                    app.editor_mode = false;
-                    app.web_mode = false;
-                    app.commit_mode = false;
-                    app.todo_mode = false;
-                    app.chat_mode = false;
-                    app.files_mode = false;
-                    app.timeline_mode = false;
-                    app.logs_mode = false;
-                    app.shell_mode = false;
-                    app.health_mode = true;
-                }
-                _ => {
-                    app.should_quit = false;
-                    app.help_mode = false;
-                    app.editor_mode = false;
-                    app.web_mode = false;
-                    app.commit_mode = false;
-                    app.todo_mode = false;
-                    app.chat_mode = false;
-                    app.files_mode = false;
-                    app.timeline_mode = false;
-                    app.logs_mode = false;
-                    app.shell_mode = false;
-                    app.health_mode = false;
-                }
-            },
-            _ => {}
+    // Copy icon if specified
+    if let Some(icon_path) = &syl.icon {
+        if Path::new(icon_path).exists() {
+            let dest = Path::new("uvd").join(icon_path);
+            if let Some(parent) = dest.parent() {
+                create_dir_all(parent)?;
+            }
+            fs::copy(icon_path, dest)?;
         }
     }
-    ratatui::restore();
+
+    File::create("uvd/uvd.json")?.write_all(serde_json::to_string(&syl)?.as_bytes())?;
+
+    let output_dir = syl.output.as_deref().unwrap_or(".");
+    if output_dir != "." {
+        create_dir_all(output_dir)?;
+    }
+
+    let archive_name = format!("{}_{}.syl", syl.name, syl.version);
+    let archive_path = Path::new(output_dir).join(&archive_name);
+
+    // Si on a déjà une archive, on la supprime pour ne pas l'inclure si elle est dans le même dossier
+    if archive_path.exists() {
+        let _ = fs::remove_file(&archive_path);
+    }
+
+    // 1. Création de l'archive tar
+    let status = ProcessCommand::new("tar")
+        .args([
+            "-cf",
+            archive_path.to_str().unwrap(),
+            "uvd",
+        ])
+        .status()?;
+
+    if !status.success() {
+        return Err(Error::new(
+            ErrorKind::Other,
+            format!(
+                "Failed to create archive {} (tar exit code: {:?})",
+                archive_path.display(),
+                status.code()
+            ),
+        ));
+    }
+
+    // 2. Signature de l'archive
+    // On calcule le hash Blake3 du fichier tar généré
+    let mut file = File::open(&archive_path)?;
+    let mut buffer = Vec::new();
+    file.read_to_end(&mut buffer)?;
+    let hash = blake3::hash(&buffer).to_hex().to_string();
+
+    // On signe le hash
+    let root_path = std::env::current_dir()?;
+    match sign_message(&root_path, &hash) {
+        Ok(signature) => {
+            // On crée un fichier de signature
+            let sig_file = format!("{}.sig", archive_path.display());
+            File::create(sig_file)?.write_all(signature.as_bytes())?;
+            println!(
+                "Archive {} created and signed successfully.",
+                archive_path.display()
+            );
+        }
+        Err(e) => {
+            println!("Warning: Could not sign the archive ({e}).");
+            println!("Please ensure an identity key is generated using 'lys keygen'.");
+        }
+    }
+
+    Ok(())
+}
+
+fn cli() -> Command {
+    Command::new("syl")
+        .about("Universal Verified Disc (UVD) manager")
+        .subcommand(Command::new("create").about("Generate a new signed UVD archive"))
+}
+
+pub fn main() -> Result<(), Error> {
+    let matches = cli().get_matches();
+
+    match matches.subcommand() {
+        Some(("create", _)) => {
+            create_uvd()?;
+        }
+        _ => {
+            let _ = cli().print_help();
+        }
+    }
     Ok(())
 }

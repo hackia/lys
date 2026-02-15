@@ -48,14 +48,14 @@ pub fn generate_keypair(root_path: &Path) -> Result<(), String> {
     file_pub
         .write_all(verifying_key.as_bytes())
         .map_err(|e| e.to_string())?;
-    ok("Keys has been successfully generated");
+    ok("Keys have been successfully generated");
     Ok(())
 }
 pub fn sign_message(root_path: &Path, message: &str) -> Result<String, String> {
     let secret_path = root_path.join(".lys/identity/secret.key");
 
     if !secret_path.exists() {
-        return Err("launch 'sx keygen' first".to_string());
+        return Err("Identity key not found. Please run 'lys keygen' first.".to_string());
     }
 
     // 1. Lecture de la clé
@@ -91,12 +91,12 @@ pub fn verify_signature(
 
     let verifying_key = VerifyingKey::from_bytes(&bytes).expect("bad keys");
 
-    // 2. Décoder la signature (Hex -> Bytes)
+    // 2. Decode signature (Hex -> Bytes)
     let signature_bytes =
-        hex::decode(signature_hex).map_err(|_| "Format hex invalide".to_string())?;
+        hex::decode(signature_hex).map_err(|_| "Invalid hexadecimal format".to_string())?;
 
     let signature =
-        Signature::from_slice(&signature_bytes).map_err(|_| "Format invalide".to_string())?;
+        Signature::from_slice(&signature_bytes).map_err(|_| "Invalid signature format".to_string())?;
 
     // 3. Vérification mathématique
     // Est-ce que cette signature prouve que CE hash a été signé par CETTE clé ?

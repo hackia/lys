@@ -1,0 +1,1 @@
+{"name":"lys","author":"lys team","description":"a vcs","version":"0.2.0","arch":"x86_64","homepage":"https://github.com/hackia/lys/wiki","repository":"https://github.com/hackia/lys","license":"APGL-3.0","icon":"lys.svg","provides":["syl","lys"],"optional":["git"],"depends":["rust","blake3","sqlite"],"conflicts":[],"replaces":["lys","syl"],"output":"dist"}

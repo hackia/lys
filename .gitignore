@@ -2,3 +2,4 @@ target/
 .lys/
 .idea/
 breathes
+dist/

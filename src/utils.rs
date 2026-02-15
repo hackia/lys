@@ -127,7 +127,7 @@ pub fn ok_tag(tag: &str, description: &str, date: &str, _hash: &str) {
 pub fn ok_audit_commit(hash: &str) {
     let (x, _) = size().expect("failed to get term size");
 
-    let description = " Signature is valid ";
+    let description = " Signature verified ";
     let padding = x.saturating_sub(hash.chars().count() as u16 + description.chars().count() as u16 + 7);
 
     let _ = execute!(
@@ -145,7 +145,7 @@ pub fn ok_audit_commit(hash: &str) {
 pub fn commit_created(hash: &str) {
     let (x, _) = size().expect("failed to get term size");
 
-    let description = " Commited successfully ";
+    let description = " Committed successfully ";
     let padding = x.saturating_sub(hash.chars().count() as u16 + description.chars().count() as u16 + 7);
 
     let _ = execute!(
@@ -163,7 +163,7 @@ pub fn commit_created(hash: &str) {
 pub fn ko_audit_commit(hash: &str) {
     let (x, _) = size().expect("failed to get term size");
 
-    let description = " Signature is unvalid ";
+    let description = " Signature verification failed ";
     let padding = x.saturating_sub(hash.chars().count() as u16 + description.chars().count() as u16 + 6);
 
     let _ = execute!(
