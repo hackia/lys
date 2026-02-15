@@ -1,0 +1,21 @@
+[package]
+name = "uvd"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+chrono = "0.4.43"
+clap = "4.5.58"
+serde = { version = "1.0.228", features = ["derive"] }
+tempfile = "3.25.0"
+zstd = "0.13.3"
+serde_json = "1.0.149"
+blake3 = "1.8.3"
+ed25519-dalek = "3.0.0-pre.6"
+sqlite = "0.37.0"
+rand = "0.10.0"
+hex = "0.4.3"
+crossterm = "0.29.0"
+ignore = "0.4.25"
+content_inspector = "0.2.4"
+toml = "1.0.1+spec-1.1.0"
