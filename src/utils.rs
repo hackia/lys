@@ -45,7 +45,7 @@ pub fn ok(description: &str) {
 pub fn ok_merkle_hash(h: &str) {
     let (x, _) = size().expect("failed to get term size");
 
-    let padding = x.saturating_sub(h.chars().count() as u16 + 5);
+    let padding = x.saturating_sub(h.chars().count() as u16);
     let _ = execute!(
         stdout(),
         Print("m"),
