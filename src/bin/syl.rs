@@ -1,11 +1,11 @@
 use crate::crypto::sign_message;
+use crate::utils::ok;
 use clap::{Arg, ArgAction, Command};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, create_dir_all, read_to_string};
 use std::io::{Error, ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
-use crate::utils::ok;
 
 #[path = "../crypto.rs"]
 mod crypto;
@@ -321,7 +321,7 @@ pub fn main() -> Result<(), Error> {
             extract_uvd(&p.to_path_buf())?;
         }
         _ => {
-            let _ = cli().print_help();
+            cli().print_help().expect("Failed to print help");
         }
     }
     Ok(())
@@ -339,5 +339,8 @@ fn extract_uvd(archive: &PathBuf) -> Result<(), Error> {
         ok("Archive extracted successfully.");
         return Ok(());
     }
-    Err(Error::new(ErrorKind::InvalidInput, "Archive must have .syl extension"))
+    Err(Error::new(
+        ErrorKind::InvalidInput,
+        "Archive must have .syl extension",
+    ))
 }
