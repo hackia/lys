@@ -1,0 +1,68 @@
+[main 5e9c5cc] auto message
+ 69 files changed, 1352 insertions(+), 1495 deletions(-)
+ create mode 100644 commit.hc
+ create mode 100644 hamon/stderr/1.log
+ create mode 100644 hamon/stderr/2.log
+ create mode 100644 hamon/stderr/3.log
+ create mode 100644 hamon/stderr/4.log
+ create mode 100644 hamon/stderr/5.log
+ create mode 100644 hamon/stderr/6.log
+ create mode 100644 hamon/stderr/7.log
+ create mode 100644 hamon/stderr/8.log
+ create mode 100644 hamon/stderr/9.log
+ create mode 100644 hamon/stdout/1.log
+ create mode 100644 hamon/stdout/2.log
+ create mode 100644 hamon/stdout/3.log
+ create mode 100644 hamon/stdout/4.log
+ create mode 100644 hamon/stdout/5.log
+ create mode 100644 hamon/stdout/6.log
+ create mode 100644 hamon/stdout/7.log
+ create mode 100644 hamon/stdout/8.log
+ create mode 100644 hamon/stdout/9.log
+ create mode 100644 hub/Cargo.toml
+ create mode 100644 hub/src/main.rs
+ delete mode 100644 lys
+ create mode 100644 lys/Cargo.toml
+ rename {src => lys/src}/chat.rs (94%)
+ rename {src => lys/src}/commit.rs (100%)
+ rename {src => lys/src}/crypto.rs (98%)
+ rename {src => lys/src}/db.rs (96%)
+ rename {src => lys/src}/import.rs (97%)
+ rename {src => lys/src}/main.rs (98%)
+ rename {src => lys/src}/mount.rs (100%)
+ rename {src => lys/src}/shell.rs (100%)
+ rename {src => lys/src}/todo.rs (95%)
+ rename {src => lys/src}/tree.rs (100%)
+ rename {src => lys/src}/utils.rs (94%)
+ rename {src => lys/src}/vcs.rs (99%)
+ rename {src => lys/src}/web.rs (99%)
+ create mode 100644 make.hc
+ delete mode 100644 shells/syl.fish
+ create mode 100644 shells/uvd.fish
+ create mode 100644 silex/Cargo.toml
+ create mode 100644 silex/src/lib.rs
+ delete mode 100644 syl
+ create mode 100644 syl/Cargo.toml
+ create mode 100644 syl/src/lib.rs
+ rename syl.toml => uvd.toml (100%)
+ create mode 100644 uvd/Cargo.toml
+ delete mode 100644 uvd/hooks/install/install.sh
+ delete mode 100644 uvd/hooks/install/post.sh
+ delete mode 100644 uvd/hooks/install/pre.sh
+ delete mode 100644 uvd/hooks/install/prepare.sh
+ delete mode 100644 uvd/hooks/package/dmg.sh
+ delete mode 100644 uvd/hooks/package/exe.sh
+ delete mode 100644 uvd/hooks/uninstall/post.sh
+ delete mode 100644 uvd/hooks/uninstall/pre.sh
+ delete mode 100644 uvd/hooks/uninstall/prepare.sh
+ delete mode 100644 uvd/hooks/uninstall/uninstall.sh
+ delete mode 100644 uvd/hooks/upgrade/post.sh
+ delete mode 100644 uvd/hooks/upgrade/pre.sh
+ delete mode 100644 uvd/hooks/upgrade/prepare.sh
+ delete mode 100644 uvd/hooks/upgrade/upgrade.sh
+ delete mode 100644 uvd/lys.svg
+ create mode 100644 uvd/src/crypto.rs
+ rename src/bin/syl.rs => uvd/src/main.rs (68%)
+ create mode 100644 uvd/src/tree.rs
+ create mode 100644 uvd/src/utils.rs
+ delete mode 100644 uvd/uvd.json
