@@ -25,6 +25,7 @@ Notes:
 - Timestamp proofs are verified via external commands (see below).
 - Example manifests/payloads live in `examples/`.
 - Test fixtures live in `fixtures/`.
+- Real-proof fixtures live in `fixtures-real/` (local only).
 
 Admin examples:
 ```
@@ -63,3 +64,7 @@ Timestamp proof verification:
 - `payload_hash` is the lower-case blake3 hex of the JCS payload (UTF-8 bytes).
 - Verifiers must exit 0 on success; nonzero exits fail ingest/serve.
 - `SILEXIUM_SKIP_PROOF_VERIFY=1` bypasses verification (testing only).
+
+Proof integration test:
+- Populate `silexium/fixtures-real/proof.env`.
+- Run `silexium/scripts/run_proof_test.sh`.

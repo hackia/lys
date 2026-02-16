@@ -1,0 +1,6 @@
+proof.env
+payload_hash.txt
+tsa/
+ots/
+*.key
+*.crt
