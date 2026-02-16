@@ -1,13 +1,12 @@
-use std::fs::read_to_string;
-use std::io::stdout;
-use std::path::Path;
-use std::process::Command;
-
 use crossterm::{
     execute,
     style::{Print, Stylize},
     terminal::size,
 };
+use std::fs::read_to_string;
+use std::io::stdout;
+use std::path::Path;
+use std::process::Command;
 
 use crate::vcs::FileStatus;
 
@@ -45,7 +44,7 @@ pub fn ok(description: &str) {
 pub fn ok_merkle_hash(h: &str) {
     let (x, _) = size().expect("failed to get term size");
 
-    let padding = x.saturating_sub(h.chars().count() as u16);
+    let padding = x.saturating_sub(h.chars().count() as u16 + 7);
     let _ = execute!(
         stdout(),
         Print("m"),
