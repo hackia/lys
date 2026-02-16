@@ -14,9 +14,11 @@
 @node 7 @role worker
 
 @job installation
-	@phase desc="format code" by=[0]   task="cargo fmt"
-	@phase desc="install lys" by=[1,2] task="cargo install --path lys"
-	@phase desc="install syl" by=[3,6] task="cargo install --path syl"
-	@phase desc="install uvd" by=[5,7] task="cargo install --path uvd"
-	@phase desc="install silexium" by=[5,7] task="cargo install --path silexium"
+	@phase desc="format code" 	by=[0]   task="cargo fmt"
+	@phase desc="install lys" 	by=[1,2] task="cargo install --path lys"
+	@phase desc="install syl" 	by=[3,6] task="cargo install --path syl"
+	@phase desc="install uvd" 	by=[5,7] task="cargo install --path uvd"
+	@phase desc="install silexium" 	by=[1,4] task="cargo install --path silexium"
+	@phase desc="install plan" 	by=[6,7] task="cargo install --path plan"
+	@phase desc="install capsule" 	by=[2,5,7] task="cargo install --path capsule"
 @end

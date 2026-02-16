@@ -18,4 +18,6 @@
 	@phase desc="publish lys" by=[2,4,6] task="cargo publish --path lys"
 	@phase desc="publish syl" by=[5,7] task="cargo publish --path syl"
 	@phase desc="publish silexium" by=[2,4,6] task="cargo publish --path silexium"
+	@phase desc="publish plan" by=[2,4,6] task="cargo publish --path plan"
+	@phase desc="publish capsule" by=[2,4,6] task="cargo publish --path capsule"
 @end
