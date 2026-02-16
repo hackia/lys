@@ -1,0 +1,11 @@
+artifacts/
+keys/
+ots/
+payloads/
+source/
+tsa/
+SRC
+manifest.json
+release.toml
+ingest.sh
+silexium.db

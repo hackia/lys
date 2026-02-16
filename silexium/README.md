@@ -26,6 +26,7 @@ Notes:
 - Example manifests/payloads live in `examples/`.
 - Test fixtures live in `fixtures/`.
 - Real-proof fixtures live in `fixtures-real/` (local only).
+- Fake release generator output lives in `fixtures-fake/`.
 
 Admin examples:
 ```
@@ -68,3 +69,7 @@ Timestamp proof verification:
 Proof integration test:
 - Populate `silexium/fixtures-real/proof.env`.
 - Run `silexium/scripts/run_proof_test.sh`.
+
+Fake release generator:
+- Run `silexium/scripts/gen_fake_release.sh`.
+- Then run `silexium/fixtures-fake/ingest.sh` to test ingest.
