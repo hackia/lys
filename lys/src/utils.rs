@@ -193,7 +193,7 @@ pub fn run_hooks() -> Result<(), Box<dyn std::error::Error>> {
             continue;
         }
 
-        ok(&format!("Running hook: {}", line));
+        ok(&format!("Running hook: {line}"));
 
         let status = if cfg!(target_os = "windows") {
             Command::new("cmd").args(["/C", line]).status()?
@@ -202,9 +202,9 @@ pub fn run_hooks() -> Result<(), Box<dyn std::error::Error>> {
         };
 
         if !status.success() {
-            return Err(format!("Hook failed: {}", line).into());
+            return Err(format!("Hook failed: {line}").into());
         }
     }
-
+    ok("Hooks ran successfully.");
     Ok(())
 }

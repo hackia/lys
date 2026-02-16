@@ -394,7 +394,7 @@ fn ls_tree_recursive(
             } else {
                 msg.clone()
             };
-            commit_info = format!(" — {} {}", truncated_msg, age);
+            commit_info = format!(" {truncated_msg} ({age})");
         }
 
         lines.push(format!(
