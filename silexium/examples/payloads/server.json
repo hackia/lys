@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "author_attestation_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "tests_attestation_hash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+  "manifest_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "binary_artifact_hashes": [
+    "0000000000000000000000000000000000000000000000000000000000000000"
+  ],
+  "source_artifact_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+}

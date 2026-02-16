@@ -51,6 +51,7 @@ key_id = "..."
 payload_hash = "..."
 signature = "..."
 created_at = "2026-02-16T12:10:00Z"
+payload_path = "payloads/author.json"
 tsa_proof_path = "tsa/author.tsr"
 ots_proof_path = "ots/author.ots"
 
@@ -60,6 +61,7 @@ key_id = "..."
 payload_hash = "..."
 signature = "..."
 created_at = "2026-02-16T12:20:00Z"
+payload_path = "payloads/tests.json"
 tsa_proof_path = "tsa/tests.tsr"
 ots_proof_path = "ots/tests.ots"
 
@@ -69,11 +71,16 @@ key_id = "..."
 payload_hash = "..."
 signature = "..."
 created_at = "2026-02-16T12:30:00Z"
+payload_path = "payloads/server.json"
 tsa_proof_path = "tsa/server.tsr"
 ots_proof_path = "ots/server.ots"
 ```
 
 Notes:
-- `manifest.blake3` is verified against the manifest file bytes.
+- `manifest.blake3` is verified against the manifest JCS bytes.
 - `attestations` must include exactly: `author`, `tests`, `server`.
 - Keys must exist in the Silexium DB before ingest (`silexium key add`).
+- Keys require `expires_at` and must be unexpired at ingest time.
+- `payload_path` is required and is hashed with JSON JCS to verify `payload_hash`.
+- Example manifest/payloads are in `examples/`.
+- A full ingest-ready fixture set is in `fixtures/`.

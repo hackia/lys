@@ -12,6 +12,8 @@ clap = { version = "4.5.58", features = ["derive"] }
 ed25519-dalek = "3.0.0-pre.6"
 hex = "0.4.3"
 serde = { version = "1.0.228", features = ["derive"] }
+serde_jcs = "0.1.0"
+serde_json = "1.0.149"
 sqlite = "0.37.0"
 tokio = { version = "1.49.0", features = ["full"] }
 toml = "1.0.1+spec-1.1.0"

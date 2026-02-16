@@ -94,3 +94,83 @@ pub struct ResolveResponse {
 pub struct ErrorResponse {
     pub error: String,
 }
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Manifest {
+    pub schema_version: u32,
+    pub package: String,
+    pub version: String,
+    pub channel: String,
+    pub created_at: String,
+    pub license: String,
+    pub hash_algo: String,
+    pub artifacts: Vec<Artifact>,
+    pub src_index: SrcIndex,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SrcIndex {
+    pub path: String,
+    pub size: i64,
+    pub blake3: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Artifact {
+    #[serde(rename = "type")]
+    pub artifact_type: ArtifactType,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub os: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arch: Option<String>,
+    pub size: i64,
+    pub blake3: String,
+    pub url: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ArtifactType {
+    Binary,
+    Source,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AuthorPayload {
+    pub schema_version: u32,
+    pub package: String,
+    pub version: String,
+    pub channel: String,
+    pub manifest_hash: String,
+    pub src_index_hash: String,
+    pub source_artifact_hash: String,
+    pub license: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TestsPayload {
+    pub schema_version: u32,
+    pub author_attestation_hash: String,
+    pub manifest_hash: String,
+    pub test_suite_id: String,
+    pub test_result: TestResult,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub test_report_hash: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ServerPayload {
+    pub schema_version: u32,
+    pub author_attestation_hash: String,
+    pub tests_attestation_hash: String,
+    pub manifest_hash: String,
+    pub binary_artifact_hashes: Vec<String>,
+    pub source_artifact_hash: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum TestResult {
+    Pass,
+    Fail,
+}

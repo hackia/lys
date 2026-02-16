@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "package": "uvd",
+  "version": "1.2.3",
+  "channel": "stable",
+  "manifest_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "src_index_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "source_artifact_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "license": "MIT"
+}

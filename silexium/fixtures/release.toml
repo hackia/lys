@@ -1,0 +1,61 @@
+[release]
+package = "uvd"
+version = "1.0.0"
+channel = "stable"
+created_at = "2026-02-16T12:00:00Z"
+
+[package]
+description = "Universal Verified Disk"
+license = "MIT"
+homepage = "https://example.invalid/uvd"
+
+[manifest]
+format = "json"
+path = "manifest.json"
+blake3 = "f828df4c9b19e537e8b766b95164606b225fc4c7fb3f7e33d0c72afdb2a4fc02"
+src_index_size = 42
+src_index_blake3 = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+
+[[artifacts]]
+kind = "binary"
+os = "linux"
+arch = "x86_64"
+size = 1234
+blake3 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+url = "https://mirror.example/uvd/1.0.0/linux-x86_64/uvd"
+
+[[artifacts]]
+kind = "source"
+size = 567
+blake3 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+url = "https://mirror.example/uvd/1.0.0/uvd.uvd"
+
+[[attestations]]
+kind = "author"
+key_id = "1111111111111111111111111111111111111111111111111111111111111111"
+payload_hash = "03f840ff5f8da994dc5d4c58ffd216d8da360760afc33529be6af288c3f36d96"
+signature = "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+created_at = "2026-02-16T12:10:00Z"
+payload_path = "payloads/author.json"
+tsa_proof_path = "tsa/author.tsr"
+ots_proof_path = "ots/author.ots"
+
+[[attestations]]
+kind = "tests"
+key_id = "2222222222222222222222222222222222222222222222222222222222222222"
+payload_hash = "17c5465558cc4d3f02935e14380f4837e17a165e402f36d8a23a8de3d0f2874c"
+signature = "11111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111"
+created_at = "2026-02-16T12:20:00Z"
+payload_path = "payloads/tests.json"
+tsa_proof_path = "tsa/tests.tsr"
+ots_proof_path = "ots/tests.ots"
+
+[[attestations]]
+kind = "server"
+key_id = "3333333333333333333333333333333333333333333333333333333333333333"
+payload_hash = "4c1f37e4039e094672cb209a36d3126ef62ba547600d4e2112e445822b8eb10b"
+signature = "22222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222"
+created_at = "2026-02-16T12:30:00Z"
+payload_path = "payloads/server.json"
+tsa_proof_path = "tsa/server.tsr"
+ots_proof_path = "ots/server.ots"

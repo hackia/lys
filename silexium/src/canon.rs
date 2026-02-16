@@ -1,7 +1,19 @@
+use anyhow::{Context, Result};
 use blake3::Hasher;
+use serde::Serialize;
 
 pub fn blake3_hex(bytes: &[u8]) -> String {
     blake3::hash(bytes).to_hex().to_string()
+}
+
+pub fn jcs_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>> {
+    let text = serde_jcs::to_string(value).context("jcs encode failed")?;
+    Ok(text.into_bytes())
+}
+
+pub fn jcs_blake3_hex<T: Serialize>(value: &T) -> Result<String> {
+    let bytes = jcs_bytes(value)?;
+    Ok(blake3_hex(&bytes))
 }
 
 pub fn attestation_hash(
@@ -32,7 +44,12 @@ pub fn attestation_hash(
     hasher.finalize().to_hex().to_string()
 }
 
-pub fn entry_hash(manifest_hash: &str, author_hash: &str, tests_hash: &str, server_hash: &str) -> String {
+pub fn entry_hash(
+    manifest_hash: &str,
+    author_hash: &str,
+    tests_hash: &str,
+    server_hash: &str,
+) -> String {
     let mut hasher = Hasher::new();
     hasher.update(b"SILEXIUM-LOG-ENTRY\n");
     hasher.update(b"manifest:");

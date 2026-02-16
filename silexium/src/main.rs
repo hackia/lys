@@ -145,6 +145,14 @@ fn resolve(
     )
     .map_err(ApiError::from_anyhow)?;
 
+    validate_manifest_bytes(
+        &release.manifest.bytes,
+        &release.manifest.blake3,
+        release.manifest.src_index_size,
+        release.manifest.src_index_blake3.as_deref(),
+    )
+    .map_err(ApiError::from_anyhow)?;
+
     validate_attestations(&conn_guard, &release)?;
 
     let manifest = ManifestOut {
@@ -219,8 +227,17 @@ fn validate_attestations(
             return Err(ApiError::internal("missing timestamp proofs"));
         }
         let key = db::fetch_key(conn, &att.key_id).map_err(ApiError::from_anyhow)?;
-        if key.revoked {
+        if key.revoked || key.revoked_at.is_some() {
             return Err(ApiError::internal("attestation key revoked"));
+        }
+        let expires_at = key
+            .expires_at
+            .as_deref()
+            .ok_or_else(|| ApiError::internal("attestation key missing expires_at"))?;
+        let expires_at = chrono::DateTime::parse_from_rfc3339(expires_at)
+            .map_err(|_| ApiError::internal("attestation key expires_at invalid"))?;
+        if chrono::Utc::now() > expires_at.with_timezone(&chrono::Utc) {
+            return Err(ApiError::internal("attestation key expired"));
         }
         if key.role != att.kind {
             return Err(ApiError::internal("attestation role mismatch"));
@@ -299,9 +316,75 @@ fn verify_attestation_signature(
     Ok(())
 }
 
+fn validate_manifest_bytes(
+    bytes: &[u8],
+    expected_hash: &str,
+    expected_src_size: Option<i64>,
+    expected_src_hash: Option<&str>,
+) -> Result<types::Manifest> {
+    let manifest: types::Manifest =
+        serde_json::from_slice(bytes).context("manifest json parse failed")?;
+    if manifest.schema_version != 1 {
+        return Err(anyhow!("manifest schema_version must be 1"));
+    }
+    if manifest.hash_algo != "blake3" {
+        return Err(anyhow!("manifest hash_algo must be blake3"));
+    }
+    let mut source_count = 0;
+    let mut binary_count = 0;
+    for artifact in &manifest.artifacts {
+        match artifact.artifact_type {
+            types::ArtifactType::Source => {
+                source_count += 1;
+                if artifact.os.is_some() || artifact.arch.is_some() {
+                    return Err(anyhow!("manifest source artifact must not include os/arch"));
+                }
+            }
+            types::ArtifactType::Binary => {
+                binary_count += 1;
+                if artifact.os.as_deref().unwrap_or("").is_empty()
+                    || artifact.arch.as_deref().unwrap_or("").is_empty()
+                {
+                    return Err(anyhow!("manifest binary artifact missing os/arch"));
+                }
+            }
+        }
+    }
+    if source_count != 1 {
+        return Err(anyhow!("manifest must include exactly one source artifact"));
+    }
+    if binary_count == 0 {
+        return Err(anyhow!("manifest must include at least one binary artifact"));
+    }
+
+    let jcs_bytes = canon::jcs_bytes(&manifest)?;
+    if jcs_bytes != bytes {
+        return Err(anyhow!("manifest is not JCS canonical"));
+    }
+    let computed_hash = canon::blake3_hex(&jcs_bytes);
+    if computed_hash != expected_hash {
+        return Err(anyhow!("manifest blake3 mismatch"));
+    }
+    if let Some(size) = expected_src_size {
+        if manifest.src_index.size != size {
+            return Err(anyhow!("manifest src_index.size mismatch"));
+        }
+    }
+    if let Some(hash) = expected_src_hash {
+        if manifest.src_index.blake3 != hash {
+            return Err(anyhow!("manifest src_index.blake3 mismatch"));
+        }
+    }
+    Ok(manifest)
+}
+
 fn key_command(args: config::KeyArgs) -> Result<()> {
     match args.command {
         config::KeyCommand::Add(add) => key_add(args.db, add),
+        config::KeyCommand::Revoke(revoke) => key_revoke(args.db, revoke),
+        config::KeyCommand::Rotate(rotate) => key_rotate(args.db, rotate),
+        config::KeyCommand::List(list) => key_list(args.db, list),
+        config::KeyCommand::RevokeExpired => key_revoke_expired(args.db),
     }
 }
 
@@ -310,6 +393,12 @@ fn key_add(db_path: Option<std::path::PathBuf>, add: config::KeyAddArgs) -> Resu
     if !matches!(role, "author" | "tests" | "server") {
         return Err(anyhow!("role must be author, tests, or server"));
     }
+    let expires_at = add.expires_at.trim();
+    if expires_at.is_empty() {
+        return Err(anyhow!("expires_at is required"));
+    }
+    chrono::DateTime::parse_from_rfc3339(expires_at)
+        .map_err(|_| anyhow!("expires_at must be RFC3339"))?;
     let db_path = resolve_db_path(db_path)?;
     let conn = db::open_db(&db_path)?;
     db::init_db(&conn)?;
@@ -321,7 +410,125 @@ fn key_add(db_path: Option<std::path::PathBuf>, add: config::KeyAddArgs) -> Resu
         derive_public_key_id(&key_bytes)?
     };
 
-    db::insert_key(&conn, &key_id, role, &key_bytes)?;
+    db::insert_key(&conn, &key_id, role, &key_bytes, expires_at, None)?;
+    Ok(())
+}
+
+fn key_revoke(db_path: Option<std::path::PathBuf>, revoke: config::KeyRevokeArgs) -> Result<()> {
+    let key_id = revoke.key_id.trim();
+    if key_id.is_empty() {
+        return Err(anyhow!("key_id is required"));
+    }
+    let revoked_at = revoke
+        .revoked_at
+        .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
+    chrono::DateTime::parse_from_rfc3339(&revoked_at)
+        .map_err(|_| anyhow!("revoked_at must be RFC3339"))?;
+
+    let db_path = resolve_db_path(db_path)?;
+    let conn = db::open_db(&db_path)?;
+    db::init_db(&conn)?;
+    db::revoke_key(&conn, key_id, &revoked_at)?;
+    Ok(())
+}
+
+fn key_rotate(db_path: Option<std::path::PathBuf>, rotate: config::KeyRotateArgs) -> Result<()> {
+    let role = rotate.role.trim();
+    if !matches!(role, "author" | "tests" | "server") {
+        return Err(anyhow!("role must be author, tests, or server"));
+    }
+    let expires_at = rotate.expires_at.trim();
+    if expires_at.is_empty() {
+        return Err(anyhow!("expires_at is required"));
+    }
+    chrono::DateTime::parse_from_rfc3339(expires_at)
+        .map_err(|_| anyhow!("expires_at must be RFC3339"))?;
+
+    let old_key_id = rotate.old_key_id.trim();
+    if old_key_id.is_empty() {
+        return Err(anyhow!("old_key_id is required"));
+    }
+
+    let db_path = resolve_db_path(db_path)?;
+    let conn = db::open_db(&db_path)?;
+    db::init_db(&conn)?;
+
+    let key_bytes = load_key_bytes(&rotate.new_key)?;
+    let new_key_id = if let Some(key_id) = rotate.new_key_id {
+        key_id
+    } else {
+        derive_public_key_id(&key_bytes)?
+    };
+
+    conn.execute("BEGIN")?;
+    let result: Result<()> = (|| {
+        db::insert_key(&conn, &new_key_id, role, &key_bytes, expires_at, None)?;
+        db::revoke_key(&conn, old_key_id, &chrono::Utc::now().to_rfc3339())?;
+        Ok(())
+    })();
+
+    match result {
+        Ok(()) => {
+            conn.execute("COMMIT")?;
+            Ok(())
+        }
+        Err(err) => {
+            let _ = conn.execute("ROLLBACK");
+            Err(err)
+        }
+    }
+}
+
+fn key_list(db_path: Option<std::path::PathBuf>, list: config::KeyListArgs) -> Result<()> {
+    let db_path = resolve_db_path(db_path)?;
+    let conn = db::open_db(&db_path)?;
+    db::init_db(&conn)?;
+    let keys = db::list_keys(&conn)?;
+    if list.json {
+        #[derive(serde::Serialize)]
+        struct KeyOut<'a> {
+            key_id: &'a str,
+            role: &'a str,
+            created_at: &'a str,
+            expires_at: Option<&'a str>,
+            revoked_at: Option<&'a str>,
+            revoked: bool,
+            public_key_hex: String,
+        }
+
+        let out: Vec<KeyOut<'_>> = keys
+            .iter()
+            .map(|key| KeyOut {
+                key_id: &key.key_id,
+                role: &key.role,
+                created_at: &key.created_at,
+                expires_at: key.expires_at.as_deref(),
+                revoked_at: key.revoked_at.as_deref(),
+                revoked: key.revoked,
+                public_key_hex: hex::encode(&key.public_key),
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&out)?);
+    } else {
+        for key in keys {
+            let expires_at = key.expires_at.as_deref().unwrap_or("-");
+            let revoked_at = key.revoked_at.as_deref().unwrap_or("-");
+            println!(
+                "{} {} created_at={} expires_at={} revoked_at={} revoked={}",
+                key.key_id, key.role, key.created_at, expires_at, revoked_at, key.revoked
+            );
+        }
+    }
+    Ok(())
+}
+
+fn key_revoke_expired(db_path: Option<std::path::PathBuf>) -> Result<()> {
+    let db_path = resolve_db_path(db_path)?;
+    let conn = db::open_db(&db_path)?;
+    db::init_db(&conn)?;
+    let now = chrono::Utc::now().to_rfc3339();
+    let count = db::revoke_expired_keys(&conn, &now)?;
+    println!("revoked_expired={count}");
     Ok(())
 }
 

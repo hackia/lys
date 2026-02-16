@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "author_attestation_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "manifest_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "test_suite_id": "uvd-ci-2026-02-16",
+  "test_result": "pass",
+  "test_report_hash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+}

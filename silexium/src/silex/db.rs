@@ -55,6 +55,9 @@ pub struct KeyData {
     pub key_id: String,
     pub role: String,
     pub public_key: Vec<u8>,
+    pub created_at: String,
+    pub expires_at: Option<String>,
+    pub revoked_at: Option<String>,
     pub revoked: bool,
 }
 
@@ -133,7 +136,9 @@ pub fn init_db(conn: &Connection) -> Result<()> {
             role TEXT NOT NULL,
             public_key BLOB NOT NULL,
             revoked INTEGER NOT NULL DEFAULT 0,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            revoked_at TEXT
         );
         CREATE TABLE IF NOT EXISTS log_entries (
             id INTEGER PRIMARY KEY,
@@ -157,6 +162,28 @@ pub fn init_db(conn: &Connection) -> Result<()> {
         "#,
     )
     .context("failed to create schema")?;
+    migrate_keys_table(conn)?;
+    Ok(())
+}
+
+fn migrate_keys_table(conn: &Connection) -> Result<()> {
+    let mut stmt = conn.prepare("PRAGMA table_info(keys)")?;
+    let mut has_expires = false;
+    let mut has_revoked_at = false;
+    while let Ok(State::Row) = stmt.next() {
+        let name: String = stmt.read(1)?;
+        match name.as_str() {
+            "expires_at" => has_expires = true,
+            "revoked_at" => has_revoked_at = true,
+            _ => {}
+        }
+    }
+    if !has_expires {
+        conn.execute("ALTER TABLE keys ADD COLUMN expires_at TEXT")?;
+    }
+    if !has_revoked_at {
+        conn.execute("ALTER TABLE keys ADD COLUMN revoked_at TEXT")?;
+    }
     Ok(())
 }
 
@@ -233,34 +260,106 @@ pub fn load_sth(conn: &Connection, tree_size: u64) -> Result<Option<StoredSth>> 
 }
 
 pub fn fetch_key(conn: &Connection, key_id: &str) -> Result<KeyData> {
-    let mut stmt =
-        conn.prepare("SELECT key_id, role, public_key, revoked FROM keys WHERE key_id = ?")?;
+    let mut stmt = conn.prepare(
+        "SELECT key_id, role, public_key, created_at, expires_at, revoked_at, revoked FROM keys WHERE key_id = ?",
+    )?;
     stmt.bind((1, key_id))?;
     if let Ok(State::Row) = stmt.next() {
         let key_id: String = stmt.read(0)?;
         let role: String = stmt.read(1)?;
         let public_key: Vec<u8> = stmt.read(2)?;
-        let revoked: i64 = stmt.read(3)?;
+        let created_at: String = stmt.read(3)?;
+        let expires_at: Option<String> = stmt.read(4).ok();
+        let revoked_at: Option<String> = stmt.read(5).ok();
+        let revoked: i64 = stmt.read(6).unwrap_or(0);
         return Ok(KeyData {
             key_id,
             role,
             public_key,
+            created_at,
+            expires_at,
+            revoked_at,
             revoked: revoked != 0,
         });
     }
     Err(anyhow!("key not found"))
 }
 
-pub fn insert_key(conn: &Connection, key_id: &str, role: &str, public_key: &[u8]) -> Result<()> {
+pub fn insert_key(
+    conn: &Connection,
+    key_id: &str,
+    role: &str,
+    public_key: &[u8],
+    expires_at: &str,
+    revoked_at: Option<&str>,
+) -> Result<()> {
     let mut stmt = conn.prepare(
-        "INSERT INTO keys (key_id, role, public_key, revoked, created_at) VALUES (?, ?, ?, 0, ?)",
+        "INSERT INTO keys (key_id, role, public_key, revoked, created_at, expires_at, revoked_at) VALUES (?, ?, ?, 0, ?, ?, ?)",
     )?;
     stmt.bind((1, key_id))?;
     stmt.bind((2, role))?;
     stmt.bind((3, public_key))?;
     stmt.bind((4, Utc::now().to_rfc3339().as_str()))?;
+    stmt.bind((5, expires_at))?;
+    if let Some(revoked_at) = revoked_at {
+        stmt.bind((6, revoked_at))?;
+    } else {
+        stmt.bind((6, sqlite::Value::Null))?;
+    }
     stmt.next()?;
     Ok(())
+}
+
+pub fn revoke_key(conn: &Connection, key_id: &str, revoked_at: &str) -> Result<()> {
+    let _ = fetch_key(conn, key_id)?;
+    let mut stmt =
+        conn.prepare("UPDATE keys SET revoked = 1, revoked_at = ? WHERE key_id = ?")?;
+    stmt.bind((1, revoked_at))?;
+    stmt.bind((2, key_id))?;
+    stmt.next()?;
+    Ok(())
+}
+
+pub fn list_keys(conn: &Connection) -> Result<Vec<KeyData>> {
+    let mut stmt = conn.prepare(
+        "SELECT key_id, role, public_key, created_at, expires_at, revoked_at, revoked FROM keys ORDER BY created_at ASC",
+    )?;
+    let mut keys = Vec::new();
+    while let Ok(State::Row) = stmt.next() {
+        let key_id: String = stmt.read(0)?;
+        let role: String = stmt.read(1)?;
+        let public_key: Vec<u8> = stmt.read(2)?;
+        let created_at: String = stmt.read(3)?;
+        let expires_at: Option<String> = stmt.read(4).ok();
+        let revoked_at: Option<String> = stmt.read(5).ok();
+        let revoked: i64 = stmt.read(6).unwrap_or(0);
+        keys.push(KeyData {
+            key_id,
+            role,
+            public_key,
+            created_at,
+            expires_at,
+            revoked_at,
+            revoked: revoked != 0,
+        });
+    }
+    Ok(keys)
+}
+
+pub fn revoke_expired_keys(conn: &Connection, now: &str) -> Result<i64> {
+    let mut stmt = conn.prepare(
+        "UPDATE keys SET revoked = 1, revoked_at = ? WHERE revoked = 0 AND revoked_at IS NULL AND expires_at IS NOT NULL AND expires_at <= ?",
+    )?;
+    stmt.bind((1, now))?;
+    stmt.bind((2, now))?;
+    stmt.next()?;
+
+    let mut changes = conn.prepare("SELECT changes()")?;
+    if let Ok(State::Row) = changes.next() {
+        let count: i64 = changes.read(0)?;
+        return Ok(count);
+    }
+    Ok(0)
 }
 
 pub fn upsert_package(

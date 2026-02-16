@@ -12,6 +12,7 @@ Core ideas:
 
 Specification:
 - The full concept spec is in `SPEC.md`.
+- The normative contract is in `CONTRACT.md`.
 
 Notes:
 - Silexium is a single binary service (no client SDK here).
@@ -21,9 +22,21 @@ Notes:
 - Admin CLI supports `key add` and `ingest` (see `INGEST.md`).
 - Public keys are expected as raw 32 bytes or 64 hex characters.
 - Key roles: `author`, `tests`, `server`.
+- Example manifests/payloads live in `examples/`.
+- Test fixtures live in `fixtures/`.
 
 Admin examples:
 ```
-silexium key add --role author --key author.pub
+silexium key add --role author --key author.pub --expires-at 2027-01-01T00:00:00Z
+silexium key revoke --key-id <hex> --revoked-at 2026-02-16T12:00:00Z
+silexium key rotate --role author --old-key-id <hex> --new-key author_v2.pub --expires-at 2028-01-01T00:00:00Z
+silexium key list
+silexium key list --json
+silexium key revoke-expired
 silexium ingest --file release.toml
+```
+
+Example (jq):
+```
+silexium key list --json | jq '.[] | {key_id, role, expires_at, revoked}'
 ```

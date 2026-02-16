@@ -48,6 +48,10 @@ pub struct KeyArgs {
 #[derive(Subcommand, Debug)]
 pub enum KeyCommand {
     Add(KeyAddArgs),
+    Revoke(KeyRevokeArgs),
+    Rotate(KeyRotateArgs),
+    List(KeyListArgs),
+    RevokeExpired,
 }
 
 #[derive(Parser, Debug)]
@@ -58,6 +62,36 @@ pub struct KeyAddArgs {
     pub key: PathBuf,
     #[arg(long)]
     pub key_id: Option<String>,
+    #[arg(long)]
+    pub expires_at: String,
+}
+
+#[derive(Parser, Debug)]
+pub struct KeyRevokeArgs {
+    #[arg(long)]
+    pub key_id: String,
+    #[arg(long)]
+    pub revoked_at: Option<String>,
+}
+
+#[derive(Parser, Debug)]
+pub struct KeyRotateArgs {
+    #[arg(long)]
+    pub role: String,
+    #[arg(long)]
+    pub old_key_id: String,
+    #[arg(long)]
+    pub new_key: PathBuf,
+    #[arg(long)]
+    pub new_key_id: Option<String>,
+    #[arg(long)]
+    pub expires_at: String,
+}
+
+#[derive(Parser, Debug)]
+pub struct KeyListArgs {
+    #[arg(long)]
+    pub json: bool,
 }
 
 pub fn resolve_db_path(explicit: Option<PathBuf>) -> Result<PathBuf> {
