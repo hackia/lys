@@ -41,6 +41,8 @@ static WEB_SUBTITLE: OnceCell<String> = OnceCell::new();
 static WEB_FOOTER: OnceCell<String> = OnceCell::new();
 static WEB_HOMEPAGE: OnceCell<String> = OnceCell::new();
 static WEB_DOCUMENTATION: OnceCell<String> = OnceCell::new();
+static WEB_LOGO: OnceCell<String> = OnceCell::new();
+static WEB_FAVICON: OnceCell<String> = OnceCell::new();
 
 const TERMINAL_STYLE: &str = r#"
          .terminal-window {
@@ -406,6 +408,54 @@ fn html_escape(s: &str) -> String {
     out
 }
 
+fn clean_value(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn normalize_asset_path(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if trimmed.starts_with('/')
+        || trimmed.starts_with("data:")
+        || trimmed.contains("://")
+    {
+        trimmed.to_string()
+    } else {
+        format!("/{trimmed}")
+    }
+}
+
+fn load_lysrc(repo_root: &Path) -> std::collections::HashMap<String, String> {
+    let path = repo_root.join("lysrc");
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return std::collections::HashMap::new(),
+    };
+    let mut map = std::collections::HashMap::new();
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let mut parts = line.splitn(2, '=');
+        let key = parts.next().unwrap_or("").trim();
+        let value = parts.next().unwrap_or("").trim();
+        if key.is_empty() {
+            continue;
+        }
+        let value = value.trim_matches(|c| c == '"' || c == '\'');
+        map.insert(key.to_string(), value.to_string());
+    }
+    map
+}
+
 fn is_safe_relative_path(path: &str) -> bool {
     if path.is_empty() {
         return false;
@@ -527,15 +577,6 @@ fn time_ago(timestamp: &str) -> String {
 }
 
 pub fn page(title: &str, style: &str, body: &str) -> Html<String> {
-    let favicon_links = "
-        <link rel='icon' type='image/png' href='/favicon-96x96.png' sizes='96x96' />
-        <link rel='icon' type='image/svg+xml' href='/favicon.svg' sizes='any' />
-        <link rel='shortcut icon' href='/favicon.ico' />
-        <link rel='apple-touch-icon' sizes='180x180' href='/web-app-manifest-192x192.png' />
-        <meta name='apple-mobile-web-app-title' content='lys' />
-        <link rel='manifest' href='/site.webmanifest' />
-    ";
-
     const COMMON_STYLE: &str = r#"
         :root {
             --bg: #0b0e12;
@@ -640,6 +681,7 @@ pub fn page(title: &str, style: &str, body: &str) -> Html<String> {
         #header .header-text { display: flex; flex-direction: column; }
         #header h1 { margin: 0; font-size: 1.6em; line-height: 1.1; }
         #header .repo-desc { color: var(--muted); font-size: 0.92em; margin-top: 4px; }
+        #header .site-logo { width: 52px; height: 52px; border-radius: 14px; object-fit: cover; border: 1px solid var(--border); background: var(--surface); box-shadow: 0 0 0 2px rgba(0,0,0,0.2); }
         #menu { 
             background-color: var(--menu-bg);
             background-image:
@@ -817,6 +859,25 @@ pub fn page(title: &str, style: &str, body: &str) -> Html<String> {
     let site_footer = WEB_FOOTER.get().map(String::as_str).unwrap_or("");
     let site_homepage = WEB_HOMEPAGE.get().map(String::as_str).unwrap_or("");
     let site_documentation = WEB_DOCUMENTATION.get().map(String::as_str).unwrap_or("");
+    let site_logo = WEB_LOGO.get().map(String::as_str).unwrap_or("");
+    let site_favicon = WEB_FAVICON.get().map(String::as_str).unwrap_or("");
+
+    let favicon_links = if site_favicon.is_empty() {
+        String::from(
+            "<link rel='icon' type='image/png' href='/favicon-96x96.png' sizes='96x96' />\
+             <link rel='icon' type='image/svg+xml' href='/favicon.svg' sizes='any' />\
+             <link rel='shortcut icon' href='/favicon.ico' />\
+             <link rel='apple-touch-icon' sizes='180x180' href='/web-app-manifest-192x192.png' />\
+             <meta name='apple-mobile-web-app-title' content='lys' />\
+             <link rel='manifest' href='/site.webmanifest' />",
+        )
+    } else {
+        let icon = html_escape(site_favicon);
+        format!(
+            "<link rel='icon' href='{icon}' />\
+             <link rel='shortcut icon' href='{icon}' />"
+        )
+    };
 
     let mut menu_links = String::from(
         "<a href='/'>Summary</a><a href='/'>Log</a><a href='/rss'>RSS</a><a href='/editor'>Editor</a><a href='/terminal'>Terminal</a><a href='/commit/new'>Commit</a><a href='/todo'>Todo</a><a href='/chat'>Chat</a>",
@@ -840,6 +901,21 @@ pub fn page(title: &str, style: &str, body: &str) -> Html<String> {
         format!("<div id='footer'>{}</div>", site_footer)
     };
 
+    let logo_html = if site_logo.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "<img class='site-logo' src='{}' alt='Logo' />",
+            html_escape(site_logo)
+        )
+    };
+
+    let page_title = if title.trim().is_empty() || title == "Lys Repository" {
+        site_title.to_string()
+    } else {
+        format!("{} · {}", title, site_title)
+    };
+
     Html(format!(
         "<!doctype html>\
          <html>\
@@ -847,6 +923,7 @@ pub fn page(title: &str, style: &str, body: &str) -> Html<String> {
              <meta charset='utf-8'>\
              <meta name='viewport' content='width=device-width, initial-scale=1'>\
              <title>{}</title>\
+             <meta name='description' content='{}'>\
              {}\
              <link rel='preconnect' href='https://fonts.googleapis.com'>\
              <link rel='preconnect' href='https://fonts.gstatic.com' crossorigin>\
@@ -857,6 +934,7 @@ pub fn page(title: &str, style: &str, body: &str) -> Html<String> {
            </head>\
            <body>\
              <div id='header'>\
+               {}\
                <div class='header-text'>\
                  <h1>{}</h1>\
                  <div class='repo-desc'>{}</div>\
@@ -953,10 +1031,12 @@ pub fn page(title: &str, style: &str, body: &str) -> Html<String> {
              </script>
            </body>
          </html>",
-        html_escape(title),
+        html_escape(&page_title),
+        html_escape(site_subtitle),
         favicon_links,
         COMMON_STYLE,
         style,
+        logo_html,
         html_escape(site_title),
         html_escape(site_subtitle),
         menu_links,
@@ -1161,6 +1241,7 @@ pub async fn start_server(repo_path: &str, port: u16) {
 
     // Initialize site-wide options (title, subtitle, footer) from config once
     {
+        let lysrc = load_lysrc(&path);
         // Helper to read a single key
         let read_key = |key: &str| -> Option<String> {
             let mut stmt = conn
@@ -1173,31 +1254,44 @@ pub async fn start_server(repo_path: &str, port: u16) {
                 None
             }
         };
-        if let Some(t) = read_key("web_title") {
-            let _ = WEB_TITLE.set(t);
-        } else {
-            let _ = WEB_TITLE.set("Lys Repository".to_string());
-        }
-        if let Some(st) = read_key("web_subtitle") {
-            let _ = WEB_SUBTITLE.set(st);
-        } else {
-            let _ = WEB_SUBTITLE.set("A secure local-first vcs".to_string());
-        }
-        if let Some(f) = read_key("web_footer") {
-            let _ = WEB_FOOTER.set(f);
-        } else {
-            let _ = WEB_FOOTER.set(String::new());
-        }
-        if let Some(h) = read_key("web_homepage") {
-            let _ = WEB_HOMEPAGE.set(h);
-        } else {
-            let _ = WEB_HOMEPAGE.set(String::new());
-        }
-        if let Some(d) = read_key("web_documentation") {
-            let _ = WEB_DOCUMENTATION.set(d);
-        } else {
-            let _ = WEB_DOCUMENTATION.set(String::new());
-        }
+        let pick = |lysrc_key: &str, db_key: &str, default: &str| -> String {
+            lysrc
+                .get(lysrc_key)
+                .and_then(|v| clean_value(v))
+                .or_else(|| read_key(db_key).and_then(|v| clean_value(&v)))
+                .unwrap_or_else(|| default.to_string())
+        };
+        let pick_optional = |lysrc_key: &str, db_key: &str| -> String {
+            lysrc
+                .get(lysrc_key)
+                .and_then(|v| clean_value(v))
+                .or_else(|| read_key(db_key).and_then(|v| clean_value(&v)))
+                .unwrap_or_default()
+        };
+
+        let title = pick("title", "web_title", "Lys Repository");
+        let subtitle = pick("description", "web_subtitle", "A secure local-first vcs");
+        let footer = pick_optional("footer", "web_footer");
+        let homepage = pick_optional("homepage", "web_homepage");
+        let documentation = pick_optional("documentation", "web_documentation");
+        let logo = lysrc
+            .get("logo")
+            .and_then(|v| clean_value(v))
+            .map(|v| normalize_asset_path(&v))
+            .unwrap_or_default();
+        let favicon = lysrc
+            .get("favicon")
+            .and_then(|v| clean_value(v))
+            .map(|v| normalize_asset_path(&v))
+            .unwrap_or_default();
+
+        let _ = WEB_TITLE.set(title);
+        let _ = WEB_SUBTITLE.set(subtitle);
+        let _ = WEB_FOOTER.set(footer);
+        let _ = WEB_HOMEPAGE.set(homepage);
+        let _ = WEB_DOCUMENTATION.set(documentation);
+        let _ = WEB_LOGO.set(logo);
+        let _ = WEB_FAVICON.set(favicon);
     }
 
     let (chat_tx, _) = broadcast::channel(100);

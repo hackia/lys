@@ -25,6 +25,7 @@ use std::fs::remove_dir_all;
 use std::io::Error as IoError;
 use std::io::Write;
 use std::io::{Read, Result as IoResult};
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -33,6 +34,17 @@ use std::process::Stdio;
 pub enum Node {
     File { hash: String, mode: u32, size: u64 },
     Directory { children: BTreeMap<String, Node> },
+}
+
+#[cfg(unix)]
+pub fn get_file_mode(path: &Path) -> Option<u32> {
+    let metadata = std::fs::metadata(path).ok()?;
+    Some(metadata.permissions().mode())
+}
+
+#[cfg(not(unix))]
+pub fn get_file_mode(_path: &Path) -> Option<u32> {
+    Some(0o100644)
 }
 
 #[derive(Debug)]
@@ -174,9 +186,10 @@ fn restore_tree(
 
     for (name, hash, mode) in nodes {
         let path = current_path.join(&name);
+        let is_dir =
+            is_directory(conn, &hash).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
 
-        // 16384 est le mode Git pour un dossier (040000 en octal)
-        if mode == 16384 || mode == 0o040000 {
+        if is_dir {
             create_dir_all(&path)?;
             // Récursion : on va chercher les fichiers DANS ce dossier
             restore_tree(conn, &hash, &path, repo_root)?;
@@ -190,16 +203,13 @@ fn restore_tree(
                 let mut f = File::create(&path)?;
                 f.write_all(&content)?;
                 f.sync_data()?;
-                // Sur FreeBSD/Linux, on peut même remettre les droits d'exécution !
+                // Sur Unix, on restaure les permissions du système
                 #[cfg(unix)]
                 {
                     use std::fs::Permissions;
-
-                    f.set_permissions(Permissions::from_mode(0o755)).expect("");
-
-                    if mode == 33261 {
-                        // Exécutable
-                        f.set_permissions(Permissions::from_mode(0o755))?;
+                    if mode != 0 {
+                        let perm_bits = (mode as u32) & 0o7777;
+                        f.set_permissions(Permissions::from_mode(perm_bits))?;
                     }
                 }
             }
@@ -366,7 +376,7 @@ fn ls_tree_recursive(
     }
 
     let count = entries.len();
-    for (i, (name, hash, mode)) in entries.into_iter().enumerate() {
+    for (i, (name, hash, _mode)) in entries.into_iter().enumerate() {
         let is_last = i == count - 1;
         let connector = if is_last { "└── " } else { "├── " };
         let full_path = if current_path.is_empty() {
@@ -375,14 +385,10 @@ fn ls_tree_recursive(
             format!("{}/{}", current_path, name)
         };
 
+        let is_dir = is_directory(conn, &hash)?;
         let mut commit_info = String::new();
         let mut commit_hash_str = "       ".to_string(); // 7 spaces placeholder
-        if let Some((h, ts, msg)) = last_commit_for_path_cli(
-            conn,
-            &full_path,
-            is_directory(conn, &hash)?,
-            until_commit_id,
-        ) {
+        if let Some((h, ts, msg)) = last_commit_for_path_cli(conn, &full_path, is_dir, until_commit_id) {
             commit_hash_str = h[0..7].to_string();
             let age = time_ago_cli(&ts);
             let truncated_msg = if msg.len() > 50 {
@@ -395,7 +401,7 @@ fn ls_tree_recursive(
 
         lines.push(format!(
             "{} [ {} ] [ {} ] {}{}{}{}",
-            format_mode(mode),
+            if is_dir { "d" } else { "f" },
             &hash[0..7],
             commit_hash_str,
             prefix,
@@ -405,7 +411,7 @@ fn ls_tree_recursive(
         ));
 
         // Si le hash possède lui-même des enfants dans tree_nodes, c'est un dossier
-        if is_directory(conn, &hash)? {
+        if is_dir {
             let new_prefix = if is_last {
                 format!("{}    ", prefix)
             } else {
@@ -479,7 +485,8 @@ fn is_directory(conn: &Connection, hash: &str) -> Result<bool, Error> {
 }
 
 pub fn format_mode(mode: i64) -> String {
-    if mode == 16384 || mode == 0o040000 || mode == 0o755 {
+    let m = mode as u32;
+    if (m & 0o170000) == 0o040000 {
         "d".to_string()
     } else {
         "f".to_string()
@@ -671,7 +678,11 @@ fn extract_tree_recursive(
     for (name, hash, mode, content) in entries {
         let full_path = current_dest.join(name);
 
-        if mode == 0o755 {
+        let is_dir = is_directory(conn, &hash).map_err(|e| sqlite::Error {
+            code: Some(1),
+            message: Some(format!("is_directory failed: {e}")),
+        })?;
+        if is_dir {
             // C'est un dossier
             create_dir_all(&full_path).unwrap();
             extract_tree_recursive(conn, &hash, &full_path)?;
@@ -681,6 +692,14 @@ fn extract_tree_recursive(
             let mut f = File::create(full_path).expect("");
             f.write_all(&decoded).expect("a");
             f.sync_all().expect("a");
+            #[cfg(unix)]
+            {
+                use std::fs::Permissions;
+                if mode != 0 {
+                    let perm_bits = (mode as u32) & 0o7777;
+                    f.set_permissions(Permissions::from_mode(perm_bits)).ok();
+                }
+            }
         }
     }
     Ok(())
@@ -1430,13 +1449,8 @@ pub fn commit(conn: &Connection, message: &str, author: &str) -> Result<(), Erro
             .expect("failed to insert blob");
 
         // Insertion du fichier dans notre structure d'arbre en mémoire
-        insert_into_tree(
-            &mut root_tree,
-            relative,
-            content_hash,
-            metadata.permissions().mode(),
-            metadata.len(),
-        );
+        let mode = get_file_mode(path).unwrap_or(0);
+        insert_into_tree(&mut root_tree, relative, content_hash, mode, metadata.len());
     }
 
     // 2. On calcule les hashes de chaque dossier et on insère dans SQLite
@@ -1583,7 +1597,11 @@ pub fn flatten_tree(
 
     for (name, hash, mode) in entries {
         let path = current_path.join(name);
-        if mode == 0o755 || mode == 0o040000 || mode == 16384 {
+        let is_dir = is_directory(conn, &hash).map_err(|e| sqlite::Error {
+            code: Some(1),
+            message: Some(format!("is_directory failed: {e}")),
+        })?;
+        if is_dir {
             // C'est un répertoire
             flatten_tree(conn, &hash, path, state)?;
         } else {
