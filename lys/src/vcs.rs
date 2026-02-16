@@ -25,6 +25,7 @@ use std::fs::remove_dir_all;
 use std::io::Error as IoError;
 use std::io::Write;
 use std::io::{Read, Result as IoResult};
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
@@ -1687,7 +1688,7 @@ pub fn start_pager() -> Option<std::process::Child> {
         }
     }
 
-    cmd.stdin(std::process::Stdio::piped()).spawn().ok()
+    cmd.stdin(Stdio::piped()).spawn().ok()
 }
 
 pub fn is_file_in_state(path: &Path, tree_hash: &str, conn: &Connection) -> bool {
