@@ -11,7 +11,7 @@ use std::process::Command;
 use crate::vcs::FileStatus;
 
 pub fn ok(description: &str) {
-    let (x, _) = size().expect("failed to get term size");
+    let x = term_width();
 
     // 1. Calcul de la largeur réelle des caractères UTF-8
     let desc_width = description.chars().count();
@@ -42,7 +42,7 @@ pub fn ok(description: &str) {
 }
 
 pub fn ok_merkle_hash(h: &str) {
-    let (x, _) = size().expect("failed to get term size");
+    let x = term_width();
 
     let padding = x.saturating_sub(h.chars().count() as u16 + 7);
     let _ = execute!(
@@ -56,7 +56,7 @@ pub fn ok_merkle_hash(h: &str) {
 }
 
 pub fn ko(description: &str) {
-    let (x, _) = size().expect("failed to get term size");
+    let x = term_width();
     // 1. Calcul de la largeur réelle des caractères UTF-8
     let desc_width = description.chars().count();
 
@@ -101,7 +101,7 @@ pub fn ok_status(verb: &FileStatus) {
 }
 
 pub fn ok_tag(tag: &str, description: &str, date: &str, _hash: &str) {
-    let (x, _) = size().expect("failed to get term size");
+    let x = term_width();
 
     let padding = x.saturating_sub(
         tag.chars().count() as u16
@@ -124,7 +124,7 @@ pub fn ok_tag(tag: &str, description: &str, date: &str, _hash: &str) {
 }
 
 pub fn ok_audit_commit(hash: &str) {
-    let (x, _) = size().expect("failed to get term size");
+    let x = term_width();
 
     let description = " Signature verified ";
     let padding =
@@ -143,7 +143,7 @@ pub fn ok_audit_commit(hash: &str) {
 }
 
 pub fn commit_created(hash: &str) {
-    let (x, _) = size().expect("failed to get term size");
+    let x = term_width();
 
     let description = " Committed successfully ";
     let padding =
@@ -162,7 +162,7 @@ pub fn commit_created(hash: &str) {
 }
 
 pub fn ko_audit_commit(hash: &str) {
-    let (x, _) = size().expect("failed to get term size");
+    let x = term_width();
 
     let description = " Signature verification failed ";
     let padding =
@@ -207,4 +207,8 @@ pub fn run_hooks() -> Result<(), Box<dyn std::error::Error>> {
     }
     ok("Hooks ran successfully.");
     Ok(())
+}
+
+fn term_width() -> u16 {
+    size().map(|(w, _)| w).unwrap_or(80)
 }
