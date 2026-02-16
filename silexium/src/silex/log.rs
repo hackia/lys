@@ -1,6 +1,6 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use blake3::Hasher;
-use ed25519_dalek::{Signature, SigningKey, Signer};
+use ed25519_dalek::{Signature, Signer, SigningKey};
 
 pub type Hash = [u8; 32];
 

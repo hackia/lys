@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use chrono::Utc;
 use sqlite::{Connection, State};
 use std::fs;
@@ -226,8 +226,7 @@ pub fn resolve_release(
 }
 
 pub fn load_log_entries(conn: &Connection) -> Result<Vec<LogEntryData>> {
-    let mut stmt = conn
-        .prepare("SELECT seq, entry_hash FROM log_entries ORDER BY seq ASC")?;
+    let mut stmt = conn.prepare("SELECT seq, entry_hash FROM log_entries ORDER BY seq ASC")?;
     let mut entries = Vec::new();
     while let Ok(State::Row) = stmt.next() {
         let seq: i64 = stmt.read(0)?;
@@ -312,8 +311,7 @@ pub fn insert_key(
 
 pub fn revoke_key(conn: &Connection, key_id: &str, revoked_at: &str) -> Result<()> {
     let _ = fetch_key(conn, key_id)?;
-    let mut stmt =
-        conn.prepare("UPDATE keys SET revoked = 1, revoked_at = ? WHERE key_id = ?")?;
+    let mut stmt = conn.prepare("UPDATE keys SET revoked = 1, revoked_at = ? WHERE key_id = ?")?;
     stmt.bind((1, revoked_at))?;
     stmt.bind((2, key_id))?;
     stmt.next()?;
@@ -543,7 +541,12 @@ fn fetch_package_id(conn: &Connection, package: &str) -> Result<i64> {
     Err(anyhow!("package not found"))
 }
 
-fn fetch_version(conn: &Connection, package_id: i64, version: &str, channel: &str) -> Result<VersionRow> {
+fn fetch_version(
+    conn: &Connection,
+    package_id: i64,
+    version: &str,
+    channel: &str,
+) -> Result<VersionRow> {
     let mut stmt = conn.prepare(
         "SELECT id, version, channel FROM versions WHERE package_id = ? AND version = ? AND channel = ?",
     )?;
@@ -554,7 +557,11 @@ fn fetch_version(conn: &Connection, package_id: i64, version: &str, channel: &st
         let id: i64 = stmt.read(0)?;
         let version: String = stmt.read(1)?;
         let channel: String = stmt.read(2)?;
-        return Ok(VersionRow { id, version, channel });
+        return Ok(VersionRow {
+            id,
+            version,
+            channel,
+        });
     }
     Err(anyhow!("version not found"))
 }
@@ -569,7 +576,11 @@ fn fetch_latest_version(conn: &Connection, package_id: i64, channel: &str) -> Re
         let id: i64 = stmt.read(0)?;
         let version: String = stmt.read(1)?;
         let channel: String = stmt.read(2)?;
-        return Ok(VersionRow { id, version, channel });
+        return Ok(VersionRow {
+            id,
+            version,
+            channel,
+        });
     }
     Err(anyhow!("no versions found"))
 }
@@ -598,7 +609,12 @@ fn fetch_manifest(conn: &Connection, version_id: i64) -> Result<ManifestData> {
     Err(anyhow!("manifest not found"))
 }
 
-fn fetch_artifacts(conn: &Connection, version_id: i64, os: &str, arch: &str) -> Result<Vec<ArtifactData>> {
+fn fetch_artifacts(
+    conn: &Connection,
+    version_id: i64,
+    os: &str,
+    arch: &str,
+) -> Result<Vec<ArtifactData>> {
     let mut stmt = conn.prepare(
         "SELECT kind, os, arch, size, blake3, url FROM artifacts WHERE version_id = ? AND (kind = 'source' OR (kind = 'binary' AND os = ? AND arch = ?))",
     )?;
@@ -659,9 +675,7 @@ fn fetch_attestations(conn: &Connection, version_id: i64) -> Result<Vec<Attestat
 }
 
 fn fetch_log_entry(conn: &Connection, manifest_id: i64) -> Result<LogEntryData> {
-    let mut stmt = conn.prepare(
-        "SELECT seq, entry_hash FROM log_entries WHERE manifest_id = ?",
-    )?;
+    let mut stmt = conn.prepare("SELECT seq, entry_hash FROM log_entries WHERE manifest_id = ?")?;
     stmt.bind((1, manifest_id))?;
     if let Ok(State::Row) = stmt.next() {
         let seq: i64 = stmt.read(0)?;

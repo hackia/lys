@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use std::env;
 use std::fs;
 use std::path::PathBuf;
@@ -87,11 +87,21 @@ mod tests {
             }
         };
 
-        if env::var("SILEXIUM_TSA_VERIFY").ok().as_deref().unwrap_or("").is_empty() {
+        if env::var("SILEXIUM_TSA_VERIFY")
+            .ok()
+            .as_deref()
+            .unwrap_or("")
+            .is_empty()
+        {
             eprintln!("skipping: SILEXIUM_TSA_VERIFY not set");
             return;
         }
-        if env::var("SILEXIUM_OTS_VERIFY").ok().as_deref().unwrap_or("").is_empty() {
+        if env::var("SILEXIUM_OTS_VERIFY")
+            .ok()
+            .as_deref()
+            .unwrap_or("")
+            .is_empty()
+        {
             eprintln!("skipping: SILEXIUM_OTS_VERIFY not set");
             return;
         }

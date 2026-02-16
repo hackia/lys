@@ -2,7 +2,7 @@ use crate::canon;
 use crate::silex::db;
 use crate::silex::proofs;
 use crate::silex::types::{ArtifactType, AuthorPayload, Manifest, ServerPayload, TestsPayload};
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use chrono::Utc;
 use serde::Deserialize;
 use sqlite::Connection;
@@ -198,7 +198,10 @@ pub fn ingest_release(conn: &Connection, path: &Path) -> Result<()> {
         let package_id = db::upsert_package(
             conn,
             package_name,
-            release.package.as_ref().and_then(|p| p.description.as_deref()),
+            release
+                .package
+                .as_ref()
+                .and_then(|p| p.description.as_deref()),
             release.package.as_ref().and_then(|p| p.license.as_deref()),
             release.package.as_ref().and_then(|p| p.homepage.as_deref()),
             &created_at,
@@ -325,8 +328,8 @@ fn load_attestations(
         }
 
         let payload_path = resolve_path(base, &att.payload_path);
-        let payload_bytes = fs::read(&payload_path)
-            .with_context(|| format!("read {}", payload_path.display()))?;
+        let payload_bytes =
+            fs::read(&payload_path).with_context(|| format!("read {}", payload_path.display()))?;
 
         let payload = match kind {
             "author" => {
@@ -358,10 +361,10 @@ fn load_attestations(
 
         let tsa_path = resolve_path(base, &att.tsa_proof_path);
         let ots_path = resolve_path(base, &att.ots_proof_path);
-        let tsa_proof = fs::read(&tsa_path)
-            .with_context(|| format!("read {}", tsa_path.display()))?;
-        let ots_proof = fs::read(&ots_path)
-            .with_context(|| format!("read {}", ots_path.display()))?;
+        let tsa_proof =
+            fs::read(&tsa_path).with_context(|| format!("read {}", tsa_path.display()))?;
+        let ots_proof =
+            fs::read(&ots_path).with_context(|| format!("read {}", ots_path.display()))?;
         if tsa_proof.is_empty() || ots_proof.is_empty() {
             return Err(anyhow!("timestamp proofs must not be empty"));
         }
@@ -384,7 +387,9 @@ fn load_attestations(
     Ok(out)
 }
 
-fn compute_attestation_hashes(attestations: &[db::AttestationData]) -> Result<(String, String, String)> {
+fn compute_attestation_hashes(
+    attestations: &[db::AttestationData],
+) -> Result<(String, String, String)> {
     let mut author = None;
     let mut tests = None;
     let mut server = None;
@@ -454,7 +459,9 @@ fn validate_manifest(manifest: &Manifest) -> Result<()> {
         return Err(anyhow!("manifest must include exactly one source artifact"));
     }
     if binary_count == 0 {
-        return Err(anyhow!("manifest must include at least one binary artifact"));
+        return Err(anyhow!(
+            "manifest must include at least one binary artifact"
+        ));
     }
     Ok(())
 }

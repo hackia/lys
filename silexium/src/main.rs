@@ -1,5 +1,5 @@
-pub mod silex;
 mod canon;
+pub mod silex;
 use anyhow::{Context, Result, anyhow};
 use axum::{
     Json, Router,
@@ -286,11 +286,17 @@ fn validate_attestations(
         return Err(ApiError::internal("missing required attestations"));
     }
 
-    let author_hash = author_hash.ok_or_else(|| ApiError::internal("author attestation missing"))?;
+    let author_hash =
+        author_hash.ok_or_else(|| ApiError::internal("author attestation missing"))?;
     let tests_hash = tests_hash.ok_or_else(|| ApiError::internal("tests attestation missing"))?;
-    let server_hash = server_hash.ok_or_else(|| ApiError::internal("server attestation missing"))?;
-    let expected_entry_hash =
-        canon::entry_hash(&release.manifest.blake3, &author_hash, &tests_hash, &server_hash);
+    let server_hash =
+        server_hash.ok_or_else(|| ApiError::internal("server attestation missing"))?;
+    let expected_entry_hash = canon::entry_hash(
+        &release.manifest.blake3,
+        &author_hash,
+        &tests_hash,
+        &server_hash,
+    );
     if expected_entry_hash != release.log_entry.entry_hash {
         return Err(ApiError::internal("log entry hash mismatch"));
     }
@@ -309,8 +315,8 @@ fn verify_attestation_signature(
     key_bytes.copy_from_slice(public_key);
     let verifying_key = VerifyingKey::from_bytes(&key_bytes)
         .map_err(|_| ApiError::internal("invalid public key bytes"))?;
-    let signature_bytes =
-        hex::decode(signature_hex).map_err(|_| ApiError::bad_request("bad signature hex".into()))?;
+    let signature_bytes = hex::decode(signature_hex)
+        .map_err(|_| ApiError::bad_request("bad signature hex".into()))?;
     let signature = Signature::from_slice(&signature_bytes)
         .map_err(|_| ApiError::bad_request("bad signature".into()))?;
     verifying_key
@@ -357,7 +363,9 @@ fn validate_manifest_bytes(
         return Err(anyhow!("manifest must include exactly one source artifact"));
     }
     if binary_count == 0 {
-        return Err(anyhow!("manifest must include at least one binary artifact"));
+        return Err(anyhow!(
+            "manifest must include at least one binary artifact"
+        ));
     }
 
     let jcs_bytes = canon::jcs_bytes(&manifest)?;

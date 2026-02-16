@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use clap::{Parser, Subcommand};
 use std::env;
 use std::path::{Path, PathBuf};
@@ -12,8 +12,11 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
+    #[doc = "Serve the API server"]
     Serve(ServeArgs),
+    #[doc = "Manage server keys"]
     Key(KeyArgs),
+    #[doc = "Ingest a release manifest"]
     Ingest(IngestArgs),
 }
 

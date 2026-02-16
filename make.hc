@@ -18,4 +18,5 @@
 	@phase desc="install lys" by=[1,2] task="cargo install --path lys"
 	@phase desc="install syl" by=[3,6] task="cargo install --path syl"
 	@phase desc="install uvd" by=[5,7] task="cargo install --path uvd"
+	@phase desc="install silexium" by=[5,7] task="cargo install --path silexium"
 @end

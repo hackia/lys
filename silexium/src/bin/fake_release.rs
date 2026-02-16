@@ -1,14 +1,17 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use blake3::Hash;
 use chrono::{DateTime, Duration, Utc};
 use clap::Parser;
-use ed25519_dalek::{Signature, SigningKey, Signer};
+use ed25519_dalek::{Signature, Signer, SigningKey};
 use serde::Serialize;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 #[derive(Parser, Debug)]
-#[command(name = "fake_release", about = "Generate a fake Silexium release fixture")]
+#[command(
+    name = "fake_release",
+    about = "Generate a fake Silexium release fixture"
+)]
 struct Args {
     #[arg(long)]
     out: PathBuf,
@@ -129,8 +132,13 @@ fn main() -> Result<()> {
     fs::create_dir_all(&artifacts_dir)?;
     fs::create_dir_all(&source_dir)?;
 
-    let (bin_path, bin_size, bin_hash) =
-        write_artifact(&artifacts_dir, &args.package, &args.os, &args.arch, b"fake-binary\n")?;
+    let (bin_path, bin_size, bin_hash) = write_artifact(
+        &artifacts_dir,
+        &args.package,
+        &args.os,
+        &args.arch,
+        b"fake-binary\n",
+    )?;
     let (src_path, src_size, src_hash) =
         write_source_archive(&artifacts_dir, &args.package, b"fake-source\n")?;
     let bin_name = file_name_string(&bin_path)?;
@@ -277,7 +285,13 @@ fn main() -> Result<()> {
     );
     fs::write(args.out.join("release.toml"), release_toml)?;
 
-    write_ingest_script(&args.out, &created_at, &author_key_id, &tests_key_id, &server_key_id)?;
+    write_ingest_script(
+        &args.out,
+        &created_at,
+        &author_key_id,
+        &tests_key_id,
+        &server_key_id,
+    )?;
 
     println!("fake release generated at {}", args.out.display());
     println!("manifest_hash={manifest_hash}");
@@ -372,11 +386,7 @@ fn sign_payload(key: &SigningKey, payload_hash: &str) -> String {
     hex::encode(signature.to_bytes())
 }
 
-fn write_mock_proofs(
-    tsa_dir: &Path,
-    ots_dir: &Path,
-    kind: &str,
-) -> Result<(String, String)> {
+fn write_mock_proofs(tsa_dir: &Path, ots_dir: &Path, kind: &str) -> Result<(String, String)> {
     let tsa_bytes = format!("tsa-{kind}\n").into_bytes();
     let ots_bytes = format!("ots-{kind}\n").into_bytes();
     fs::write(tsa_dir.join(format!("{kind}.tsr")), &tsa_bytes)?;
