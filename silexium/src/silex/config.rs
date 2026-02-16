@@ -13,6 +13,8 @@ pub struct Cli {
 #[derive(Subcommand, Debug)]
 pub enum Command {
     Serve(ServeArgs),
+    Key(KeyArgs),
+    Ingest(IngestArgs),
 }
 
 #[derive(Parser, Debug)]
@@ -25,6 +27,37 @@ pub struct ServeArgs {
     pub db: Option<PathBuf>,
     #[arg(long)]
     pub server_key: Option<PathBuf>,
+}
+
+#[derive(Parser, Debug)]
+pub struct IngestArgs {
+    #[arg(long)]
+    pub file: PathBuf,
+    #[arg(long)]
+    pub db: Option<PathBuf>,
+}
+
+#[derive(Parser, Debug)]
+pub struct KeyArgs {
+    #[command(subcommand)]
+    pub command: KeyCommand,
+    #[arg(long)]
+    pub db: Option<PathBuf>,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum KeyCommand {
+    Add(KeyAddArgs),
+}
+
+#[derive(Parser, Debug)]
+pub struct KeyAddArgs {
+    #[arg(long)]
+    pub role: String,
+    #[arg(long)]
+    pub key: PathBuf,
+    #[arg(long)]
+    pub key_id: Option<String>,
 }
 
 pub fn resolve_db_path(explicit: Option<PathBuf>) -> Result<PathBuf> {

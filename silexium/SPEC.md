@@ -88,6 +88,24 @@ Each attestation includes:
   - tsa (RFC3161 proof)
   - ots (OpenTimestamps proof)
 
+Key identifiers:
+- key_id is the lower-case hex of the ed25519 public key bytes.
+
+Signature payload:
+- The ed25519 signature is computed over the UTF-8 bytes of `payload_hash`
+  exactly as stored (lower-case hex).
+
+Attestation hash (for log entries):
+- attestation_hash = blake3 of canonical bytes:
+  "SILEXIUM-ATTESTATION\n" +
+  kind + "\n" +
+  key_id + "\n" +
+  payload_hash + "\n" +
+  signature + "\n" +
+  created_at + "\n" +
+  tsa_proof_hex + "\n" +
+  ots_proof_hex + "\n"
+
 Attestation payloads (conceptual):
 
 Author attestation signs:
@@ -123,6 +141,14 @@ Merkle hashing (CT-style):
 - leaf_hash = blake3(0x00 || entry_hash_bytes)
 - node_hash = blake3(0x01 || left || right)
 - MTH uses the largest power-of-two split.
+
+Entry hash canonicalization:
+- entry_hash = blake3 of canonical bytes:
+  "SILEXIUM-LOG-ENTRY\n" +
+  "manifest:" + manifest_hash + "\n" +
+  "author:" + author_attestation_hash + "\n" +
+  "tests:" + tests_attestation_hash + "\n" +
+  "server:" + server_attestation_hash + "\n"
 
 Log exposes:
 - STH (Signed Tree Head): tree_size, root_hash, timestamp, signature

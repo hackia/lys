@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Context, Result};
+use chrono::Utc;
 use sqlite::{Connection, State};
 use std::fs;
 use std::path::Path;
@@ -47,6 +48,14 @@ pub struct StoredSth {
     pub timestamp: String,
     pub signature: String,
     pub key_id: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct KeyData {
+    pub key_id: String,
+    pub role: String,
+    pub public_key: Vec<u8>,
+    pub revoked: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -223,6 +232,188 @@ pub fn load_sth(conn: &Connection, tree_size: u64) -> Result<Option<StoredSth>> 
     Ok(None)
 }
 
+pub fn fetch_key(conn: &Connection, key_id: &str) -> Result<KeyData> {
+    let mut stmt =
+        conn.prepare("SELECT key_id, role, public_key, revoked FROM keys WHERE key_id = ?")?;
+    stmt.bind((1, key_id))?;
+    if let Ok(State::Row) = stmt.next() {
+        let key_id: String = stmt.read(0)?;
+        let role: String = stmt.read(1)?;
+        let public_key: Vec<u8> = stmt.read(2)?;
+        let revoked: i64 = stmt.read(3)?;
+        return Ok(KeyData {
+            key_id,
+            role,
+            public_key,
+            revoked: revoked != 0,
+        });
+    }
+    Err(anyhow!("key not found"))
+}
+
+pub fn insert_key(conn: &Connection, key_id: &str, role: &str, public_key: &[u8]) -> Result<()> {
+    let mut stmt = conn.prepare(
+        "INSERT INTO keys (key_id, role, public_key, revoked, created_at) VALUES (?, ?, ?, 0, ?)",
+    )?;
+    stmt.bind((1, key_id))?;
+    stmt.bind((2, role))?;
+    stmt.bind((3, public_key))?;
+    stmt.bind((4, Utc::now().to_rfc3339().as_str()))?;
+    stmt.next()?;
+    Ok(())
+}
+
+pub fn upsert_package(
+    conn: &Connection,
+    name: &str,
+    description: Option<&str>,
+    license: Option<&str>,
+    homepage: Option<&str>,
+    created_at: &str,
+) -> Result<i64> {
+    if let Ok(id) = fetch_package_id(conn, name) {
+        return Ok(id);
+    }
+    let mut stmt = conn.prepare(
+        "INSERT INTO packages (name, description, license, homepage, created_at) VALUES (?, ?, ?, ?, ?)",
+    )?;
+    stmt.bind((1, name))?;
+    stmt.bind((2, description.unwrap_or("")))?;
+    stmt.bind((3, license.unwrap_or("")))?;
+    stmt.bind((4, homepage.unwrap_or("")))?;
+    stmt.bind((5, created_at))?;
+    stmt.next()?;
+    last_insert_rowid(conn)
+}
+
+pub fn upsert_version(
+    conn: &Connection,
+    package_id: i64,
+    version: &str,
+    channel: &str,
+    created_at: &str,
+) -> Result<i64> {
+    if let Ok(row) = fetch_version(conn, package_id, version, channel) {
+        return Ok(row.id);
+    }
+    let mut stmt = conn.prepare(
+        "INSERT INTO versions (package_id, version, channel, created_at) VALUES (?, ?, ?, ?)",
+    )?;
+    stmt.bind((1, package_id))?;
+    stmt.bind((2, version))?;
+    stmt.bind((3, channel))?;
+    stmt.bind((4, created_at))?;
+    stmt.next()?;
+    last_insert_rowid(conn)
+}
+
+pub fn insert_manifest(
+    conn: &Connection,
+    version_id: i64,
+    format: &str,
+    bytes: &[u8],
+    blake3: &str,
+    src_index_size: Option<i64>,
+    src_index_blake3: Option<&str>,
+    created_at: &str,
+) -> Result<i64> {
+    let mut stmt = conn.prepare(
+        "INSERT INTO manifests (version_id, format, bytes, blake3, src_index_size, src_index_blake3, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    )?;
+    stmt.bind((1, version_id))?;
+    stmt.bind((2, format))?;
+    stmt.bind((3, bytes))?;
+    stmt.bind((4, blake3))?;
+    if let Some(size) = src_index_size {
+        stmt.bind((5, size))?;
+    } else {
+        stmt.bind((5, sqlite::Value::Null))?;
+    }
+    if let Some(hash) = src_index_blake3 {
+        stmt.bind((6, hash))?;
+    } else {
+        stmt.bind((6, sqlite::Value::Null))?;
+    }
+    stmt.bind((7, created_at))?;
+    stmt.next()?;
+    last_insert_rowid(conn)
+}
+
+pub fn insert_artifact(conn: &Connection, version_id: i64, artifact: &ArtifactData) -> Result<()> {
+    let mut stmt = conn.prepare(
+        "INSERT INTO artifacts (version_id, kind, os, arch, size, blake3, url) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    )?;
+    stmt.bind((1, version_id))?;
+    stmt.bind((2, artifact.kind.as_str()))?;
+    if let Some(os) = &artifact.os {
+        stmt.bind((3, os.as_str()))?;
+    } else {
+        stmt.bind((3, sqlite::Value::Null))?;
+    }
+    if let Some(arch) = &artifact.arch {
+        stmt.bind((4, arch.as_str()))?;
+    } else {
+        stmt.bind((4, sqlite::Value::Null))?;
+    }
+    stmt.bind((5, artifact.size))?;
+    stmt.bind((6, artifact.blake3.as_str()))?;
+    stmt.bind((7, artifact.url.as_str()))?;
+    stmt.next()?;
+    Ok(())
+}
+
+pub fn insert_attestation(
+    conn: &Connection,
+    version_id: i64,
+    attestation: &AttestationData,
+) -> Result<i64> {
+    let mut stmt = conn.prepare(
+        "INSERT INTO attestations (version_id, kind, key_id, payload_hash, signature, created_at, tsa_proof, ots_proof) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    )?;
+    stmt.bind((1, version_id))?;
+    stmt.bind((2, attestation.kind.as_str()))?;
+    stmt.bind((3, attestation.key_id.as_str()))?;
+    stmt.bind((4, attestation.payload_hash.as_str()))?;
+    stmt.bind((5, attestation.signature.as_str()))?;
+    stmt.bind((6, attestation.created_at.as_str()))?;
+    stmt.bind((7, attestation.tsa_proof.as_slice()))?;
+    stmt.bind((8, attestation.ots_proof.as_slice()))?;
+    stmt.next()?;
+    last_insert_rowid(conn)
+}
+
+pub fn next_log_seq(conn: &Connection) -> Result<i64> {
+    let mut stmt = conn.prepare("SELECT COALESCE(MAX(seq), 0) FROM log_entries")?;
+    if let Ok(State::Row) = stmt.next() {
+        let max_seq: i64 = stmt.read(0)?;
+        return Ok(max_seq + 1);
+    }
+    Ok(1)
+}
+
+pub fn insert_log_entry(
+    conn: &Connection,
+    seq: i64,
+    manifest_id: i64,
+    author_attestation_id: i64,
+    tests_attestation_id: i64,
+    server_attestation_id: i64,
+    entry_hash: &str,
+    created_at: &str,
+) -> Result<()> {
+    let mut stmt = conn.prepare(
+        "INSERT INTO log_entries (seq, manifest_id, author_attestation_id, tests_attestation_id, server_attestation_id, entry_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    )?;
+    stmt.bind((1, seq))?;
+    stmt.bind((2, manifest_id))?;
+    stmt.bind((3, author_attestation_id))?;
+    stmt.bind((4, tests_attestation_id))?;
+    stmt.bind((5, server_attestation_id))?;
+    stmt.bind((6, entry_hash))?;
+    stmt.bind((7, created_at))?;
+    stmt.next()?;
+    Ok(())
+}
 pub fn store_sth(conn: &Connection, sth: &StoredSth) -> Result<()> {
     let mut stmt = conn.prepare(
         "INSERT INTO log_sth (tree_size, root_hash, timestamp, signature, key_id) VALUES (?, ?, ?, ?, ?)",
@@ -379,4 +570,13 @@ fn fetch_log_entry(conn: &Connection, manifest_id: i64) -> Result<LogEntryData> 
         return Ok(LogEntryData { seq, entry_hash });
     }
     Err(anyhow!("log entry not found"))
+}
+
+fn last_insert_rowid(conn: &Connection) -> Result<i64> {
+    let mut stmt = conn.prepare("SELECT last_insert_rowid()")?;
+    if let Ok(State::Row) = stmt.next() {
+        let id: i64 = stmt.read(0)?;
+        return Ok(id);
+    }
+    Err(anyhow!("last_insert_rowid unavailable"))
 }

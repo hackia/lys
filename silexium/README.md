@@ -18,3 +18,12 @@ Notes:
 - Storage uses SQLite in the XDG data directory.
 - API endpoints are `/install` and `/update` (JSON POST).
 - The server requires an ed25519 signing key for STH signatures.
+- Admin CLI supports `key add` and `ingest` (see `INGEST.md`).
+- Public keys are expected as raw 32 bytes or 64 hex characters.
+- Key roles: `author`, `tests`, `server`.
+
+Admin examples:
+```
+silexium key add --role author --key author.pub
+silexium ingest --file release.toml
+```
