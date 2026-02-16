@@ -1,5 +1,6 @@
 use crate::db::decompress;
 use crate::utils::ok;
+use crate::vcs::FileStatus;
 use axum::{
     Router,
     body::Bytes,
@@ -422,10 +423,7 @@ fn normalize_asset_path(value: &str) -> String {
     if trimmed.is_empty() {
         return String::new();
     }
-    if trimmed.starts_with('/')
-        || trimmed.starts_with("data:")
-        || trimmed.contains("://")
-    {
+    if trimmed.starts_with('/') || trimmed.starts_with("data:") || trimmed.contains("://") {
         trimmed.to_string()
     } else {
         format!("/{trimmed}")
@@ -478,6 +476,62 @@ fn is_safe_relative_path(path: &str) -> bool {
         }
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lysrc_parsing_ignores_comments_and_blank_lines() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("lysrc");
+        let content = "\n# comment\n title = Lys \n\n description= Local-first \n";
+        std::fs::write(&path, content).expect("write lysrc");
+
+        let map = load_lysrc(dir.path());
+        assert_eq!(map.get("title").map(String::as_str), Some("Lys"));
+        assert_eq!(
+            map.get("description").map(String::as_str),
+            Some("Local-first")
+        );
+        assert!(map.get("missing").is_none());
+    }
+
+    #[test]
+    fn lysrc_parsing_strips_quotes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("lysrc");
+        let content = "title=\"Lys Repo\"\nfooter='(c) 2026'\n";
+        std::fs::write(&path, content).expect("write lysrc");
+
+        let map = load_lysrc(dir.path());
+        assert_eq!(map.get("title").map(String::as_str), Some("Lys Repo"));
+        assert_eq!(map.get("footer").map(String::as_str), Some("(c) 2026"));
+    }
+
+    #[test]
+    fn normalize_asset_path_behavior() {
+        assert_eq!(normalize_asset_path(""), "");
+        assert_eq!(normalize_asset_path("/logo.png"), "/logo.png");
+        assert_eq!(normalize_asset_path("logo.png"), "/logo.png");
+        assert_eq!(normalize_asset_path("images/logo.png"), "/images/logo.png");
+        assert_eq!(
+            normalize_asset_path("https://example.com/logo.png"),
+            "https://example.com/logo.png"
+        );
+        assert_eq!(
+            normalize_asset_path("data:image/svg+xml;base64,AAAA"),
+            "data:image/svg+xml;base64,AAAA"
+        );
+    }
+
+    #[test]
+    fn clean_value_trims_and_drops_empty() {
+        assert_eq!(clean_value("  "), None);
+        assert_eq!(clean_value("\n\t"), None);
+        assert_eq!(clean_value("  ok "), Some("ok".to_string()));
+    }
 }
 
 fn truncate_words(text: &str, limit: usize) -> String {
@@ -540,9 +594,9 @@ fn time_ago(timestamp: &str) -> String {
     }
     let dt = if let Ok(d) = DateTime::parse_from_rfc3339(ts) {
         d.with_timezone(&Utc)
-    } else if let Ok(d) = chrono::DateTime::parse_from_str(ts, "%Y-%m-%d %H:%M:%S %z") {
+    } else if let Ok(d) = DateTime::parse_from_str(ts, "%Y-%m-%d %H:%M:%S %z") {
         d.with_timezone(&Utc)
-    } else if let Ok(d) = chrono::DateTime::parse_from_str(ts, "%Y-%m-%d %H:%M:%S %:z") {
+    } else if let Ok(d) = DateTime::parse_from_str(ts, "%Y-%m-%d %H:%M:%S %:z") {
         d.with_timezone(&Utc)
     } else if let Ok(d) = chrono::NaiveDateTime::parse_from_str(ts, "%Y-%m-%d %H:%M:%S%.f") {
         DateTime::<Utc>::from_naive_utc_and_offset(d, Utc)
@@ -4277,10 +4331,8 @@ async fn new_commit_form(
 
     // Obtenir le status pour montrer ce qui va être commité
     let branch = crate::db::get_current_branch(&conn).unwrap_or_else(|_| "main".to_string());
-    let status = match crate::vcs::status(&conn, ".", &branch) {
-        Ok(s) => s,
-        Err(_) => Vec::new(),
-    };
+    let status: Vec<FileStatus> =
+        crate::vcs::status(&conn, ".", &branch).unwrap_or_else(|_| Vec::new());
 
     let mut status_html = String::from(
         "<div class='card' style='margin-bottom: 20px; font-family: var(--font-mono); font-size: 0.85em;'>",
@@ -4290,9 +4342,9 @@ async fn new_commit_form(
     } else {
         for s in &status {
             let (prefix, color, path) = match s {
-                crate::vcs::FileStatus::New(p) => ("+", "#6ce9a6", p),
-                crate::vcs::FileStatus::Modified(p, _) => ("~", "#ffd166", p),
-                crate::vcs::FileStatus::Deleted(p, _) => ("-", "#ff5d6c", p),
+                FileStatus::New(p) => ("+", "#6ce9a6", p),
+                FileStatus::Modified(p, _) => ("~", "#ffd166", p),
+                FileStatus::Deleted(p, _) => ("-", "#ff5d6c", p),
                 _ => continue,
             };
             status_html.push_str(&format!(
@@ -4333,7 +4385,7 @@ async fn new_commit_form(
     let mut diff_index = 0usize;
     for s in &status {
         match s {
-            crate::vcs::FileStatus::Modified(path, _) => {
+            FileStatus::Modified(path, _) => {
                 let old_hash = head_state
                     .get(path)
                     .map(|(h, _)| h.clone())
@@ -4357,7 +4409,7 @@ async fn new_commit_form(
                 ));
                 diff_index += 1;
             }
-            crate::vcs::FileStatus::New(path) => {
+            FileStatus::New(path) => {
                 let new_path = Path::new(".").join(path);
                 let new_bytes = std::fs::read(&new_path).unwrap_or_default();
                 let open_attr = if diff_index == 0 { " open" } else { "" };
@@ -4372,7 +4424,7 @@ async fn new_commit_form(
                 ));
                 diff_index += 1;
             }
-            crate::vcs::FileStatus::Deleted(path, _) => {
+            FileStatus::Deleted(path, _) => {
                 let old_hash = head_state
                     .get(path)
                     .map(|(h, _)| h.clone())
@@ -4632,10 +4684,7 @@ async fn create_commit(
 
     // On vérifie qu'il y a bien des changements
     let branch = crate::db::get_current_branch(&conn).unwrap_or_else(|_| "main".to_string());
-    let status = match crate::vcs::status(&conn, ".", &branch) {
-        Ok(s) => s,
-        Err(_) => Vec::new(),
-    };
+    let status = crate::vcs::status(&conn, ".", &branch).unwrap_or_else(|_| Vec::new());
 
     if status.is_empty() {
         return http_error(StatusCode::BAD_REQUEST, "No changes to commit");

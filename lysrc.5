@@ -1,0 +1,70 @@
+.TH LYSRC 5 "February 2026" "lys 0.2.0" "Lys File Formats"
+.SH NAME
+lysrc \- configuration file for the Lys web interface
+.SH SYNOPSIS
+.B lysrc
+.SH DESCRIPTION
+.B lysrc
+is a simple key=value file used by \fBlys web\fR to customize the web UI.
+It is read once at server startup.
+.SH LOCATION
+The file lives at the repository root:
+.RS
+.I ./lysrc
+.RE
+.SH FORMAT
+Each non-empty line must be \fIkey=value\fR. Lines starting with \fB#\fR are ignored.
+Values can be unquoted or wrapped in single/double quotes.
+.SH KEYS
+.TP
+\fBtitle\fR
+Site title shown in the header and page title. Default: \fBLys Repository\fR.
+.TP
+\fBdescription\fR
+Short subtitle shown under the title and used as the HTML meta description.
+Default: \fBA secure local-first vcs\fR.
+.TP
+\fBlogo\fR
+Path or URL to a logo image displayed in the header. If the value is a relative
+path, it is served from the repository root (prefixed with \fB/\fR).
+.TP
+\fBfavicon\fR
+Path or URL to a favicon. If set, it replaces the default icon set.
+.TP
+\fBfooter\fR
+Footer HTML shown at the bottom of every page. If empty, a default footer is used.
+.TP
+\fBhomepage\fR
+URL added to the navigation menu as \fBHomepage\fR.
+.TP
+\fBdocumentation\fR
+URL added to the navigation menu as \fBDocumentation\fR.
+.SH PRECEDENCE
+Values are resolved in this order:
+.RS
+1. \fBlysrc\fR
+.br
+2. Database config keys (\fBweb_*\fR) set via \fBlys web\fR options
+.br
+3. Built-in defaults
+.RE
+.SH EXAMPLES
+.TP
+Minimal configuration:
+.EX
+title=The future start here
+description=Track's it's evolution
+.EE
+.TP
+Branding + links:
+.EX
+title=Lys
+description=Local-first version control
+logo=lys.svg
+favicon=favicon.ico
+footer=<small>(c) 2026 Lys</small>
+homepage=https://example.com
+documentation=https://docs.example.com
+.EE
+.SH NOTES
+Changes to \fBlysrc\fR require restarting \fBlys web\fR.

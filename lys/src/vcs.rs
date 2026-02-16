@@ -185,6 +185,9 @@ fn restore_tree(
     }
 
     for (name, hash, mode) in nodes {
+                #[cfg(not(unix))]
+                let _ = mode;
+
         let path = current_path.join(&name);
         let is_dir =
             is_directory(conn, &hash).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
@@ -388,7 +391,9 @@ fn ls_tree_recursive(
         let is_dir = is_directory(conn, &hash)?;
         let mut commit_info = String::new();
         let mut commit_hash_str = "       ".to_string(); // 7 spaces placeholder
-        if let Some((h, ts, msg)) = last_commit_for_path_cli(conn, &full_path, is_dir, until_commit_id) {
+        if let Some((h, ts, msg)) =
+            last_commit_for_path_cli(conn, &full_path, is_dir, until_commit_id)
+        {
             commit_hash_str = h[0..7].to_string();
             let age = time_ago_cli(&ts);
             let truncated_msg = if msg.len() > 50 {
@@ -676,6 +681,9 @@ fn extract_tree_recursive(
     }
 
     for (name, hash, mode, content) in entries {
+        #[cfg(not(unix))]
+        let _ = mode;
+        
         let full_path = current_dest.join(name);
 
         let is_dir = is_directory(conn, &hash).map_err(|e| sqlite::Error {
