@@ -1056,10 +1056,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
 
 [[package]]
-name = "hub"
-version = "0.1.0"
-
-[[package]]
 name = "hybrid-array"
 version = "0.4.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2370,8 +2366,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f1880df446116126965eeec169136b2e0251dba37c6223bcc819569550edea3"
 
 [[package]]
-name = "silex"
+name = "silexium"
 version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "clap",
+ "tokio",
+ "tower-http",
+]
 
 [[package]]
 name = "simd-adler32"

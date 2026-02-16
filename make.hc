@@ -13,9 +13,9 @@
 @node 6 @role worker
 @node 7 @role worker
 
-@job Lys
-	@phase desc="format code" by=[0]     task="cargo fmt"
-	@phase desc="install lys" by=[1,2,3] task="cargo install --path lys"
-	@phase desc="install hub" by=[4,5,6] task="cargo install --path hub"
-	@phase desc="install uvd" by=[6,7] task="cargo install --path uvd"
+@job installation
+	@phase desc="format code" by=[0]   task="cargo fmt"
+	@phase desc="install lys" by=[1,2] task="cargo install --path lys"
+	@phase desc="install syl" by=[3,6] task="cargo install --path syl"
+	@phase desc="install uvd" by=[5,7] task="cargo install --path uvd"
 @end

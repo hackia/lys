@@ -1,0 +1,11 @@
+[package]
+name = "silexium"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tokio = { version = "1.49.0", features = ["full"] }
+anyhow = "1.0.101"
+axum = "0.8.8"
+clap = "4.5.58"
+tower-http = { version = "0.6.8", features = ["cors", "trace"] }
