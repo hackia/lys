@@ -1,5 +1,6 @@
 use crate::canon;
 use crate::silex::db;
+use crate::silex::proofs;
 use crate::silex::types::{ArtifactType, AuthorPayload, Manifest, ServerPayload, TestsPayload};
 use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
@@ -364,6 +365,8 @@ fn load_attestations(
         if tsa_proof.is_empty() || ots_proof.is_empty() {
             return Err(anyhow!("timestamp proofs must not be empty"));
         }
+        proofs::verify_proofs(&payload_hash, &tsa_proof, &ots_proof)
+            .with_context(|| format!("verify {kind} timestamp proofs"))?;
 
         out.push(LoadedAttestation {
             attestation: db::AttestationData {

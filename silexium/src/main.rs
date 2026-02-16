@@ -14,7 +14,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use tower_http::cors::CorsLayer;
 
-use crate::silex::{config, db, ingest, log, types};
+use crate::silex::{config, db, ingest, log, proofs, types};
 use silex::config::{Cli, Command, resolve_db_path, resolve_server_key};
 use silex::types::{
     AttestationOut, ErrorResponse, InstallRequest, LogProofOut, ManifestOut, ResolveResponse,
@@ -226,6 +226,9 @@ fn validate_attestations(
         if att.tsa_proof.is_empty() || att.ots_proof.is_empty() {
             return Err(ApiError::internal("missing timestamp proofs"));
         }
+        proofs::verify_proofs(&att.payload_hash, &att.tsa_proof, &att.ots_proof)
+            .with_context(|| format!("verify {} timestamp proofs", att.kind))
+            .map_err(ApiError::from_anyhow)?;
         let key = db::fetch_key(conn, &att.key_id).map_err(ApiError::from_anyhow)?;
         if key.revoked || key.revoked_at.is_some() {
             return Err(ApiError::internal("attestation key revoked"));

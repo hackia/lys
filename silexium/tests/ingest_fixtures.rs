@@ -67,6 +67,7 @@ fn ingest_fixture_release() {
 
     let mut cmd = Command::new(bin);
     cmd.env("XDG_DATA_HOME", &xdg)
+        .env("SILEXIUM_SKIP_PROOF_VERIFY", "1")
         .args(["ingest", "--file", release.to_str().unwrap()]);
     run_cmd(cmd);
 }

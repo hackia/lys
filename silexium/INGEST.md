@@ -82,5 +82,13 @@ Notes:
 - Keys must exist in the Silexium DB before ingest (`silexium key add`).
 - Keys require `expires_at` and must be unexpired at ingest time.
 - `payload_path` is required and is hashed with JSON JCS to verify `payload_hash`.
+- Timestamp proofs are verified via external commands (see below).
 - Example manifest/payloads are in `examples/`.
 - A full ingest-ready fixture set is in `fixtures/`.
+
+Timestamp proof verification:
+- `SILEXIUM_TSA_VERIFY` and `SILEXIUM_OTS_VERIFY` must point to executables.
+- Each verifier is called as: `cmd <payload_hash> <proof_path>`.
+- `payload_hash` is the lower-case blake3 hex of the JCS payload (UTF-8 bytes).
+- Verifiers must exit 0 on success; nonzero exits fail ingest.
+- `SILEXIUM_SKIP_PROOF_VERIFY=1` bypasses verification (testing only).

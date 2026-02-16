@@ -22,6 +22,7 @@ Notes:
 - Admin CLI supports `key add` and `ingest` (see `INGEST.md`).
 - Public keys are expected as raw 32 bytes or 64 hex characters.
 - Key roles: `author`, `tests`, `server`.
+- Timestamp proofs are verified via external commands (see below).
 - Example manifests/payloads live in `examples/`.
 - Test fixtures live in `fixtures/`.
 
@@ -40,3 +41,25 @@ Example (jq):
 ```
 silexium key list --json | jq '.[] | {key_id, role, expires_at, revoked}'
 ```
+
+Key list JSON schema:
+```
+[
+  {
+    "key_id": "hex",
+    "role": "author|tests|server",
+    "created_at": "RFC3339",
+    "expires_at": "RFC3339|null",
+    "revoked_at": "RFC3339|null",
+    "revoked": true,
+    "public_key_hex": "hex"
+  }
+]
+```
+
+Timestamp proof verification:
+- `SILEXIUM_TSA_VERIFY` and `SILEXIUM_OTS_VERIFY` must point to executables.
+- Each verifier is called as: `cmd <payload_hash> <proof_path>`.
+- `payload_hash` is the lower-case blake3 hex of the JCS payload (UTF-8 bytes).
+- Verifiers must exit 0 on success; nonzero exits fail ingest/serve.
+- `SILEXIUM_SKIP_PROOF_VERIFY=1` bypasses verification (testing only).
