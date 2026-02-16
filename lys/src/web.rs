@@ -3108,11 +3108,26 @@ fn render_tree_html_flat(
 // TEAM CHAT (WebSocket + UI)
 // -----------------------------
 async fn show_chat() -> impl IntoResponse {
-    let username = nix::unistd::User::from_uid(nix::unistd::getuid())
-        .ok()
-        .flatten()
-        .map(|u| u.name)
-        .unwrap_or_else(|| "web".into());
+    let username = {
+        #[cfg(unix)]
+        {
+            nix::unistd::User::from_uid(nix::unistd::getuid())
+                .ok()
+                .flatten()
+                .map(|u| u.name)
+                .unwrap_or_else(|| "web".into())
+        }
+        #[cfg(windows)]
+        {
+            std::env::var("USERNAME")
+                .or_else(|_| std::env::var("USER"))
+                .unwrap_or_else(|_| "web".into())
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            "web".to_string()
+        }
+    };
     let body = format!("
       <h3>Team Chat</h3>
       <div id='chat-box' class='chat-box'></div>

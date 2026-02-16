@@ -106,6 +106,7 @@ impl Shell {
         Ok(())
     }
 
+    #[cfg(unix)]
     pub fn execute_command(&self, input: &str, cwd: &mut PathBuf) -> String {
         use std::fs::File;
         use std::io::Read;
@@ -216,6 +217,98 @@ impl Shell {
                 }
             }
             Err(e) => e.to_string(),
+        }
+    }
+
+    #[cfg(windows)]
+    pub fn execute_command(&self, input: &str, cwd: &mut PathBuf) -> String {
+        use std::process::Command;
+
+        // On divise l'entrée en arguments.
+        let args = match shlex::split(input) {
+            Some(args) => args,
+            None => {
+                return "Invalid input".to_string();
+            }
+        };
+
+        let app = cli();
+        let is_lys_cmd = args
+            .first()
+            .map(|cmd| {
+                cmd.starts_with('-')
+                    || cmd == "help"
+                    || app.get_subcommands().any(|c| c.get_name() == cmd)
+            })
+            .unwrap_or(false);
+
+        if !is_lys_cmd {
+            if args.first().map(|c| c.as_str()) == Some("cd") {
+                let target = args.get(1).map(|s| s.as_str()).unwrap_or("");
+                let home = std::env::var("HOME")
+                    .or_else(|_| std::env::var("USERPROFILE"))
+                    .ok()
+                    .map(PathBuf::from);
+                let next = if target.is_empty() || target == "~" {
+                    home.unwrap_or_else(|| cwd.clone())
+                } else if let Some(rest) = target.strip_prefix("~/") {
+                    home.map(|h| h.join(rest)).unwrap_or_else(|| cwd.join(rest))
+                } else if std::path::Path::new(target).is_absolute() {
+                    PathBuf::from(target)
+                } else {
+                    cwd.join(target)
+                };
+                if next.is_dir() {
+                    *cwd = next;
+                    return String::new();
+                }
+                return format!("cd: {}: No such directory", target);
+            }
+
+            let output = Command::new("cmd")
+                .arg("/C")
+                .arg(input)
+                .current_dir(&cwd)
+                .output();
+            return match output {
+                Ok(out) => {
+                    let mut text = String::new();
+                    text.push_str(&String::from_utf8_lossy(&out.stdout));
+                    text.push_str(&String::from_utf8_lossy(&out.stderr));
+                    if !out.status.success() && text.is_empty() {
+                        format!("Command failed with exit code {:?}", out.status.code())
+                    } else {
+                        text
+                    }
+                }
+                Err(e) => format!("Failed to run command: {}", e),
+            };
+        }
+
+        let mut full_args = vec!["lys".to_string()];
+        full_args.extend(args.clone());
+        if let Err(e) = app.try_get_matches_from(full_args) {
+            return e.to_string();
+        }
+
+        let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("lys"));
+        let output = Command::new(exe)
+            .args(&args)
+            .current_dir(&cwd)
+            .env("LYS_WEB_TERMINAL", "1")
+            .output();
+        match output {
+            Ok(out) => {
+                let mut text = String::new();
+                text.push_str(&String::from_utf8_lossy(&out.stdout));
+                text.push_str(&String::from_utf8_lossy(&out.stderr));
+                if !out.status.success() && text.is_empty() {
+                    format!("Command failed with exit code {:?}", out.status.code())
+                } else {
+                    text
+                }
+            }
+            Err(e) => format!("Failed to run command: {}", e),
         }
     }
 

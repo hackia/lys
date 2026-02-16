@@ -12,16 +12,11 @@ use glob::glob;
 use ignore::DirEntry;
 use indicatif::{ProgressBar, ProgressStyle};
 use miniz_oxide::inflate;
-#[cfg(target_os = "linux")]
-use nix::mount::umount;
-use nix::sys::wait::waitpid;
-use nix::unistd::{ForkResult, execvp, fork};
 use similar::{ChangeTag, TextDiff};
 use sqlite::Connection;
 use sqlite::State;
 use std::collections::BTreeMap;
 use std::collections::{HashMap, HashSet};
-use std::ffi::CString;
 use std::fmt::Debug;
 use std::fs::File;
 use std::fs::copy;
@@ -30,8 +25,8 @@ use std::fs::remove_dir_all;
 use std::io::Error as IoError;
 use std::io::Write;
 use std::io::{Read, Result as IoResult};
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 
 #[derive(Debug)]
 pub enum Node {
@@ -490,27 +485,15 @@ pub fn format_mode(mode: i64) -> String {
     }
 }
 
-#[cfg(target_os = "freebsd")]
-use nix::mount::{MntFlags, unmount};
-
-#[cfg(target_os = "freebsd")]
-pub fn umount(path: &str) -> Result<(), String> {
-    // On convertit le chemin pour l'appel système
-    let p = std::path::Path::new(path);
-
-    // Sur FreeBSD, on utilise unmount avec MntFlags
-    unmount(p, MntFlags::empty()).map_err(|e| format!("umount of the path {path} failed : {e}"))?;
-
-    ok(&format!("Unmounted: {path}"));
-    Ok(())
-}
-
 pub fn spawn_lys_shell(conn: &Connection, reference: Option<&str>) -> Result<(), String> {
-    let temp_mount = format!("/tmp/{}", uuid::Uuid::new_v4().simple());
-    let mount_path = Path::new(&temp_mount);
+    let temp_mount = std::env::temp_dir().join(format!("lys-{}", uuid::Uuid::new_v4().simple()));
+    let mount_path = temp_mount.as_path();
+    let mount_str = mount_path
+        .to_str()
+        .ok_or_else(|| "Temp path is not valid UTF-8".to_string())?;
 
     create_dir_all(mount_path).map_err(|e| e.to_string())?;
-    if let Err(e) = mount_version(conn, &temp_mount, reference) {
+    if let Err(e) = mount_version(conn, mount_str, reference) {
         let _ = remove_dir_all(mount_path);
         return Err(format!("Mount error: {e}"));
     }
@@ -519,49 +502,40 @@ pub fn spawn_lys_shell(conn: &Connection, reference: Option<&str>) -> Result<(),
     let season = crate::db::Season::current(); //
     let user = crate::commit::author(); //
 
-    let (shell, s) = if cfg!(target_os = "linux") {
-        (CString::new("bash").expect(""), "bash")
+    let shell = if cfg!(windows) {
+        "cmd".to_string()
+    } else if let Ok(user_shell) = std::env::var("SHELL") {
+        user_shell
     } else {
-        (CString::new("tcsh").expect(""), "tcsh")
+        "bash".to_string()
     };
-    ok(format!("Season: {season} User: {user} Shell: {s}").as_str());
+    ok(format!("Season: {season} User: {user} Shell: {shell}").as_str());
     ok("Enter exit to quit");
 
-    // 3. Gestion du processus Shell
-    match unsafe { fork() } {
-        Ok(ForkResult::Parent { child }) => {
-            // Le parent attend que l'utilisateur quitte le shell
-            waitpid(child, None).ok();
-            println!();
-            ok("Clean the shell");
-            // 4. Nettoyage automatique (Lest et démontage)
-            umount(temp_mount.as_str())
-                .map_err(|e| println!("Error: {e}"))
-                .ok();
-            remove_dir_all(mount_path).ok();
-            ok("Shell lys successfully cleaned.");
-        }
-        // Dans src/vcs.rs, dans ForkResult::Child
-        Ok(ForkResult::Child) => {
-            // On récupère le chemin absolu du projet actuel (Base Terre)
-            let project_root = std::env::current_dir().expect("failed to get current dir");
+    // 3. Gestion du processus Shell (portable)
+    let project_root = std::env::current_dir().expect("failed to get current dir");
+    let status = std::process::Command::new(&shell)
+        .current_dir(mount_path)
+        .env(
+            "LYS_PROJECT_ROOT",
+            project_root
+                .to_str()
+                .ok_or_else(|| "Project root is not valid UTF-8".to_string())?,
+        )
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .map_err(|e| e.to_string())?;
 
-            unsafe {
-                std::env::set_var(
-                    "LYS_PROJECT_ROOT",
-                    project_root
-                        .to_str()
-                        .expect("failed to get project root path"),
-                );
-            }
-
-            let args = [shell.clone()];
-            // On change le répertoire de travail vers le montage
-            std::env::set_current_dir(mount_path).ok();
-            execvp(&shell, &args).map_err(|e| e.to_string())?;
-        }
-        Err(e) => return Err(anyhow::anyhow!("Fork failed: {e}").to_string()),
+    if !status.success() {
+        return Err(format!("Shell exited with status: {status}"));
     }
+
+    println!();
+    ok("Clean the shell");
+    remove_dir_all(mount_path).ok();
+    ok("Shell lys successfully cleaned.");
 
     Ok(())
 }
@@ -603,57 +577,52 @@ pub fn mount_version(
         reconstruct_to_path(conn, &tree_hash, cache_path)?;
     }
 
-    // 3. Appel au noyau (Linux/FreeBSD)
-    #[cfg(target_os = "linux")]
-    {
-        use nix::mount::{MsFlags as MountFlags, mount};
-        // Code spécifique à Linux
-        mount(
-            Some(cache_path),
-            target_path,
-            Some("none"),
-            MountFlags::MS_BIND | MountFlags::MS_RDONLY,
-            None::<&str>,
-        )
-        .expect("failed to mount");
-    }
-
-    #[cfg(target_os = "freebsd")]
-    {
-        use nix::mount::{MntFlags, Nmount};
-        use std::ffi::CString;
-        use std::os::unix::ffi::OsStrExt;
-        let target = Path::new(target_path);
-        // 1. On prépare les données (on "matérialise" en CString)
-        // On doit les garder dans des variables pour qu'elles ne soient pas dropées
-        let k_type = CString::new("fstype").unwrap();
-        let v_type = CString::new("nullfs").unwrap();
-
-        let k_dest = CString::new("fspath").unwrap();
-        let v_dest = CString::new(target.as_os_str().as_bytes()).unwrap();
-
-        let k_from = CString::new("from").unwrap();
-        let v_from = CString::new(cache_path.as_os_str().as_bytes()).unwrap();
-
-        // 2. On configure nmount
-        let mut nm = Nmount::new();
-        // On passe des références (&k_type) pour ne pas déplacer (move) les variables
-        nm.str_opt(&k_type, &v_type);
-        nm.str_opt(&k_dest, &v_dest);
-        nm.str_opt(&k_from, &v_from);
-
-        // 3. L'appel système
-        nm.nmount(MntFlags::MNT_RDONLY).map_err(|e| sqlite::Error {
-            code: Some(1),
-            message: Some(format!("nmount error: {e}")),
-        })?;
-    }
+    let target = Path::new(target_path);
+    ensure_empty_dir(target).map_err(|e| sqlite::Error {
+        code: Some(1),
+        message: Some(format!("{e}")),
+    })?;
+    copy_dir_recursive(cache_path, target)?;
     ok(format!(
-        "Version {} monted successfully on {}",
+        "Version {} materialized to {}",
         &tree_hash[0..7],
         target_path
     )
     .as_str());
+    Ok(())
+}
+
+fn copy_dir_recursive(src: &Path, dst: &Path) -> IoResult<()> {
+    if !dst.exists() {
+        create_dir_all(dst)?;
+    }
+
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+
+        if file_type.is_dir() {
+            copy_dir_recursive(&from, &to)?;
+        } else if file_type.is_file() {
+            copy(&from, &to)?;
+        }
+    }
+    Ok(())
+}
+
+fn ensure_empty_dir(path: &Path) -> IoResult<()> {
+    if path.exists() {
+        if path.read_dir()?.next().is_some() {
+            return Err(IoError::new(
+                std::io::ErrorKind::Other,
+                "target path must be empty",
+            ));
+        }
+    } else {
+        create_dir_all(path)?;
+    }
     Ok(())
 }
 

@@ -2,7 +2,9 @@ use crate::utils::run_hooks;
 use chrono::Local;
 use inquire::error::InquireResult;
 use inquire::{Confirm, Editor, InquireError, Text};
+#[cfg(unix)]
 use nix::sys::utsname::uname;
+#[cfg(unix)]
 use nix::unistd::User;
 use std::collections::BTreeMap;
 use std::env::consts::ARCH;
@@ -165,11 +167,16 @@ fn format_line(words: &[&str], width: usize, current_len: usize) -> String {
 }
 
 pub fn author() -> String {
-    let u = std::env::var("USER").expect("USER must be defined");
-    if let Ok(Some(user)) = User::from_name(std::env::var("USER").expect("a").as_str()) {
-        return user.gecos.to_string_lossy().to_string();
+    let u = std::env::var("USER")
+        .or_else(|_| std::env::var("USERNAME"))
+        .unwrap_or_else(|_| "unknown".to_string());
+    #[cfg(unix)]
+    {
+        if let Ok(Some(user)) = User::from_name(u.as_str()) {
+            return user.gecos.to_string_lossy().to_string();
+        }
     }
-    u.to_string()
+    u
 }
 #[derive(Default, Debug, Clone)]
 pub struct Commit {
@@ -322,17 +329,32 @@ impl Commit {
                 .to_string()
                 .as_str(),
         );
-        let o = uname().expect("failed");
-        self.os
-            .push_str(o.sysname().to_str().expect("").to_string().as_str());
-        self.machine
-            .push_str(o.machine().to_str().expect("").to_string().as_str());
-        self.os_release
-            .push_str(o.release().to_str().expect("").to_string().as_str());
-        self.os_version
-            .push_str(o.version().to_str().expect("").to_string().as_str());
-        self.os_domain
-            .push_str(o.nodename().to_str().expect("").to_string().as_str());
+        #[cfg(unix)]
+        {
+            let o = uname().expect("failed");
+            self.os
+                .push_str(o.sysname().to_str().expect("").to_string().as_str());
+            self.machine
+                .push_str(o.machine().to_str().expect("").to_string().as_str());
+            self.os_release
+                .push_str(o.release().to_str().expect("").to_string().as_str());
+            self.os_version
+                .push_str(o.version().to_str().expect("").to_string().as_str());
+            self.os_domain
+                .push_str(o.nodename().to_str().expect("").to_string().as_str());
+        }
+        #[cfg(windows)]
+        {
+            let os_name = std::env::consts::OS;
+            let os_release = std::env::var("OS").unwrap_or_else(|_| "Windows".to_string());
+            let machine = std::env::var("COMPUTERNAME").unwrap_or_default();
+            let domain = std::env::var("USERDOMAIN").unwrap_or_default();
+            self.os.push_str(os_name);
+            self.machine.push_str(machine.as_str());
+            self.os_release.push_str(os_release.as_str());
+            self.os_version.push_str(os_release.as_str());
+            self.os_domain.push_str(domain.as_str());
+        }
         self.who.push_str(author().as_str());
         Ok(self)
     }

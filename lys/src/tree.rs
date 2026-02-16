@@ -4,6 +4,7 @@ use crossterm::style::Stylize;
 use ignore::{DirEntry, WalkBuilder};
 use std::collections::HashMap;
 use std::fs::Metadata;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
@@ -277,7 +278,7 @@ fn extract_metadata(
                 let mode_str = format!(
                     "{} {}",
                     type_char.cyan(),
-                    format_permissions(m.permissions().mode(), type_char, color)
+                    format_permissions_for_meta(m, type_char, color)
                 );
                 let size = if m.is_dir() {
                     "-".to_string()
@@ -310,7 +311,7 @@ fn extract_metadata(
                 let mode_str = format!(
                     "{} {}",
                     type_char,
-                    format_permissions(m.permissions().mode(), type_char, color)
+                    format_permissions_for_meta(m, type_char, color)
                 );
                 let size = if m.is_dir() {
                     "-".to_string()
@@ -342,6 +343,27 @@ fn extract_metadata(
     }
 }
 
+#[cfg(unix)]
+fn format_permissions_for_meta(meta: &Metadata, type_char: &str, color: Option<bool>) -> String {
+    format_permissions(meta.permissions().mode(), type_char, color)
+}
+
+#[cfg(windows)]
+fn format_permissions_for_meta(meta: &Metadata, _type_char: &str, color: Option<bool>) -> String {
+    let triplet = if meta.permissions().readonly() {
+        "r--"
+    } else {
+        "rw-"
+    };
+    let perms = format!("{triplet} {triplet} {triplet}");
+    if color.is_some() && color.expect("a") {
+        perms.cyan().to_string()
+    } else {
+        perms
+    }
+}
+
+#[cfg(unix)]
 fn format_permissions(mode: u32, type_char: &str, color: Option<bool>) -> String {
     let user = (mode >> 6) & 0o7;
     let group = (mode >> 3) & 0o7;
@@ -354,6 +376,7 @@ fn format_permissions(mode: u32, type_char: &str, color: Option<bool>) -> String
     )
 }
 
+#[cfg(unix)]
 fn fmt_triplet(val: u32, type_char: &str, color: Option<bool>) -> String {
     if color.is_some() && color.expect("a") {
         let cyan = |x: &str| -> String { format!("{}", x.cyan()) };
