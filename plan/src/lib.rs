@@ -1,7 +1,12 @@
+use ignore::WalkBuilder;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+use std::fs::metadata;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use serde::{Deserialize, Serialize};
+
+pub const EXT: &str = "plan";
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct FileMeta {
@@ -25,13 +30,13 @@ impl FileMeta {
     #[cfg(unix)]
     pub fn from_fs(path: &Path, hash: impl Into<String>) -> std::io::Result<Self> {
         use std::os::unix::fs::PermissionsExt;
-        let meta = std::fs::metadata(path)?;
+        let meta = metadata(path)?;
         Ok(Self::new(hash, Some(meta.permissions().mode())))
     }
 
     #[cfg(not(unix))]
     pub fn from_fs(path: &Path, hash: impl Into<String>) -> std::io::Result<Self> {
-        let _ = std::fs::metadata(path)?;
+        let _ = metadata(path)?;
         Ok(Self::new(hash, None))
     }
 }
@@ -77,6 +82,85 @@ pub struct Plan {
     layers: Vec<Layer>,
 }
 
+pub fn wrap(root_path: PathBuf, plan_id: &str) -> Plan {
+    // 1. Vecteur pour collecter tous les changements
+    let mut changes = Vec::new();
+
+    // 2. Configuration du scanner (respecte .gitignore)
+    let walker = WalkBuilder::new(&root_path)
+        .add_custom_ignore_filename("syl")
+        .standard_filters(true)
+        .hidden(false)
+        .build();
+
+    for result in walker {
+        match result {
+            Ok(entry) => {
+                // On ignore les dossiers, on ne veut que les fichiers
+                if !entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
+                    continue;
+                }
+
+                let full_path = entry.path();
+
+                // 3. Calcul du chemin RELATIF (Indispensable pour la portabilité)
+                let relative_path = match full_path.strip_prefix(&root_path) {
+                    Ok(p) => p.to_path_buf(),
+                    Err(_) => continue,
+                };
+
+                let hash = match compute_blake3(full_path) {
+                    Ok(h) => h,
+                    Err(e) => {
+                        eprintln!("Error : {full_path:?}: {e}");
+                        continue;
+                    }
+                };
+
+                // 5. Mode (Permissions Unix)
+                #[cfg(unix)]
+                let mode = metadata(full_path).ok().map(|m| {
+                    use std::os::unix::fs::PermissionsExt;
+                    m.permissions().mode()
+                });
+                #[cfg(not(unix))]
+                let mode = None;
+
+                changes.push(FileChange::Added {
+                    path: relative_path,
+                    meta: FileMeta::new(hash, mode),
+                });
+            }
+            Err(err) => eprintln!("Erreur scan: {err}"),
+        }
+    }
+
+    // 7. Création du Layer unique
+    let layer = Layer {
+        id: format!("{plan_id}-root"),
+        changes,
+    };
+
+    // 8. Construction du Plan
+    let mut plan = Plan::new(plan_id, None);
+    plan.apply_layer(layer);
+
+    println!(
+        "Plan '{plan_id}' has been generated successfully ({} files)",
+        plan.layers.first().unwrap().changes.len()
+    );
+    plan
+}
+
+/// Helper optimisé pour BLAKE3
+fn compute_blake3(path: &Path) -> std::io::Result<String> {
+    let mut file = fs::File::open(path)?;
+    let mut hasher = blake3::Hasher::new();
+    // std::io::copy fait le stream bufferisé automatiquement (très efficace)
+    std::io::copy(&mut file, &mut hasher)?;
+    // to_hex() renvoie un wrapper qui implémente Display, on le convertit en String
+    Ok(hasher.finalize().to_hex().to_string())
+}
 impl Plan {
     pub fn new(id: impl Into<String>, base: Option<Arc<Plan>>) -> Self {
         Self {
@@ -240,13 +324,15 @@ fn apply_layer(state: &mut BTreeMap<String, FileMeta>, layer: &Layer) {
 fn apply_change(state: &mut BTreeMap<String, FileMeta>, change: &FileChange) {
     match change {
         FileChange::Added { path, meta } | FileChange::Modified { path, meta } => {
-            state.insert(path.to_str().expect("").to_string(), meta.clone());
+            state.insert(path.to_str().expect("Path invalid utf8").to_string(), meta.clone());
         }
         FileChange::Removed { path } => {
-            state.remove(path.to_str().expect(""));
+            state.remove(path.to_str().expect("Path invalid utf8"));
         }
         FileChange::PermissionChanged { path, mode } => {
-            if let Some(entry) = state.get_mut(path.file_name().expect("").to_str().expect("")) {
+            // CORRECTION ICI : On utilise path.to_str() au lieu de file_name()
+            let key = path.to_str().expect("Path invalid utf8");
+            if let Some(entry) = state.get_mut(key) {
                 if mode.is_some() {
                     entry.mode = *mode;
                 }
