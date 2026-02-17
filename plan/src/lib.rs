@@ -1,8 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct FileMeta {
     pub hash: String,
     pub mode: Option<u32>,
@@ -35,16 +36,16 @@ impl FileMeta {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub enum FileChange {
-    Added { path: String, meta: FileMeta },
-    Modified { path: String, meta: FileMeta },
-    Removed { path: String },
-    PermissionChanged { path: String, mode: Option<u32> },
+    Added { path: PathBuf, meta: FileMeta },
+    Modified { path: PathBuf, meta: FileMeta },
+    Removed { path: PathBuf },
+    PermissionChanged { path: PathBuf, mode: Option<u32> },
 }
 
 impl FileChange {
-    pub fn path(&self) -> &str {
+    pub fn path(&self) -> &PathBuf {
         match self {
             FileChange::Added { path, .. }
             | FileChange::Modified { path, .. }
@@ -54,7 +55,7 @@ impl FileChange {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct Layer {
     pub id: String,
     pub changes: Vec<FileChange>,
@@ -69,7 +70,7 @@ impl Layer {
     }
 }
 
-#[derive(Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct Plan {
     id: String,
     base: Option<Arc<Plan>>,
@@ -191,21 +192,21 @@ impl Plan {
         let mut layer = Layer::new("merge");
         for (path, base_meta) in &base_state {
             match merged_state.get(path) {
-                None => layer
-                    .changes
-                    .push(FileChange::Removed { path: path.clone() }),
+                None => layer.changes.push(FileChange::Removed {
+                    path: PathBuf::from(path),
+                }),
                 Some(meta) if meta != base_meta => {
                     if meta.hash == base_meta.hash
                         && meta.mode != base_meta.mode
                         && meta.mode.is_some()
                     {
                         layer.changes.push(FileChange::PermissionChanged {
-                            path: path.clone(),
+                            path: PathBuf::from(path),
                             mode: meta.mode,
                         });
                     } else {
                         layer.changes.push(FileChange::Modified {
-                            path: path.clone(),
+                            path: PathBuf::from(path),
                             meta: meta.clone(),
                         });
                     }
@@ -216,7 +217,7 @@ impl Plan {
         for (path, meta) in &merged_state {
             if !base_state.contains_key(path) {
                 layer.changes.push(FileChange::Added {
-                    path: path.clone(),
+                    path: PathBuf::from(path),
                     meta: meta.clone(),
                 });
             }
@@ -239,13 +240,13 @@ fn apply_layer(state: &mut BTreeMap<String, FileMeta>, layer: &Layer) {
 fn apply_change(state: &mut BTreeMap<String, FileMeta>, change: &FileChange) {
     match change {
         FileChange::Added { path, meta } | FileChange::Modified { path, meta } => {
-            state.insert(path.clone(), meta.clone());
+            state.insert(path.to_str().expect("").to_string(), meta.clone());
         }
         FileChange::Removed { path } => {
-            state.remove(path);
+            state.remove(path.to_str().expect(""));
         }
         FileChange::PermissionChanged { path, mode } => {
-            if let Some(entry) = state.get_mut(path) {
+            if let Some(entry) = state.get_mut(path.file_name().expect("").to_str().expect("")) {
                 if mode.is_some() {
                     entry.mode = *mode;
                 }
