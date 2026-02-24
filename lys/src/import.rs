@@ -9,8 +9,9 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-/// Explore un arbre Git et insère les objets dans Lys de manière parallèle.
 
+
+/// Explore un arbre Git et insère les objets dans Lys de manière parallèle.
 fn insert_manifest_for_commit(
     conn: &sqlite::Connection,
     store_conn: &Mutex<sqlite::Connection>,

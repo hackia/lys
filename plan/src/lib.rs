@@ -1,10 +1,45 @@
 use ignore::WalkBuilder;
+use rayon::ThreadPoolBuilder;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::fs::metadata;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use sysinfo::System; // SystemExt est nécessaire pour les méthodes
+
+/// Configure les limites de ressources (RAM & CPU) pour laisser 20% à l'OS.
+pub fn enforce_resource_limits() -> std::io::Result<()> {
+    // 1. On inspecte la machine
+    let mut sys = System::new_all();
+    sys.refresh_memory();
+    sys.refresh_cpu_all();
+
+    let total_ram = sys.total_memory(); // en Octets
+    let total_cpus = sys.cpus().len();
+
+    // 2. Calcul des limites (80% pour Capsule, 20% pour l'OS)
+    let ram_limit = (total_ram as f64 * 0.8) as u64;
+    let cpu_limit = std::cmp::max(1, (total_cpus as f64 * 0.8) as usize);
+
+    // 3. Application de la limite CPU (Via Rayon)
+    // Cela empêche Rayon de spammer tous les cœurs, laissant de la place à l'OS.
+    ThreadPoolBuilder::new()
+        .num_threads(cpu_limit)
+        .build_global()
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+
+    // 4. Application de la limite RAM (Unix seulement)
+    // RLIMIT_AS (Address Space) est le moyen le plus sûr de limiter la mémoire d'un processus.
+    #[cfg(unix)]
+    {
+        use rlimit::{Resource, setrlimit};
+        // On définit la limite Soft et Hard à 80% de la RAM
+        // Si le processus dépasse, l'OS retournera une erreur d'allocation (OOM) au lieu de faire freezer le PC.
+        setrlimit(Resource::AS, ram_limit, ram_limit)?;
+    }
+    Ok(())
+}
 
 pub const EXT: &str = "plan";
 
@@ -324,7 +359,10 @@ fn apply_layer(state: &mut BTreeMap<String, FileMeta>, layer: &Layer) {
 fn apply_change(state: &mut BTreeMap<String, FileMeta>, change: &FileChange) {
     match change {
         FileChange::Added { path, meta } | FileChange::Modified { path, meta } => {
-            state.insert(path.to_str().expect("Path invalid utf8").to_string(), meta.clone());
+            state.insert(
+                path.to_str().expect("Path invalid utf8").to_string(),
+                meta.clone(),
+            );
         }
         FileChange::Removed { path } => {
             state.remove(path.to_str().expect("Path invalid utf8"));

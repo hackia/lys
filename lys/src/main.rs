@@ -39,7 +39,7 @@ pub mod web;
 fn cli() -> Command {
     Command::new(env!("CARGO_PKG_NAME"))
         .about(env!("CARGO_PKG_DESCRIPTION"))
-        .author("Saigo Ekitae <saigoekitae@gmail.com>")
+        .author(env!("CARGO_PKG_AUTHORS"))
         .version(env!("CARGO_PKG_VERSION"))
         .subcommand(Command::new("init").about("Initialize current directory"))
         .subcommand(Command::new("new").about("Create a new lys project"))
@@ -394,7 +394,7 @@ fn perform_commit() -> Result<(), Error> {
 pub fn check_status() -> Result<(), Error> {
     let current_dir = current_dir()?;
     let current_dir_str = current_dir.to_str().unwrap();
-    if !Path::new(&format!("{MAIN_SEPARATOR_STR}.lys")).exists() && !Path::new(".lys").exists() {
+    if !Path::new(".lys").exists() {
         return Err(Error::other("Not a lys repository."));
     }
 

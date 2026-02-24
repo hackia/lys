@@ -123,7 +123,7 @@ pub fn audit(conn: &Connection) -> Result<bool, sqlite::Error> {
 
         if let Some(signature) = signature_opt {
             // Commit signé : on vérifie
-            match crate::crypto::verify_signature(&root_path, &hash, &signature) {
+            match verify_signature(&root_path, &hash, &signature) {
                 Ok(true) => {
                     // C'est vide, on ne dit rien pour ne pas polluer, ou juste un petit point
                     ok_audit_commit(&hash[0..7]);
@@ -186,7 +186,7 @@ mod tests {
             .expect("Failed to verify signature");
         assert!(is_valid);
 
-        // 4. Verify with wrong message
+        // 4. Verify with a wrong message
         let is_valid_wrong = verify_signature(root_path, "Wrong message", &signature_hex)
             .expect("Failed to verify signature");
         assert!(!is_valid_wrong);

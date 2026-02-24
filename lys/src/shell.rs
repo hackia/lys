@@ -148,7 +148,7 @@ impl Shell {
                     *cwd = next;
                     return String::new();
                 }
-                return format!("cd: {}: No such directory", target);
+                return format!("cd: {target}: No such directory");
             }
 
             let output = Command::new("bash")
