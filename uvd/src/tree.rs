@@ -68,7 +68,7 @@ pub fn scan_and_print_tree(root_path: &Path, max_level: Option<u32>, color: Opti
                     }
                 }
             }
-            Err(err) => eprintln!("Erreur scan: {err}"),
+            Err(err) => eprintln!("Scan error : {err}"),
         }
     }
     print_node(&root, "", true, 0, max_level, color);

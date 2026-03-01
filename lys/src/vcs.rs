@@ -11,7 +11,6 @@ use glob::GlobError;
 use glob::glob;
 use ignore::DirEntry;
 use indicatif::{ProgressBar, ProgressStyle};
-use miniz_oxide::inflate;
 use similar::{ChangeTag, TextDiff};
 use sqlite::Connection;
 use sqlite::State;
@@ -126,8 +125,7 @@ pub fn fetch_blob_with_conn(
 
     if let Ok(State::Row) = stmt.next() {
         let compressed: Vec<u8> = stmt.read(0)?;
-        let decompressed = inflate::decompress_to_vec_zlib(&compressed)
-            .map_err(|e| format!("Erreur de décompression pour {hash}: {e:?}"))?;
+        let decompressed = crate::db::decompress(&compressed);
         return Ok(decompressed);
     }
     Err(format!("Blob {hash} not found").into())
@@ -155,9 +153,7 @@ pub fn fetch_blob(repo_root: &Path, hash: &str) -> Result<Vec<u8>, Box<dyn std::
 
     if let Ok(State::Row) = stmt.next() {
         let compressed: Vec<u8> = stmt.read(0)?;
-        let decompressed =
-            inflate::decompress_to_vec_zlib(&compressed).map_err(|e| format!("{hash}: {e:?}"))?;
-
+        let decompressed = crate::db::decompress(&compressed);
         return Ok(decompressed);
     }
 

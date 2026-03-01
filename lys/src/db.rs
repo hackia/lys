@@ -1,7 +1,4 @@
 use chrono::{Datelike, Local};
-use flate2::Compression;
-use flate2::read::ZlibDecoder;
-use flate2::write::ZlibEncoder;
 use sqlite::{Connection, Error, State};
 use std::fmt::Display;
 use std::fs::create_dir_all;
@@ -664,24 +661,16 @@ pub fn insert_manifest_entry(
     stmt.next()?;
     Ok(())
 }
-
-// --- Helpers de compression ---
 pub fn compress(data: &[u8]) -> Vec<u8> {
-    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
-    encoder.write_all(data).expect("Failed to compress blob");
-    encoder.finish().expect("Failed to finish compression")
+    zstd::encode_all(data, 0).expect("Failed to compress blob with zstd")
 }
 
 pub fn decompress(data: &[u8]) -> Vec<u8> {
-    let mut decoder = ZlibDecoder::new(data);
-    let mut decoded = Vec::new();
-    // Astuce : Si la décompression échoue (vieux fichier non compressé), on retourne le brut
-    match decoder.read_to_end(&mut decoded) {
-        Ok(_) => decoded,
+    match zstd::decode_all(data) {
+        Ok(decoded) => decoded,
         Err(_) => data.to_vec(),
     }
 }
-
 // Modifie ta fonction get_or_insert_blob pour compresser
 pub fn get_or_insert_blob(conn: &Connection, content: &[u8]) -> Result<i64, Error> {
     // 1. On calcule le hash sur le contenu ORIGINAL (pour que le hash reste stable)
