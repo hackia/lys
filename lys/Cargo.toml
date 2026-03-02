@@ -42,6 +42,7 @@ reqwest = { version = "0.13.2", features = ["blocking"] }
 pulldown-cmark = "0.13.0"
 rustyline = "17.0.2"
 once_cell = "1.19.0"
+breathes = "0.1.5"
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.31.1", features = ["env", "mount", "net", "process", "pthread", "term", "time", "uio", "user"] }

@@ -26,7 +26,9 @@ pub struct Log {
 
 impl Display for Log {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "\n{} at {} ({})\n", self.author, self.at, self.signature)?;
+        let x = self.author.split("<").collect::<Vec<&str>>();
+        let author = x[0].trim().to_string();
+        writeln!(f, "\n{author} at {} ({})\n", self.at, self.signature)?;
         writeln!(f, "{}\n", self.message)?;
 
         if !self.changes.is_empty() {
@@ -167,12 +169,14 @@ fn format_line(words: &[&str], width: usize, current_len: usize) -> String {
 }
 
 pub fn author() -> String {
-    use std::path::Path;
     use crate::db::connect_lys;
+    use std::path::Path;
 
     // 1. On tente de lire l'identité souveraine dans la config SQLite
     if let Ok(conn) = connect_lys(Path::new(".")) {
-        let mut stmt = conn.prepare("SELECT value FROM config WHERE key = 'author'").unwrap();
+        let mut stmt = conn
+            .prepare("SELECT value FROM config WHERE key = 'author'")
+            .unwrap();
         if let Ok(sqlite::State::Row) = stmt.next() {
             if let Ok(val) = stmt.read::<String, _>(0) {
                 if !val.trim().is_empty() {

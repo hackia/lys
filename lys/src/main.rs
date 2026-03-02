@@ -1,26 +1,27 @@
-use crate::Language::{C, CSharp, Cpp, D, Haskell, Js, Php, Python, Rust, Typescript};
 use crate::chat::list_messages;
 use crate::chat::send_message;
 use crate::commit::author;
-use crate::db::{LYS_INIT, set_config};
 use crate::db::{connect_lys, get_current_branch};
+use crate::db::{set_config, LYS_INIT};
 use crate::import::extract_repo_name;
 use crate::shell::Shell;
 use crate::utils::ko;
 use crate::utils::ok;
 use crate::utils::ok_merkle_hash;
 use crate::utils::run_hooks;
+use crate::Language::{CSharp, Cpp, Haskell, Js, Php, Python, Rust, Typescript, C, D};
+use breathes::validator::{validate_email, validate_summary_length};
 use clap::value_parser;
 use clap::{Arg, ArgAction, Command};
 use inquire::{Select, Text};
 use sqlite::State;
 use std::env::current_dir;
 use std::fmt::Display;
-use std::fs::File;
 use std::fs::read_to_string;
+use std::fs::File;
 use std::io::{Error, Write};
-use std::path::MAIN_SEPARATOR_STR;
 use std::path::Path;
+use std::path::MAIN_SEPARATOR_STR;
 use std::process::{Command as Cmd, Stdio};
 
 pub mod chat;
@@ -454,6 +455,9 @@ impl Display for Language {
 }
 fn new_project() -> Result<(), Error> {
     let mut project = String::new();
+    let mut title = String::new();
+    let mut description = String::new();
+
     let mut email = String::new();
     let mut author = String::new();
     let supported_languages = Language::all();
@@ -478,17 +482,38 @@ fn new_project() -> Result<(), Error> {
     while email.is_empty() {
         email.clear();
         email = Text::new("Your email:")
+            .with_validator(validate_email)
             .prompt()
             .expect("failed to get name");
     }
+
+    while title.is_empty() {
+        title.clear();
+        title = Text::new("Project title (lysrc):")
+            .with_validator(validate_summary_length)
+            .prompt()
+            .expect("failed to get title");
+    }
+
+    while description.is_empty() {
+        description.clear();
+        description = Text::new("Project description (lysrc):")
+            .with_validator(validate_summary_length)
+            .prompt()
+            .expect("failed to get description");
+    }
+    let commiter = format!("{author} <{email}>");
     if connect_lys(Path::new(project.as_str()))
         .expect("failed to get the connexion")
         .execute(LYS_INIT)
         .is_ok()
     {
         let conn = connect_lys(Path::new(project.as_str())).unwrap();
-        set_config(&conn, "author", author.as_str()).expect("failed to set author");
+        set_config(&conn, "author", commiter.as_str()).expect("failed to set author");
+        set_config(&conn, "name", author.as_str()).expect("failed to set author");
         set_config(&conn, "email", email.as_str()).expect("failed to set email");
+        set_config(&conn, "title", title.as_str()).expect("failed to set title");
+        set_config(&conn, "description", description.as_str()).expect("failed to set description");
 
         File::create_new(format!("{project}{MAIN_SEPARATOR_STR}syl").as_str())
             .expect("failed to create file");
@@ -498,7 +523,11 @@ fn new_project() -> Result<(), Error> {
         File::create_new(format!("{project}{MAIN_SEPARATOR_STR}README.md").as_str())
             .expect("failed to create readme file");
         ok("README.md created successfully");
-
+        let mut lysrc = File::create(format!("{project}{MAIN_SEPARATOR_STR}lysrc").as_str())
+            .expect("failed to create file");
+        lysrc.write_all(format!("title={title}\ndescription={description}\nlogo=lys.svg\nfavicon=favicon.ico\nfooter=(c) 2026 Lys\nhomepage=\ndocumentation=\n").as_bytes()).expect("failed to write lysrc");
+        lysrc.sync_all().expect("failed to sync lysrc");
+        ok("lysrc file created successfully");
         let main_language = Select::new("Select the main language:", supported_languages)
             .prompt()
             .expect("Failed to select language");
