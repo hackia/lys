@@ -1485,7 +1485,7 @@ pub fn commit(conn: &Connection, message: &str, author: &str) -> Result<(), Erro
     stmt.bind((2, parent_hash.as_str()))?;
     stmt.bind((3, root_hash.as_str()))?;
     stmt.bind((4, author))?;
-    stmt.bind((5, message))?;   
+    stmt.bind((5, message))?;
     stmt.bind((6, timestamp.as_str()))?;
     stmt.bind((7, signature.as_str()))?;
     stmt.next()?;

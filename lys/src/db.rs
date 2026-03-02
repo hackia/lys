@@ -141,6 +141,16 @@ pub fn list_branches(conn: &Connection) -> Vec<String> {
     out
 }
 
+pub fn set_config(conn: &Connection, key: &str, value: &str) -> Result<(), Error> {
+    let query = "INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)";
+    let mut stmt = conn.prepare(query)?;
+    stmt.bind((1, key))?;
+    stmt.bind((2, value))?;
+    stmt.next()?;
+    ok(format!("{key} -> {value}").as_str());
+    Ok(())
+}
+
 pub fn list_tags(conn: &Connection) -> Vec<String> {
     let mut out = Vec::new();
     if let Ok(mut stmt) = conn.prepare("SELECT name FROM tags ORDER BY name") {

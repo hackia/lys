@@ -167,13 +167,34 @@ fn format_line(words: &[&str], width: usize, current_len: usize) -> String {
 }
 
 pub fn author() -> String {
+    use std::path::Path;
+    use crate::db::connect_lys;
+
+    // 1. On tente de lire l'identité souveraine dans la config SQLite
+    if let Ok(conn) = connect_lys(Path::new(".")) {
+        let mut stmt = conn.prepare("SELECT value FROM config WHERE key = 'author'").unwrap();
+        if let Ok(sqlite::State::Row) = stmt.next() {
+            if let Ok(val) = stmt.read::<String, _>(0) {
+                if !val.trim().is_empty() {
+                    return val;
+                }
+            }
+        }
+    }
+
+    // 2. Fallback : Identité système originale si la DB est vide
     let u = std::env::var("USER")
         .or_else(|_| std::env::var("USERNAME"))
         .unwrap_or_else(|_| "unknown".to_string());
+
     #[cfg(unix)]
     {
+        // Sur Unix, on tente de récupérer le "Real Name" (GECOS)
         if let Ok(Some(user)) = User::from_name(u.as_str()) {
-            return user.gecos.to_string_lossy().to_string();
+            let gecos = user.gecos.to_string_lossy().to_string();
+            if !gecos.is_empty() {
+                return gecos;
+            }
         }
     }
     u

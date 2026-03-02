@@ -2,7 +2,7 @@ use crate::Language::{C, CSharp, Cpp, D, Haskell, Js, Php, Python, Rust, Typescr
 use crate::chat::list_messages;
 use crate::chat::send_message;
 use crate::commit::author;
-use crate::db::LYS_INIT;
+use crate::db::{LYS_INIT, set_config};
 use crate::db::{connect_lys, get_current_branch};
 use crate::import::extract_repo_name;
 use crate::shell::Shell;
@@ -454,6 +454,8 @@ impl Display for Language {
 }
 fn new_project() -> Result<(), Error> {
     let mut project = String::new();
+    let mut email = String::new();
+    let mut author = String::new();
     let supported_languages = Language::all();
     while project.is_empty() {
         project.clear();
@@ -466,11 +468,28 @@ fn new_project() -> Result<(), Error> {
             project.clear();
         }
     }
+
+    while author.is_empty() {
+        author.clear();
+        author = Text::new("Your name:")
+            .prompt()
+            .expect("failed to get name");
+    }
+    while email.is_empty() {
+        email.clear();
+        email = Text::new("Your email:")
+            .prompt()
+            .expect("failed to get name");
+    }
     if connect_lys(Path::new(project.as_str()))
         .expect("failed to get the connexion")
         .execute(LYS_INIT)
         .is_ok()
     {
+        let conn = connect_lys(Path::new(project.as_str())).unwrap();
+        set_config(&conn, "author", author.as_str()).expect("failed to set author");
+        set_config(&conn, "email", email.as_str()).expect("failed to set email");
+
         File::create_new(format!("{project}{MAIN_SEPARATOR_STR}syl").as_str())
             .expect("failed to create file");
         ok("syl file created successfully");
