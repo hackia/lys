@@ -2,7 +2,6 @@ use chrono::{Datelike, Local};
 use sqlite::{Connection, Error, State};
 use std::fmt::Display;
 use std::fs::create_dir_all;
-use std::io::prelude::*;
 use std::path::Path;
 use std::path::PathBuf;
 use uuid::Uuid;

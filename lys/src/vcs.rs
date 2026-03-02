@@ -1,4 +1,5 @@
 use crate::commit::{FileChange, Log};
+use crate::crypto::sign_message;
 use crate::db::get_current_branch;
 use crate::utils::commit_created;
 use crate::utils::ko;
@@ -1460,22 +1461,33 @@ pub fn commit(conn: &Connection, message: &str, author: &str) -> Result<(), Erro
     // 2. On calcule les hashes de chaque dossier et on insère dans SQLite
     // Le hash du dossier racine (root) sera notre tree_hash pour le commit
     conn.execute("BEGIN TRANSACTION;")?;
+    // Récupération du parent pour le chaînage immuable
+    let query_last = "SELECT hash FROM commits ORDER BY id DESC LIMIT 1";
+    let mut stmt_last = conn.prepare(query_last)?;
+    let parent_hash = if let Ok(State::Row) = stmt_last.next() {
+        stmt_last.read::<String, _>(0)?
+    } else {
+        String::from("")
+    };
     let root_hash = store_tree_recursive(conn, "ROOT", &root_tree)?;
-
     // 3. Création du commit avec le lien vers l'arbre racine
     let timestamp = chrono::Utc::now().to_rfc3339();
     let commit_hash = blake3::hash(format!("{root_hash}{author}{message}").as_bytes())
         .to_hex()
         .to_string();
+    let signature = sign_message(Path::new("."), &commit_hash).expect("aaa");
 
     let query_commit =
-        "INSERT INTO commits (hash, tree_hash, author, message, timestamp) VALUES (?, ?, ?, ?, ?)";
+        "INSERT INTO commits (hash, parent_hash, tree_hash, author, message, timestamp, signature)
+         VALUES (?, ?, ?, ?, ?, ?, ?)";
     let mut stmt = conn.prepare(query_commit)?;
     stmt.bind((1, commit_hash.as_str()))?;
-    stmt.bind((2, root_hash.as_str()))?; // Lien crucial vers tree_nodes
-    stmt.bind((3, author))?;
-    stmt.bind((4, message))?;
-    stmt.bind((5, timestamp.as_str()))?;
+    stmt.bind((2, parent_hash.as_str()))?;
+    stmt.bind((3, root_hash.as_str()))?;
+    stmt.bind((4, author))?;
+    stmt.bind((5, message))?;   
+    stmt.bind((6, timestamp.as_str()))?;
+    stmt.bind((7, signature.as_str()))?;
     stmt.next()?;
 
     // 4. On enregistre l'opération dans l'OpLog pour le Undo
